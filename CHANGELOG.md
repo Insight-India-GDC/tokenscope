@@ -7,6 +7,11 @@ the publish tooling stamps the heading and a pre-PR gate reminds you to add
 the line — see the internal `tools/publish/README.md`, which is not part of
 the public mirror.)
 
+## v1.0.3 — 2026-10-14 (snapshot d358530b)
+
+- Dependency updates within their current versions, including Nuxt 4.6.1,
+  which builds the app with Vite on Rolldown.
+
 ## v1.0.2 — 2026-10-14 (snapshot d12dab88)
 
 - Moving someone to another Business Unit, alone or in a bulk placement, now

@@ -32,7 +32,7 @@ const OWNER = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})'
 const REPO = '[A-Za-z0-9._-]{1,100}'
 const SHORT_REF = new RegExp(`(?<![\\w/.@-])(${OWNER})/(${REPO})(?:#\\d+|@[0-9a-f]{7,40})\\b`, 'g')
 const URL_REF = new RegExp(
-  `(?<![\\w.-])github\\.com/(${OWNER})/(${REPO})/(?:issues|pull|discussions|commit|commits)/[0-9A-Za-z]+`,
+  `(?<![\\w.-])github\\.com/(${OWNER})/(${REPO})/(?:issues|pull|discussions|commit)/[0-9A-Za-z]+`,
   'gi',
 )
 
@@ -66,6 +66,35 @@ export function findUpstreamRefs(text, owner) {
 
 function runGit(args) {
   return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+}
+
+/*
+ * The texts of a pull_request event to check. In a PR Dependabot opened (a login
+ * no person can hold), two link shapes it generates are removed before the scan:
+ * an <a> through redirect.github.com, which GitHub built so these PRs post no
+ * "mentioned this" entry and whose text is not autolinked, and its <a> to a
+ * single upstream commit in the quoted changelog. Everything else, the title
+ * included, is scanned as for anyone.
+ */
+// One anchor on one line: its text may hold other tags (<code>) but no newline
+// and no other <a or </a, so a match cannot run past its own anchor into text
+// that would still be scanned. Any other markup stays in, and is scanned.
+const ANCHOR_REST = String.raw`"[^>\n]*>(?:[^<\n]|<(?!\/?a\b))*<\/a>`
+const DEPENDABOT_SAFE_ANCHORS = [
+  new RegExp(String.raw`<a href="https:\/\/redirect\.github\.com\/[^"\n]*` + ANCHOR_REST, 'g'),
+  new RegExp(String.raw`<a href="https:\/\/github\.com\/[^/"\s]+\/[^/"\s]+\/commit\/[0-9a-f]{7,40}` + ANCHOR_REST, 'g'),
+]
+
+export function prTexts(pr) {
+  if (!pr) return []
+  let body = pr.body ?? ''
+  if (pr.user?.login === 'dependabot[bot]' && pr.user?.type === 'Bot') {
+    for (const re of DEPENDABOT_SAFE_ANCHORS) body = body.replace(re, '')
+  }
+  return [
+    { where: 'PR title', text: pr.title ?? '' },
+    { where: 'PR body', text: body },
+  ]
 }
 
 export function currentBranch(git = runGit) {
@@ -464,8 +493,7 @@ function main(argv) {
     else if (a === '--stdin') texts.push({ where: 'stdin', text: readFileSync(0, 'utf8') })
     else if (a === '--commits') texts.push(...commitMessages(argv[++i]))
     else if (a === '--github-event') {
-      const pr = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')).pull_request
-      if (pr) texts.push({ where: 'PR title', text: pr.title ?? '' }, { where: 'PR body', text: pr.body ?? '' })
+      texts.push(...prTexts(JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')).pull_request))
     } else {
       console.error(`unknown argument: ${a}`)
       return 2

@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { findUpstreamRefs, hookTexts, ownOwner, unmodelledForm } from '../../../scripts/check-no-upstream-backlinks.mjs'
+import { findUpstreamRefs, hookTexts, ownOwner, prTexts, unmodelledForm } from '../../../scripts/check-no-upstream-backlinks.mjs'
 
 const OWN = 'Home-Org'
 
@@ -26,6 +26,21 @@ describe('findUpstreamRefs', () => {
     )
   })
 
+  it("passes a Dependabot commit message, whose only link is a ref's commit list, and still flags a single commit", () => {
+    // The shape of a Dependabot commit message. A commits list on a ref is not
+    // an item with a timeline, so it cannot get a backlink.
+    const dependabot = [
+      'Bumps [vitest](https://github.com/vitest-dev/vitest/tree/HEAD/packages/vitest) from 5.0.2 to 5.0.3.',
+      '- [Release notes](https://github.com/vitest-dev/vitest/releases)',
+      '- [Changelog](https://github.com/vitest-dev/vitest/blob/main/docs/releases.md)',
+      '- [Commits](https://github.com/vitest-dev/vitest/commits/v5.0.3/packages/vitest)',
+    ].join('\n')
+    expect(findUpstreamRefs(dependabot, OWN)).toEqual([])
+    expect(findUpstreamRefs('https://github.com/vitest-dev/vitest/commit/0123abcd', OWN)).toEqual([
+      'github.com/vitest-dev/vitest/commit/0123abcd',
+    ])
+  })
+
   it('lets our own owner, plain text, bare numbers and look-alikes through', () => {
     const text = [
       'Home-Org/widgets#422 and home-org/other#1',
@@ -39,6 +54,62 @@ describe('findUpstreamRefs', () => {
 
   it('with no known owner, every owner/repo reference is external', () => {
     expect(findUpstreamRefs('Home-Org/widgets#1', null)).toEqual(['Home-Org/widgets#1'])
+  })
+})
+
+describe('prTexts: the pull_request text CI checks', () => {
+  const body = '<a href="https://redirect.github.com/actions/setup-node/pull/1421">actions/setup-node#1421</a>'
+
+  it('checks the title and body of a PR a person opened', () => {
+    const texts = prTexts({ title: 't', body, user: { login: 'someone', type: 'User' } })
+    expect(texts.map((t) => t.where)).toEqual(['PR title', 'PR body'])
+    expect(findUpstreamRefs(texts[1].text, 'Home-Org')).toEqual(['actions/setup-node#1421'])
+  })
+
+  const bot = { login: 'dependabot[bot]', type: 'Bot' }
+  const refsIn = (pr: Parameters<typeof prTexts>[0]) => prTexts(pr).flatMap((t) => findUpstreamRefs(t.text, 'Home-Org'))
+  // The two generated shapes, as in the setup-node 7.1.0 PR body.
+  const generated = [
+    body,
+    '<li><a href="https://github.com/actions/setup-node/commit/949feb2413d6458794dcd2491c4babbbce0c15c1"><code>949feb2</code></a> Bump eslint</li>',
+  ].join('\n')
+
+  it("drops only the link shapes Dependabot generates from Dependabot's PR body", () => {
+    expect(refsIn({ title: 't', body: generated, user: bot })).toEqual([])
+  })
+
+  it('still scans the rest of a Dependabot PR: its title and any plain reference in the body', () => {
+    const quoted = `${generated}\nFixes some-org/some-repo#12, see https://github.com/x/y/issues/3`
+    expect(refsIn({ title: 'bump, see x/y#9', body: quoted, user: bot }).sort()).toEqual(
+      ['x/y#9', 'some-org/some-repo#12', 'github.com/x/y/issues/3'].sort(),
+    )
+  })
+
+  it('cannot drop a reference by spanning to a later </a>, across lines or another anchor', () => {
+    const unclosedThenRef = [
+      '```',
+      '<a href="https://redirect.github.com/x/y/pull/1">open',
+      '```',
+      'Fixes some-org/some-repo#12',
+      'closing</a>',
+    ].join('\n')
+    expect(refsIn({ title: 't', body: unclosedThenRef, user: bot })).toEqual(['some-org/some-repo#12'])
+    const commitThenRef =
+      '<a href="https://github.com/x/y/commit/0123abcd">c <a href="#">x</a> some-org/some-repo#13 </a>'
+    expect(refsIn({ title: 't', body: commitThenRef, user: bot })).toContain('some-org/some-repo#13')
+  })
+
+  it("drops nothing from anyone else's PR, a lookalike login or a non-bot type included", () => {
+    for (const user of [{ login: 'dependabot', type: 'User' }, { login: 'dependabot[bot]', type: 'User' }]) {
+      expect(refsIn({ title: 't', body: generated, user })).toEqual([
+        'actions/setup-node#1421',
+        'github.com/actions/setup-node/commit/949feb2413d6458794dcd2491c4babbbce0c15c1',
+      ])
+    }
+  })
+
+  it('has nothing to check outside a pull_request event', () => {
+    expect(prTexts(undefined)).toEqual([])
   })
 })
 
