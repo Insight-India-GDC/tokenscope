@@ -13,7 +13,8 @@
  * entirely. This restores it.
  *
  * Writes (merging, never clobbering):
- *   ~/.claude/settings.json (mode 0600, atomic temp+rename) —
+ *   the install's settings.json, ~/.claude unless a gated CLAUDE_CONFIG_DIR
+ *   names another folder (claude-config-dir.mjs) (mode 0600, atomic temp+rename) —
  *     - otelHeadersHelper: the helper COMMAND for this platform, built from a
  *       record by env-builder's buildHelperCommand (the only way to configure
  *       the Azure Monitor Bearer as a refreshing helper). It carries
@@ -62,6 +63,7 @@ import { fileURLToPath } from 'node:url'
 import { isMainModule } from './is-main.mjs'
 import { resolveApiBase, configuredServerUrl, knownApiOrigins } from './api-base.mjs'
 import { discoverMcpOrigin } from './mcp-origin.mjs'
+import { resolveClaudeConfigDir } from './claude-config-dir.mjs'
 import {
   acceptApiBaseArg,
   assertConfinedPath,
@@ -85,6 +87,7 @@ import {
 import { mergeClaudeSettings } from './env-builder.mjs'
 import { emitEnvLabel } from './statusline.mjs'
 import { assertSafeEndpoint, unsafeEndpointError } from './endpoint-guard.mjs'
+import { applyDesktopEnv, desktopRestartAdvice, isNearDesktopSession, isTrustedDesktopSession } from './desktop-env.mjs'
 
 // ── arg parsing ──────────────────────────────────────────────────────────────
 // STRICT: this process spends a live single-use handoff code, and its argv is
@@ -746,7 +749,16 @@ async function main() {
         'until HOME is corrected.',
     )
   }
-  const settingsPath = args.settingsPath ?? join(trustedHome, '.claude', 'settings.json')
+  // The config folder of the install running this setup (claude-config-dir.mjs):
+  // CLAUDE_CONFIG_DIR when the user's environment set it to a folder of theirs,
+  // e.g. Claude Desktop's own install, else ~/.claude on the passwd home.
+  const configDir = resolveClaudeConfigDir({ home: trustedHome })
+  if (!args.settingsPath && configDir.refused) {
+    console.error(
+      `[tokenscope] WARN: CLAUDE_CONFIG_DIR is set but was not used (${configDir.refused.reason}); writing ${join(configDir.dir, 'settings.json')} instead.`,
+    )
+  }
+  const settingsPath = args.settingsPath ?? join(configDir.dir, 'settings.json')
   let envChange
   try {
     envChange = writeClaudeSettings(settingsPath, helper, envBlock, args.stateDir || trustedStateDir(), {
@@ -767,10 +779,53 @@ async function main() {
     console.log(`[tokenscope] Environment changed: ${from} → ${to}. Old credentials and endpoints removed.`)
   }
   console.log('[tokenscope] ✓ Tracking is on for Claude Code on this computer.')
-  console.log('[tokenscope]   Next: restart Claude Code. Tracking starts in the new session.')
+  // Claude Desktop only: it replaces the settings-file resource attributes at
+  // launch, so this device's attributes also go into the login environment,
+  // which it merges (desktop-env.mjs). The CLI path never runs this.
+  const desktopLines = desktopSetupStep(resp.instance_id)
+  for (const line of desktopLines) console.log(line)
+  // In the Claude app the Desktop step owns the restart line (on Linux it is a
+  // log out, not a restart); printing both would contradict it.
+  if (!desktopLines.some((l) => l.includes('Next:'))) {
+    console.log('[tokenscope]   Next: restart Claude Code. Tracking starts in the new session.')
+  }
   console.log('[tokenscope]   In a repo with a .tokenscope file, restart once more if you see a "superseded device enrolment" warning.')
   console.log('[tokenscope]   Then, to bill a repo to a project, run the `project` prompt in that repo.')
   console.log(`[tokenscope]   Saved to ${settingsPath} (device ${resp.instance_id}).`)
+}
+
+/**
+ * Claude Desktop only: the lines setup prints after putting this device in the
+ * login environment, or none at all outside the Claude app (the CLI never calls
+ * `apply`), including when a project's settings supplied the app's entrypoint.
+ * `env`, `apply` and `trusted` are injectable for tests.
+ */
+function desktopSetupStep(
+  instanceId,
+  env = process.env,
+  apply = applyDesktopEnv,
+  trusted = isTrustedDesktopSession,
+  platform = process.platform,
+) {
+  if (isNearDesktopSession(env)) {
+    return [`[tokenscope] WARN: CLAUDE_CODE_ENTRYPOINT is "${String(env.CLAUDE_CODE_ENTRYPOINT).trim().slice(0, 40)}", not the Claude app's "claude-desktop"; the Desktop step was skipped.`]
+  }
+  if (!trusted(env)) return []
+  const desktop = apply(instanceId)
+  if (!desktop.applied) {
+    // Usage is still sent (the settings file is written); only the link to this
+    // device is missing, so the restart is still the next step, in the app's words.
+    return [
+      `[tokenscope] WARN: Desktop sessions will not be attributed: could not set your login environment (${desktop.reason}).`,
+      '[tokenscope]   Next: quit the Claude app completely and open it again: usage is sent, but is not linked to you until that is fixed and setup is run again.',
+    ]
+  }
+  const where = desktop.file ? ` (${desktop.file})` : ''
+  const next = desktopRestartAdvice(platform)
+  return [
+    `[tokenscope] ✓ Claude Desktop: this device is set in your login environment${where}, so Desktop sessions are attributed.`,
+    `[tokenscope]   Next: ${next.charAt(0).toUpperCase()}${next.slice(1)}. Tracking starts in the new session.`,
+  ]
 }
 
 // Only run main() when executed directly (not when imported as a module for testing).
@@ -788,4 +843,5 @@ export {
   writeClaudeSettings,
   writeSharedCredentialStore,
   parseArgs,
+  desktopSetupStep,
 }

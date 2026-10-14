@@ -29,10 +29,11 @@
  * resolved server returns them at provision time (server/auth/emit-provision.ts).
  */
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, sep } from 'node:path'
+import { dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertSafeEndpoint, unsafeEndpointError } from './endpoint-guard.mjs'
 import { realHome } from './real-home.mjs'
+import { claudeSettingsPath } from './claude-config-dir.mjs'
 
 export const DEFAULT_API_BASE = ''
 
@@ -115,10 +116,10 @@ function serverUrlFromSettings(path, marketplace) {
  * there from 2.1.207 so a cloned repository cannot supply it, and this value
  * names the host a handoff code and the enrollment secret are POSTed to.
  *
- * `realHome()`, not `$HOME`, and not `$CLAUDE_CONFIG_DIR`: both are env a
- * repository can set for hook processes. A user who runs Claude Code with a
- * custom CLAUDE_CONFIG_DIR is therefore not seen here, and falls through to
- * discovery and the default.
+ * `realHome()`, not `$HOME`: a repository can set HOME for hook processes. A
+ * custom CLAUDE_CONFIG_DIR is followed only through claude-config-dir.mjs's
+ * gate (absolute, inside the passwd home, outside any git work tree, not named
+ * by a project settings file), so a repository cannot choose the file read here.
  *
  * @param {{ home?: string, managedPath?: string|null, scriptsDir?: string }} [opts]
  *   test seams; production passes nothing.
@@ -131,7 +132,7 @@ export function configuredServerUrl({
   const marketplace = scriptsDir ? ownMarketplace(scriptsDir) : null
   return (
     (managedPath ? serverUrlFromSettings(managedPath, marketplace) : null) ||
-    serverUrlFromSettings(join(home, '.claude', 'settings.json'), marketplace)
+    serverUrlFromSettings(claudeSettingsPath({ home }), marketplace)
   )
 }
 

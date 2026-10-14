@@ -68,6 +68,7 @@ import { recordAuditEvent } from './audit'
 import { assertOrgUnitInRegion } from './org-units'
 import { PLACEMENT_AUDIT_EVENT, stripProvenanceKeys } from '../reconciliation/placement-provenance'
 import { rehomePlacement, type RehomePlacementRange, type RehomePlacementResult } from '../governance/rehome-placement'
+import { followPlacement } from '../utils/device-lifecycle'
 
 type Tx = PostgresJsDatabase<Record<string, unknown>>
 
@@ -176,26 +177,40 @@ export async function placeTeammate(
   opts: PlaceTeammateOpts,
 ): Promise<PlaceTeammateResult> {
   /*
-   * FOR UPDATE, so `region_id` cannot change between the authorisation check
+   * Locked, so `region_id` cannot change between the authorisation check
    * below and the UPDATE at the bottom. Without it a concurrent region PATCH
    * makes requireRegionScope a statement about a region this teammate has since
-   * left. Also serialises two placements of the same person.
+   * left. Also serialises two placements of the same person, and a placement
+   * with a provision or confirmation (#417).
+   *
+   * FOR NO KEY UPDATE: it blocks every other writer of this row, and unlike FOR
+   * UPDATE it does not conflict with the FOR KEY SHARE a device-first path takes
+   * on it (session-gc's audit insert). This move locks the teammate's devices
+   * next (followPlacement), so a conflict there would be a deadlock.
    */
   const targetRows = await tx.execute<{
     id: string
     region_id: string
     org_unit_id: string
     email: string
+    provisional: boolean
   }>(sql`
-    SELECT id::text AS id, region_id::text AS region_id, org_unit_id::text AS org_unit_id, email
+    SELECT id::text AS id, region_id::text AS region_id, org_unit_id::text AS org_unit_id, email, provisional
     FROM teammate WHERE id = ${opts.teammateId}::uuid LIMIT 1
-    FOR UPDATE
+    FOR NO KEY UPDATE
   `)
   const target = [...targetRows][0]
   if (!target) throw createError({ statusCode: 404, statusMessage: 'Teammate not found' })
 
   // Region admin is bound to the TEAMMATE's region.
   await requireRegionScope(event, target.region_id)
+
+  // After the scope check, so an admin of another region gets the scope error,
+  // not this one. A provisional (shadow) teammate is placed by identity confirmation, which
+  // also places its devices; an admin move would leave them behind (#417).
+  if (target.provisional) {
+    throw createError({ statusCode: 422, statusMessage: 'A provisional teammate is placed when their device is confirmed, not by a placement move' })
+  }
 
   /*
    * Pin the destination BEFORE validating it (header: FOR SHARE, not FOR
@@ -325,6 +340,11 @@ export async function placeTeammate(
     WHERE id = ${target.id}::uuid
   `)
 
+  // The teammate's live devices move with them, so new spend lands on the new
+  // unit (#417; owner ruling: a move within a region counts). Recorded spend
+  // moves only through `rehome` below.
+  const rehomedInstanceIds = await followPlacement(tx as never, target.id)
+
   /*
    * IN THE SAME TRANSACTION as the move above, and after it. A re-home that
    * commits without its placement change (or the reverse) leaves the ledger
@@ -346,9 +366,9 @@ export async function placeTeammate(
    * transaction, so a failed re-home rolls the audit row back with it — an
    * audit entry for a move that did not happen is worse than none.
    *
-   * The pre-`rehome` payload is preserved key-for-key: an ordinary placement's
-   * audit row is byte-identical to what it always was, and `rehome` appears
-   * only when history was asked to follow.
+   * The pre-`rehome` keys are preserved key-for-key; the rest are additive:
+   * `rehomedInstanceIds` appears only when live devices moved (#417), and
+   * `rehome` only when history was asked to follow.
    */
   await recordAuditEvent(tx, {
     eventType: PLACEMENT_AUDIT_EVENT,
@@ -362,9 +382,10 @@ export async function placeTeammate(
       previousOrgUnitId: target.org_unit_id,
       newOrgUnitId: opts.orgUnitId,
       sessionsRevoked: false,
-      // Present only on a bulk action, so one batch is reviewable as a unit
-      // while a single move's payload is byte-identical to what it always was.
+      // Present only on a bulk action, so one batch is reviewable as a unit.
       ...(opts.batchId ? { batchId: opts.batchId } : {}),
+      // Present only when the teammate had live devices to move.
+      ...(rehomedInstanceIds.length > 0 ? { rehomedInstanceIds } : {}),
       ...(rehomed
         ? {
             rehome: {

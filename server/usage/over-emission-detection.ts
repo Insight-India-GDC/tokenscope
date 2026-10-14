@@ -48,6 +48,7 @@ import { dispatchInbox } from '../notifications/dispatch'
 import { CLAUDE_FAMILY_TOOLS } from '../../shared/usage/surface'
 import { corroboratedOtelDaily } from './corroborated-otel'
 import { advisoryXactLock } from '../db/advisory-lock'
+import { recordAuditEvent } from '../db/audit'
 import {
   hasActivePersonalSubscription,
   personalSubscriptionLockKey,
@@ -379,4 +380,149 @@ export async function detectOverEmission(db: Db, opts: OverEmissionOptions): Pro
     totalNoBillUsd: Number(noBillAgg?.usd ?? 0),
     personalPromptsDispatched,
   }
+}
+
+/**
+ * Batch bound for {@link sweepStrayQuarantines}: candidates handled per run. The
+ * sweep runs every usage-reconciliation tick, so a backlog drains over a few ticks
+ * instead of one run holding locks on an unbounded set.
+ */
+export const STRAY_QUARANTINE_SWEEP_LIMIT = 200
+
+export interface StrayQuarantineSweepResult {
+  /** Flags escalated and quarantines lifted in this run. */
+  lifted: number
+}
+
+/**
+ * Lift a developer quarantine once its conversation has STRAYED OUTSIDE the flag
+ * that justified it.
+ *
+ * The resolve route (POST /api/v1/me/over-emission/{id}/resolve) only lets a
+ * developer quarantine a conversation whose records all sit in the flag's
+ * (UTC day, tool) cell. But that is checked once, when the developer decides. The
+ * quarantine itself is conversation-wide: the corroborated-OTel operand and
+ * v_complete_usage drop EVERY record of that conversation, including records
+ * ingested later, on another day or tool. Without this sweep, a developer could
+ * quarantine one session against a genuine flag and keep using the same
+ * conversation id, and everything it did afterwards would be gone from their §A
+ * usage.
+ *
+ * For each open 'api-uncorroborated' quarantine whose conversation now has a
+ * record outside the cell of the flag that quarantined it, one transaction:
+ *   - lifts the quarantine (resolved_at = now(), keeping the row, the same way
+ *     heartbeat-coverage clears its own rows), so the conversation counts again;
+ *   - sets the flag to 'escalated', the state the developer's own "escalate"
+ *     action uses to hand a flag to the region admin. resolved_by is NULL because
+ *     the system made this call. The flag leaves the developer's queue, so they
+ *     cannot quarantine again from it;
+ *   - queues the teammate for a full rollup recompute, as the resolve route does;
+ *   - writes an `over-emission-quarantine-lifted` audit event.
+ *
+ * It matches a flag in ANY state, not only 'quarantined'. The detector can re-open
+ * a quarantined flag while its quarantine stays open, and the developer can then
+ * accept it. Without that, the quarantine would stay open under an 'accepted' flag
+ * and still hide the later records. Idempotent: once the quarantine is lifted the
+ * candidate query no longer matches, and the locked recheck skips any row another
+ * run already handled.
+ */
+export async function sweepStrayQuarantines(
+  db: Db,
+  opts?: { limit?: number },
+): Promise<StrayQuarantineSweepResult> {
+  const limit = opts?.limit ?? STRAY_QUARANTINE_SWEEP_LIMIT
+  // The conversation key is COALESCE(claude_session_id, instance_id::text), the
+  // same one the resolve route uses. It is spelled out as an OR so the
+  // claude_session_id index can serve it. The day is the UTC day the detector
+  // buckets on (corroborated-otel.ts).
+  // Both fragments read the flag through the alias `oe`.
+  const stray = sql`
+    EXISTS (
+      SELECT 1 FROM attribution_record ar
+      WHERE ar.teammate_id = oe.teammate_id
+        AND (ar.claude_session_id = oe.quarantined_conversation_id
+             OR (ar.claude_session_id IS NULL AND ar.instance_id::text = oe.quarantined_conversation_id))
+        AND ((ar.ts_event AT TIME ZONE 'UTC')::date <> oe.day OR ar.tool <> oe.tool)
+    )`
+  const openQuarantine = sql`
+    EXISTS (
+      SELECT 1 FROM session_quarantine sq
+      WHERE sq.teammate_id = oe.teammate_id
+        AND sq.conversation_id = oe.quarantined_conversation_id
+        AND sq.reason = 'api-uncorroborated'
+        AND sq.resolved_at IS NULL
+    )`
+
+  const candidates = await db.execute<{ id: string }>(sql`
+    SELECT oe.id::text AS id
+    FROM over_emission oe
+    WHERE oe.quarantined_conversation_id IS NOT NULL
+      AND ${openQuarantine}
+      AND ${stray}
+    ORDER BY oe.day, oe.id
+    LIMIT ${limit}
+  `)
+
+  let lifted = 0
+  for (const c of candidates) {
+    lifted += await db.transaction(async (tx) => {
+      // Same lock order as the resolve route (flag first, then quarantine).
+      // Recheck under the lock so a concurrent run cannot double-handle the row.
+      const flagRows = await tx.execute<{
+        teammate_id: string; day: string; tool: string; state: string; conversation_id: string
+      }>(sql`
+        SELECT oe.teammate_id::text AS teammate_id, oe.day::text AS day, oe.tool, oe.state,
+               oe.quarantined_conversation_id AS conversation_id
+        FROM over_emission oe
+        WHERE oe.id = ${c.id}::uuid
+          AND oe.quarantined_conversation_id IS NOT NULL
+          AND ${openQuarantine}
+          AND ${stray}
+        FOR UPDATE OF oe
+      `)
+      const flag = [...flagRows][0]
+      if (!flag) return 0
+
+      const liftedRows = await tx.execute<{ id: string }>(sql`
+        UPDATE session_quarantine
+           SET resolved_at = now(), updated_at = now()
+         WHERE teammate_id = ${flag.teammate_id}::uuid
+           AND conversation_id = ${flag.conversation_id}
+           AND reason = 'api-uncorroborated'
+           AND resolved_at IS NULL
+        RETURNING id::text AS id
+      `)
+      await tx.execute(sql`
+        UPDATE over_emission
+           SET state = 'escalated', resolved_at = now(), resolved_by = NULL
+         WHERE id = ${c.id}::uuid
+      `)
+      // The lift puts this conversation's whole history back into
+      // v_complete_usage arm 1, with no timestamp a trailing window can see.
+      // Queue a full-history recompute, exactly as the resolve route does.
+      await tx.execute(sql`
+        INSERT INTO usage_rollup_refresh (teammate_id, requested_at)
+        VALUES (${flag.teammate_id}::uuid, statement_timestamp())
+        ON CONFLICT (teammate_id) DO UPDATE SET requested_at = GREATEST(usage_rollup_refresh.requested_at + interval '1 microsecond', statement_timestamp())
+      `)
+      await recordAuditEvent(tx, {
+        eventType: 'over-emission-quarantine-lifted',
+        actorSystem: 'usage-reconciliation',
+        subjectKind: 'over-emission',
+        subjectId: c.id,
+        payload: {
+          teammate_id: flag.teammate_id,
+          conversation_id: flag.conversation_id,
+          flag_day: flag.day,
+          flag_tool: flag.tool,
+          previous_state: flag.state,
+          new_state: 'escalated',
+          session_quarantine_ids: [...liftedRows].map((r) => r.id),
+          reason: 'conversation has usage outside the flag\'s (UTC day, tool) cell',
+        },
+      })
+      return 1
+    })
+  }
+  return { lifted }
 }

@@ -1,5 +1,6 @@
 /*
- * Ending several of a teammate's devices at once.
+ * Ending several of a teammate's devices at once, and moving them with their
+ * teammate.
  *
  * Every path that locks more than one device row takes them in instance_id
  * order. A bare `UPDATE … WHERE teammate_id = …` locks rows in scan order, so
@@ -62,4 +63,27 @@ export async function rehomeLiveDevicesOf(
     RETURNING instance_id::text AS instance_id
   `)
   return [...rows].map((r) => r.instance_id).sort()
+}
+
+/**
+ * Re-home a teammate's live devices onto the placement the teammate has NOW
+ * (#417). Every path that changes a teammate's placement calls this in the same
+ * transaction, after its write and while holding the teammate row lock, so new
+ * records follow the move from the joiner's next session selection. Returns the
+ * re-placed instance ids. Must run in a transaction.
+ *
+ * Lock order: teammate (held by the caller FOR NO KEY UPDATE), then devices.
+ * Provisioning and identity confirmation take the teammate the same way before
+ * any device lock, so a move cannot interleave with them. A provisional shadow
+ * teammate is skipped: identity confirmation, which locks the device and then
+ * updates the shadow, is what places its devices.
+ */
+export async function followPlacement(db: Db, teammateId: string): Promise<string[]> {
+  const rows = await db.execute<{ region_id: string; org_unit_id: string }>(sql`
+    SELECT region_id::text AS region_id, org_unit_id::text AS org_unit_id
+      FROM teammate WHERE id = ${teammateId}::uuid AND NOT provisional
+  `)
+  const tm = [...rows][0]
+  if (!tm) return []
+  return rehomeLiveDevicesOf(db, teammateId, { regionId: tm.region_id, orgUnitId: tm.org_unit_id })
 }

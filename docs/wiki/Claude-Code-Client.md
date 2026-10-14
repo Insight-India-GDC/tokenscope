@@ -25,7 +25,7 @@ secret-isolating handoff (`provision_emit` → `/api/v1/setup/redeem`).
 The helper is chosen per platform at setup and again at every session start
 (`buildHelperCommand` in `plugin/scripts/env-builder.mjs`); both helpers read and
 write the same files, so a device moves between them without re-enrolling. Why
-two native helpers rather than one runtime: ADR-0015 (client runtime native per OS).
+two native helpers rather than one runtime: [ADR-0015](Design-Decisions.md#adr-0015--native-client-runtime-per-os) (client runtime native per OS).
 Copilot's equivalent table is in [Copilot CLI Client](Copilot-CLI-Client.md).
 
 ## Connect + emission flow
@@ -35,16 +35,16 @@ OAuth consent → global config), then **tag each repo** with a committed
 `.tokenscope` file. Identity is anchored to the device attestation (by
 `tokenscope.instance_id` / DEVICE_SID, minted by `provision_emit`); the
 **project** is an emitted per-event claim, membership-gated at join (see
-ADR-0004).
+[ADR-0004](Design-Decisions.md#adr-0004--attribution-trust-model)).
 
 ![One consent connects the device, a local helper redeems the emit credential outside the chat, and a committed .tokenscope file tags the repo on a later launch](images/claude-code-client-onboarding.svg)
 
 1. `/mcp` opens a browser consent at `/api/v1/oauth/authorize`. The PKCE exchange at `/api/v1/oauth/token` gives the MCP client a `tokenscope.read` + `tag` token, and the MCP tools start working.
 2. The `tokenscope-setup` prompt calls `provision_emit`. It locates or creates this device's `instance_attestation` and returns a single-use handoff code that expires in about five minutes. The code passes through the chat; the durable credential never does.
-3. The agent runs the redeem helper for its lane (see [Setup lanes](#setup-lanes-node-or-powershell-on-windows)): `plugin/scripts/claude-redeem.mjs`, or `claude-redeem.ps1` on Windows without Node. It POSTs the code to `/api/v1/setup/redeem`. The response carries `instance_id`, `bearer_endpoint`, the durable `tokenscope.emit` refresh token and `telemetry.claude`. The script writes them to `~/.claude/settings.json` and to the device store `~/.tokenscope/config.claude-code.json`.
+3. The agent runs the redeem helper for its lane (see [Setup lanes](#setup-lanes-node-or-powershell-on-windows)): `plugin/scripts/claude-redeem.mjs`, or `claude-redeem.ps1` on Windows without Node. It POSTs the code to `/api/v1/setup/redeem`. The response carries `instance_id`, `bearer_endpoint`, the durable `tokenscope.emit` refresh token and `telemetry.claude`. The script writes them to the install's `settings.json` (`~/.claude`, or the install's own `CLAUDE_CONFIG_DIR` when it passes the gate in `plugin/scripts/claude-config-dir.mjs`) and to the device store `~/.tokenscope/config.claude-code.json`.
 4. The `project` prompt writes a one-line `.tokenscope` file holding the project code; the developer commits it. The plugin's `SessionStart` hook reads it, computes `sha256(code)` and writes `OTEL_RESOURCE_ATTRIBUTES` (the global `tokenscope.instance_id`, `project.code_hash`, `tool`) plus `otelHeadersHelper` into the repo's gitignored `.claude/settings.local.json`. The repo file carries no credential.
 5. Claude Code reads its settings once, at startup. The session in which the hook writes the repo file still emits under the old attributes; the next launch carries the project claim.
-6. Claude Code gets its export headers from the headers helper for its OS (`otel-headers-helper.sh` on POSIX, `otel-headers-helper.ps1` on Windows; ADR-0015). It trades the refresh token for a `tokenscope.emit` access token and calls `GET /api/v1/instances/{id}/bearer`, which returns an Azure Monitor token minted from the app's managed identity.
+6. Claude Code gets its export headers from the headers helper for its OS (`otel-headers-helper.sh` on POSIX, `otel-headers-helper.ps1` on Windows; [ADR-0015](Design-Decisions.md#adr-0015--native-client-runtime-per-os)). It trades the refresh token for a `tokenscope.emit` access token and calls `GET /api/v1/instances/{id}/bearer`, which returns an Azure Monitor token minted from the app's managed identity.
 7. Claude Code sends OTLP `api_request` log events, with that bearer, to the data collection endpoint. The DCR lands them in `OTelLogs`.
 8. The read joiner (`azure-monitor-read`) queries `OTelLogs` by `tokenscope.instance_id`. It takes the teammate from `instance_attestation` and bills the project only if that teammate is a current member; otherwise the spend stays untagged and an `attribution-spill-unauthorized` audit event is written.
 
@@ -58,7 +58,7 @@ ADR-0004).
   process→server at `/api/v1/setup/redeem` for the durable OAuth emit credential +
   the OTel bundle, and writes the **global** `~/.claude/settings.json`. The
   durable secret never enters the LLM's context (the secret-isolating handoff;
-  the single audited read→emit crossing, ADR-0005 E1).
+  the single audited read→emit crossing, [ADR-0005](Design-Decisions.md#adr-0005--durable-emission-credentials-and-revocation) E1).
 - **Per-repo project travels with the repo.** Each repo commits a `.tokenscope`
   file (the project code), which the `project` MCP prompt writes. The
   `SessionStart` hook resolves it and writes `project.code_hash = sha256(code)`
@@ -73,10 +73,11 @@ ADR-0004).
   `~/.claude/settings.json` only while no store exists), so
   the durable credential is not planted in every tagged working tree.
 - **Membership-gated attribution.** The joiner resolves the **teammate from the
-  attestation by DEVICE_SID** (unspoofable per-event) and takes the **project
+  attestation by DEVICE_SID** (the stored binding is authenticated; the
+  DEVICE_SID on each event is a claim anyone with ingest access can set) and takes the **project
   from the emitted `code_hash` claim**, billing it only if that teammate is a
   _current_ member of the project; otherwise the spend spills to untagged + an
-  `attribution-spill-unauthorized` audit (ADR-0004).
+  `attribution-spill-unauthorized` audit ([ADR-0004](Design-Decisions.md#adr-0004--attribution-trust-model)).
 - **Untagged-first.** A device with no repo `.tokenscope` (or an
   unrecognised/unauthorised code) emits without a `project.code_hash` claim, so it
   surfaces in the web **untagged-spend** card. Assign it to a project later via
@@ -165,14 +166,50 @@ so it vendors verbatim into the Copilot plugin.
 
 The **device-local** commands (`plugin/commands/*.md` → `plugin/scripts/*.mjs`)
 are the Claude-specific surface that the MCP spine can't cover — genuinely local
-or emit-probe work. Install — **slash form, inside Claude Code** (no `claude` CLI
-on PATH needed): `/plugin marketplace add <owner>/<repo>` then
-`/plugin install tokenscope@tokenscope`, where `<owner>/<repo>` is the repository
-that carries your deployment's plugin (see "Installing for your own deployment"
-below). The manifest is the repo-root `.claude-plugin/marketplace.json`; the add
-is a git clone (authenticated, so a private fork works). A lighter terminal-CLI
-alternative (`claude plugin marketplace add … --sparse .claude-plugin plugin`)
+or emit-probe work. Install — **slash form, inside Claude Code in a terminal**:
+`/plugin marketplace add https://<your-tokenscope>/api/v1/plugin/marketplace.json`
+then `/plugin install tokenscope@tokenscope`. Each deployment serves that
+marketplace itself: an `archive` plugin source (a zip of `plugin/` with the
+deployment's origin written into `server_url`'s default, the MCP URL in
+`.mcp.json` and `DEFAULT_API_BASE`), pinned by sha256. It needs no Git and no
+server-URL step (Claude Code 2.1.224+; the routes are in the API reference).
+
+**Claude Desktop** can't use the slash form: the app's Code tab hands
+`/plugin marketplace add` to its own form, which accepts only Git hosts ("This
+host isn't supported"). Instead the URL marketplace goes into the settings file
+of the app's install (`extraKnownMarketplaces` + `enabledPlugins`):
+`$CLAUDE_CONFIG_DIR/settings.json` when the app keeps its own folder (seen on
+Linux: `~/.claude-desktop`), else `~/.claude/settings.json`. The app's local Code
+sessions read it; the Connect dialog's **Claude Desktop** guide gives a prompt
+that makes that edit. The app's **+ → Plugins** list never shows a
+marketplace added this way.
+
+The app launches Claude Code with its own `OTEL_SERVICE_NAME=claude-code-desktop`
+and `OTEL_RESOURCE_ATTRIBUTES`, so the settings file's `tokenscope.instance_id`
+and `tool` never reach its records (anthropics/claude-code#67657), and the reader,
+which selects on `tokenscope.instance_id`, would skip them. The app does merge a
+value from the user's login environment, so `/tokenscope:setup` run inside the app
+(`CLAUDE_CODE_ENTRYPOINT=claude-desktop`) also sets
+`OTEL_RESOURCE_ATTRIBUTES=tokenscope.instance_id=<id>,tool=claude-code` there
+(`plugin/scripts/desktop-env.mjs`: `launchctl setenv` plus a LaunchAgent on
+macOS, a user variable on Windows, and on Linux a
+`~/.config/environment.d/90-tokenscope.conf` that appends to the login's value
+and takes effect at the next login). Desktop records then carry the instance and
+join like CLI ones; `service.name` is not read. Setup from a terminal does not do
+this. A per-repo `project.code_hash` cannot ride a user-wide variable, so Desktop
+sessions arrive untagged and are tagged per session. Managed settings with the same two keys are Claude
+Code's documented organisation-wide route; it is not verified for TokenScope, and
+Claude Code issue [#16870](https://github.com/anthropics/claude-code/issues/16870) reports managed `extraKnownMarketplaces` being ignored.
+
+**Fallback: install from Git.** `/plugin marketplace add <owner>/<repo>`, where
+`<owner>/<repo>` is the repository that carries your deployment's plugin (see
+"Installing for your own deployment" below). The manifest is the repo-root
+`.claude-plugin/marketplace.json`; the add is a git clone (authenticated, so a
+private fork works), and the plugin then needs its server URL set. A lighter
+terminal-CLI alternative (`claude plugin marketplace add … --sparse .claude-plugin plugin`)
 sparse-checks-out only those two dirs but requires the standalone `claude` CLI.
+Both marketplaces are named `tokenscope`; switching means
+`/plugin marketplace remove tokenscope` first.
 
 | Command                            | What it does                                                                                                                                                                                                                                                                                             | Backing                                                                  |
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -188,7 +225,9 @@ loopback**, else the plugin's **`server_url` option** as the user configured it
 server's **registered origin** (discovered from configuration the user wrote),
 else the **packaged default**. `plugin/.mcp.json` is
 `${user_config.server_url}/api/v1/mcp`, so Claude Code puts the same configured
-value (or the same default) into the MCP server's URL.
+value (or the same default) into the MCP server's URL. The plugin a deployment
+serves has the literal URL instead, because Claude Desktop's `/mcp` Connect
+cannot expand the template and refuses to sign in.
 
 **Neither of the two channels a repository or a model can reach may name a
 destination.** Claude Code merges a project's `.claude/settings.local.json` env
@@ -209,7 +248,7 @@ is to set `server_url` (or register the server with the CLI) — not to pass a f
 which on a device that knows nothing can only accept loopback values.
 
 `status` (emission probe) invokes the real emit path (the headers helper for the
-OS: `otel-headers-helper.sh`, or `otel-headers-helper.ps1` on Windows). Reads and tagging are now over MCP and authenticate
+OS: `otel-headers-helper.sh`, or `otel-headers-helper.ps1` on Windows). Reads and tagging go over MCP and authenticate
 with the connection's **`tokenscope.read`/`tag` OAuth** grant — a client
 authenticates as itself, never via a borrowed browser cookie.
 
@@ -239,7 +278,7 @@ cloned repository can still move the MCP server's URL through its own settings;
 the scripts, which carry the credentials, ignore it.
 
 The internal build defaults `server_url` to the maintainers' Dev deployment, so
-existing installs need nothing. The public build ships no default: an
+internal installs need no configuration. The public build ships no default: an
 unconfigured install reports *"URL is unset or invalid — open /plugin manage and
 configure"* for the MCP server, and the setup helpers stop with *"No TokenScope
 server is configured"*.
@@ -338,7 +377,7 @@ The load-bearing detail. Claude Code emits OTLP **directly** to Azure Monitor �
   `https://<logs-dce>/dataCollectionRules/<dcrImmutableId>/streams/Microsoft-OTLP-Logs/otlp/v1/logs`,
   pointed at by `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`.
 - **Stream segment** `Microsoft-OTLP-Logs` (service-managed built-in) — **not**
-  the older `Microsoft-OTel-Logs` (that's only the DCR `dataFlows` id; wrong
+  `Microsoft-OTel-Logs` (that is only the DCR `dataFlows` id; wrong
   name → `400 InvalidStream`).
 - **Protocol** `http/protobuf` (`OTEL_EXPORTER_OTLP_LOGS_PROTOCOL`).
   Content-Type `application/x-protobuf` (JSON → `415`). **Content-Length must be
@@ -349,7 +388,7 @@ The load-bearing detail. Claude Code emits OTLP **directly** to Azure Monitor �
   `otelHeadersHelper` (configured in settings, **not** an env var — there is no
   `OTEL_*_HEADERS_HELPER` env). Claude runs the helper at startup and every
   ~29 min; the helper for the OS (`plugin/scripts/otel-headers-helper.sh`, or
-  `otel-headers-helper.ps1` on Windows; ADR-0015) mints a short-lived OAuth
+  `otel-headers-helper.ps1` on Windows; [ADR-0015](Design-Decisions.md#adr-0015--native-client-runtime-per-os)) mints a short-lived OAuth
   `tokenscope.emit` access token and presents it to `TOKENSCOPE_BEARER_ENDPOINT`
   (`/api/v1/instances/{instanceId}/bearer`) to mint the Azure token. grpc cannot use the helper.
   **The helper takes its state dir as an argument (`--state-dir`), never from
@@ -384,9 +423,6 @@ Claude Code merges `env` per key; none is copied into the repo. A git-tracked
 (measured on Claude Code 2.1.232 and 2.1.283). Supported CLI builds are
 roughly the last 4-6 weeks.
 
-The Content-Length forwarder that worked around the chunked-OTLP regression in CLI
-2.1.191-2.1.211 (fixed in 2.1.212) was removed in Claude plugin 0.1.41.
-
 ### Why restart, and where to verify
 
 - Claude reads telemetry config **at startup**. Running the `tokenscope-setup`
@@ -402,8 +438,7 @@ The Content-Length forwarder that worked around the chunked-OTLP regression in C
   `sh` that runs the emit helper and a repo-set `NODE_OPTIONS=--require` runs code
   inside any Node child it spawns. **Neither repair reaches the ~29-minute
   `otelHeadersHelper` refresh** — Claude Code invokes that one directly, which is
-  why the helper's own state dir moved to argv (above) rather than being fixed
-  here. It also **emit-on-install auto-enrols** (`enrollIfNeeded`, a no-op unless a
+  why the helper takes its state dir from argv (above) instead. It also **emit-on-install auto-enrols** (`enrollIfNeeded`, a no-op unless a
   bundled secret is present and the device is not yet enrolled), **self-heals** the
   plugin script paths, and surfaces one-line warnings: emission health, a
   project-not-billable-here warning, and a superseded-instance-pin warning. Every

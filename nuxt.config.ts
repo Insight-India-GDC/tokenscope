@@ -4,7 +4,11 @@ import pkg from './package.json' with { type: 'json' }
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
 
-  devtools: { enabled: true },
+  // Off: @nuxt/devtools 3.x imports simple-git's default export, which 4.x (the
+  // only line with the fixes for its critical advisories) no longer has, so
+  // with the override in package.json enabling it breaks `nuxt prepare`.
+  // Re-enable once a devtools release depends on simple-git 4.
+  devtools: { enabled: false },
 
   modules: ['@nuxt/ui', '@nuxt/eslint', 'nuxt-oidc-auth', 'nuxt-security', 'nuxt-echarts'],
 

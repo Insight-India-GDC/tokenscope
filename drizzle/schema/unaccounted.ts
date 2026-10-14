@@ -41,6 +41,8 @@ export const overEmission = pgTable(
     resolvedAt: timestamp('resolved_at', { withTimezone: true }),
     resolvedBy: uuid('resolved_by').references(() => teammate.id),
     resolvedOverUsd: numeric('resolved_over_usd', { precision: 14, scale: 6 }),
+    // When the admins were last notified of an escalation (mig 0156).
+    escalationNotifiedAt: timestamp('escalation_notified_at', { withTimezone: true }),
     computedAt: timestamp('computed_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('over_emission_teammate_day_tool_unique').on(t.teammateId, t.day, t.tool)],

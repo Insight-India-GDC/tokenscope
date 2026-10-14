@@ -17,12 +17,12 @@
  *     bearer JSON the helper prints is NEVER surfaced (runEmitHelper returns only
  *     whether a bearer was minted, never the token).
  *
- *  2. MCP-AUTH PROBE (new). Read Claude Code's own credential store
- *     (~/.claude/.credentials.json). If its `.mcpOAuth` object holds an entry for
+ *  2. MCP-AUTH PROBE (new). Read Claude Code's own credential store (the macOS
+ *     Keychain, else .credentials.json in the install's config folder; claude-credentials.mjs). If its `.mcpOAuth` object holds an entry for
  *     the TokenScope MCP server (a key like `plugin:tokenscope:tokenscope|...`),
  *     the MCP connection is authed — so the my_usage / tag_session tools and the
  *     setup/tag/project/usage prompts can run. Presence = authed (the documented
- *     script-readable signal). Fail-defensive: no file → false; malformed → false.
+ *     script-readable signal). Fail-defensive: no store → false; malformed → false.
  *
  * The server-side attribution view (recent sessions / what landed) is GONE from
  * this script — query it via the `my_usage` MCP tool or the web dashboard.
@@ -33,12 +33,15 @@
  *   TOKENSCOPE_STATE_DIR         sentinel dir override (default $HOME/.tokenscope)
  *   CLAUDE_PLUGIN_ROOT           where otel-headers-helper.sh lives (set by Claude)
  */
-import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import { isMainModule } from './is-main.mjs'
-import { degradedExpiryNote, readEmitDegraded, readEmitSentinel, runEmitHelper, safeProcessEnv, trustedStateDir } from './plugin-runtime.mjs'
+import { degradedExpiryNote, readEmitDegraded, readEmitSentinel, runEmitHelper, safeProcessEnv, trustedGlobalSettingsEnv, trustedStateDir } from './plugin-runtime.mjs'
 import { checkRepoProjectBillable } from './project-check.mjs'
+import { isMcpAuthed, probeMcpAuth } from './claude-credentials.mjs'
+import { desktopEnvVerdict, desktopRestartAdvice, isTrustedDesktopSession, readDesktopEnv, sessionDesktopAttrs } from './desktop-env.mjs'
+import { resolveClaudeConfigDir } from './claude-config-dir.mjs'
+import { realHome } from './real-home.mjs'
+import { join } from 'node:path'
+import { attrsInstance } from './device-store.mjs'
 
 /**
  * Decide the emission verdict from the helper's exit result + any sentinel it
@@ -152,43 +155,9 @@ export function probeEmissionAuth(env) {
   })
 }
 
-/** Abs path to Claude Code's own credential store. */
-function credentialsPath() {
-  return join(homedir(), '.claude', '.credentials.json')
-}
-
-/**
- * Report whether the TokenScope MCP server has an OAuth entry in Claude Code's
- * credential store (i.e. the MCP connection is authed). The store keys MCP OAuth
- * state under `.mcpOAuth` by server id; the TokenScope plugin MCP server's key is
- * prefixed `plugin:tokenscope:tokenscope|`. Presence of ANY matching key = authed
- * — this is the documented script-readable signal.
- *
- * Pure over the parsed JSON so tests can drive it directly. Fail-defensive:
- * non-object / missing `.mcpOAuth` → false.
- */
-export function isMcpAuthed(creds) {
-  const mcp = creds && typeof creds === 'object' ? creds.mcpOAuth : null
-  if (!mcp || typeof mcp !== 'object') return false
-  return Object.keys(mcp).some(
-    (k) => k === 'plugin:tokenscope:tokenscope' || k.startsWith('plugin:tokenscope:tokenscope|'),
-  )
-}
-
-/** Probe MCP-auth from Claude's credential store. Fail-defensive → false. */
-function probeMcpAuth() {
-  let creds
-  try {
-    creds = JSON.parse(readFileSync(credentialsPath(), 'utf8'))
-  } catch {
-    return false // no file / unreadable / malformed → not authed
-  }
-  try {
-    return isMcpAuthed(creds)
-  } catch {
-    return false
-  }
-}
+// Signed in = Claude Code's store has a TokenScope MCP OAuth entry; read from the
+// macOS Keychain or the config folder's .credentials.json (claude-credentials.mjs).
+export { isMcpAuthed }
 
 /**
  * The project-tag billability block: is THIS repo's project tag billable on the
@@ -245,6 +214,19 @@ async function main() {
   const otherLaneFailure = readEmitSentinel(env, trustedStateDir(), 'copilot-cli')
   const mcpAuthed = probeMcpAuth()
   const project = await projectBlock(env)
+  // Claude Desktop only: its sessions are attributed through the login
+  // environment (desktop-env.mjs), so check it carries this device. On Linux
+  // the session's own value is readable too, so "set for the next login" is
+  // told apart from "in this session".
+  const desktopEnv = isTrustedDesktopSession(process.env)
+    ? desktopEnvVerdict(
+        readDesktopEnv(),
+        attrsInstance(trustedGlobalSettingsEnv().OTEL_RESOURCE_ATTRIBUTES),
+        sessionDesktopAttrs(),
+      )
+    : null
+  // Which install's settings this report is about (claude-config-dir.mjs).
+  const configDir = resolveClaudeConfigDir({ home: realHome() })
 
   console.log(
     JSON.stringify(
@@ -262,6 +244,24 @@ async function main() {
           ? { copilot_lane_failure: { ...otherLaneFailure, fix: 'Run TokenScope setup in a Copilot CLI session.' } }
           : {}),
         mcp_authed: mcpAuthed,
+        settings_file: join(configDir.dir, 'settings.json'),
+        ...(configDir.refused
+          ? { config_dir_refused: `CLAUDE_CONFIG_DIR is set but was not used (${configDir.refused.reason}).` }
+          : {}),
+        ...(desktopEnv
+          ? {
+              desktop_env: {
+                verdict: desktopEnv,
+                ...(desktopEnv === 'ok'
+                  ? {}
+                  : desktopEnv === 'next-login'
+                    ? { fix: `Setup is done for this computer: ${desktopRestartAdvice()}, and start a new Code session.` }
+                    : desktopEnv === 'duplicate'
+                      ? { fix: 'This session carries an earlier TokenScope device label as well as this one: restart your computer, then open the Claude app and start a new Code session.' }
+                      : { fix: `Run /tokenscope:setup in this Claude app session, then ${desktopRestartAdvice()}.` }),
+              },
+            }
+          : {}),
       },
       null,
       2,

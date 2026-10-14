@@ -7,6 +7,7 @@
  * same shape, so the constants below — the batch cap and the de-minimis line the
  * "select the small ones" quick-selector uses — are single-sourced here.
  */
+import { ACTIVITY_LABEL_MAX, displayText } from './display-text'
 import { z } from 'zod'
 
 /**
@@ -45,7 +46,8 @@ export const WorklistBulkBody = z
     // Tag axes — action: 'tag' only. Same semantics as the single-item assign:
     // uuid = set, null = off budget / clear, omitted = preserve.
     project_id: z.string().uuid().nullable().optional(),
-    activity: z.union([z.string().trim().min(1).max(64), z.null()]).optional(),
+    // Same bound as every other activity writer: the label reaches agents (#1394).
+    activity: z.union([displayText(ACTIVITY_LABEL_MAX, { trim: true }), z.null()]).optional(),
   })
   .superRefine((b, ctx) => {
     // Count DISTINCT items: the handler de-duplicates before applying, so a

@@ -19,7 +19,7 @@
  * entry (the test-coverage-report convention), silently untracking the route AND
  * excluding it from lint. Named coverage-recheck.post.ts for both reasons.
  *
- * RBAC: requireRole(admin) + assertSameOrigin. Audited (request +
+ * RBAC: requireRole(platform-admin) + assertSameOrigin. Audited (request +
  * outcome, mirroring copilot-bill-repull.post.ts).
  */
 import { defineEventHandler, createError, getRequestIP, getHeader } from 'h3'
@@ -51,7 +51,8 @@ interface Row extends Record<string, unknown> {
 }
 
 export default defineEventHandler(async (event) => {
-  const caller = await requireRole(event, 'admin')
+  // Provider configuration is estate config (owner ruling 2026-10-08): it live-probes and persists coverage for a region-less provider_enterprise, so platform-admin is the only clamp.
+  const caller = await requireRole(event, 'platform-admin')
   assertSameOrigin(event)
   const body = await readValidated(event, Body)
   const ip = getRequestIP(event, { xForwardedFor: true }) ?? null

@@ -14,7 +14,7 @@
  *                                     days; the recent-sessions route retired)
  */
 import { computed, ref } from 'vue'
-import type { ConnectClient } from '#shared/connect'
+import type { ConnectGuideKind } from '#shared/connect'
 import type { WorklistDay, WorklistResponse, WorklistSession } from '#shared/schemas/worklist'
 import type { RunRate } from '#shared/schemas/usage'
 import type { SpendLens } from '#shared/usage/lens'
@@ -369,8 +369,8 @@ const tagSession = ref<TagTarget | null>(null)
 // the fetch of the full SessionDetail breakdown.
 const sessionDetailId = ref<string | null>(null)
 // Which client's connect pop-up is open (null = closed). Opened by the
-// "Connect Claude" / "Connect Copilot" buttons in the page head.
-const connectClient = ref<ConnectClient | null>(null)
+// "Connect Claude Desktop" / "Claude Code CLI" / "Copilot" buttons in the page head.
+const connectGuide = ref<ConnectGuideKind | null>(null)
 // Hide a client the admin has not enabled for this deployment (#415).
 const { isEnabled: isClientEnabled } = useConnectConfig()
 function openTag(t: TagTarget) {
@@ -713,18 +713,28 @@ const softCapTickPct = computed(() =>
               v-if="isClientEnabled('claude-code')"
               type="button"
               class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#D97757]/40 bg-[#D97757]/5 hover:bg-[#D97757]/12 transition-colors text-sm font-semibold text-carbon cursor-pointer"
-              data-testid="connect-claude"
-              @click="connectClient = 'claude-code'"
+              data-testid="connect-desktop"
+              @click="connectGuide = 'claude-desktop'"
             >
               <Icon name="logos:claude-icon" class="text-base" aria-hidden="true" />
-              Connect Claude Code
+              Connect Claude Desktop
+            </button>
+            <button
+              v-if="isClientEnabled('claude-code')"
+              type="button"
+              class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#D97757]/40 bg-[#D97757]/5 hover:bg-[#D97757]/12 transition-colors text-sm font-semibold text-carbon cursor-pointer"
+              data-testid="connect-claude"
+              @click="connectGuide = 'claude-cli'"
+            >
+              <Icon name="logos:claude-icon" class="text-base" aria-hidden="true" />
+              Connect Claude Code CLI
             </button>
             <button
               v-if="isClientEnabled('copilot-cli')"
               type="button"
               class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-carbon/15 bg-carbon/5 hover:bg-carbon/10 transition-colors text-sm font-semibold text-carbon cursor-pointer"
               data-testid="connect-copilot"
-              @click="connectClient = 'copilot-cli'"
+              @click="connectGuide = 'copilot-cli'"
             >
               <Icon name="logos:github-copilot" class="text-base" aria-hidden="true" />
               Connect Copilot
@@ -779,18 +789,28 @@ const softCapTickPct = computed(() =>
             v-if="isClientEnabled('claude-code')"
             type="button"
             class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-[#D97757]/40 bg-[#D97757]/5 hover:bg-[#D97757]/12 transition-colors text-sm font-semibold text-carbon cursor-pointer"
-            data-testid="onboarding-connect-claude"
-            @click="connectClient = 'claude-code'"
+            data-testid="onboarding-connect-desktop"
+            @click="connectGuide = 'claude-desktop'"
           >
             <Icon name="logos:claude-icon" class="text-base" aria-hidden="true" />
-            Connect Claude Code
+            Connect Claude Desktop
+          </button>
+          <button
+            v-if="isClientEnabled('claude-code')"
+            type="button"
+            class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-[#D97757]/40 bg-[#D97757]/5 hover:bg-[#D97757]/12 transition-colors text-sm font-semibold text-carbon cursor-pointer"
+            data-testid="onboarding-connect-claude"
+            @click="connectGuide = 'claude-cli'"
+          >
+            <Icon name="logos:claude-icon" class="text-base" aria-hidden="true" />
+            Connect Claude Code CLI
           </button>
           <button
             v-if="isClientEnabled('copilot-cli')"
             type="button"
             class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-carbon/15 bg-carbon/5 hover:bg-carbon/10 transition-colors text-sm font-semibold text-carbon cursor-pointer"
             data-testid="onboarding-connect-copilot"
-            @click="connectClient = 'copilot-cli'"
+            @click="connectGuide = 'copilot-cli'"
           >
             <Icon name="logos:github-copilot" class="text-base" aria-hidden="true" />
             Connect Copilot
@@ -1278,7 +1298,7 @@ const softCapTickPct = computed(() =>
     />
 
     <!-- Connect-a-client pop-up — same ConnectClientGuide as /account. -->
-    <ConnectClientDialog :client="connectClient" @close="connectClient = null" />
+    <ConnectClientDialog :kind="connectGuide" @close="connectGuide = null" />
   </div>
 </template>
 

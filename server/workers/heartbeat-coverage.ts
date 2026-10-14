@@ -7,8 +7,11 @@
  * sharing that host). The emit channel is therefore UNTRUSTED / effectively
  * public-write — anyone with an emit token can write SPOOFED attribution_record
  * rows claiming a victim's instance_id / project / email. That telemetry lands
- * provisionally "assigned to you" until reconciliation against Anthropic actuals
- * confirms or WIPES it. (Accepted by design — there's no cheap per-record signing
+ * "assigned to you" in the attributed (indicative) lane. Reconciliation against
+ * the provider's figures does not delete it: it flags telemetry far above the
+ * provider figure for the owner's review. Telemetry never sets a billed total;
+ * it only weights the project split of the person's own billed cost
+ * (v_finance_project_overlay). (Accepted by design — there's no cheap per-record signing
  * for a broadly-distributed client; defense is revoke + detect + reconcile.)
  *
  * THE SIGNAL. Each successful /bearer mint stamps instance_attestation.last_bearer_at
@@ -47,8 +50,10 @@
  * INFORMATIONAL ONLY — NEVER AUTO-REVOKE / AUTO-DELETE. Quarantine is the EARLY/UX
  * detection leg of revoke+detect+reconcile, surfacing "unverified spend" on the web
  * before reconciliation (which lags ~1h+). It does NOT touch credentials, instances,
- * or spend. Reconciliation against Anthropic actuals is the ONLY thing that wipes
- * non-reconciling spend. This worker only writes/clears session_quarantine rows.
+ * or spend. Nothing deletes non-reconciling spend automatically: reconciliation
+ * against Anthropic actuals may flag it, and a developer who quarantines a flagged
+ * session excludes it from attributed figures and the project-split weights (the
+ * records stay). This worker only writes/clears session_quarantine rows.
  *
  * WHAT IT CATCHES / DOESN'T. Catches the cross-instance spoof (records claiming a
  * victim instance_id the spoofer can't mint a bearer for → no covering heartbeat).

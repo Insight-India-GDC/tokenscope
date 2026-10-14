@@ -51,6 +51,8 @@ bucket — not static quotas.
 **Security & network (review surfaces):**
 
 - **[Security Overview](Security-Overview.md)** — InfoSec entry point: trust boundaries, threat-model summary, controls (current + planned), risk register.
+- **[Attributed and Billed](Attributed-and-Billed.md)** — the trust model: what is money and what is indicative, what a developer can change, the checks, and the known limitations.
+- **[Design Decisions](Design-Decisions.md)** — each architecture decision record (ADR) the wiki cites, summarised as it stands today.
 - **[Authentication & Security](Authentication-and-Security.md)** — auth flows, RBAC, RLS, CSRF, Front Door.
 - **[Data Protection](Data-Protection.md)** — data classification, PII, what is _not_ collected, retention, residency.
 - **[Network Architecture](Network-Architecture.md)** — current vs target Azure network: VNet isolation, ingress/egress, public surfaces, ingestion points.

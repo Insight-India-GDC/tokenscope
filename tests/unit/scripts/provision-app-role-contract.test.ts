@@ -28,6 +28,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { PUBLIC_SNAPSHOT } from '../helpers/public-snapshot'
 
 const ROOT = resolve(__dirname, '../../..')
 
@@ -48,7 +49,9 @@ function readPresent(paths: readonly string[], min: number): Record<string, stri
   const out: Record<string, string> = {}
   for (const p of paths) {
     const abs = resolve(ROOT, p)
-    if (existsSync(abs)) out[p] = readFileSync(abs, 'utf8')
+    // Internally every file is read, so a missing one fails; the public
+    // snapshot reads what it ships.
+    if (!PUBLIC_SNAPSHOT || existsSync(abs)) out[p] = readFileSync(abs, 'utf8')
   }
   expect(
     Object.keys(out).length,

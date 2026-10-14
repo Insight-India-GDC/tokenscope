@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import { tmpdir } from 'node:os'
+import { realHome } from '../../../plugin/scripts/real-home.mjs'
 
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-ignore — mjs import resolved by Vitest
@@ -78,6 +79,10 @@ describe('configuredServerUrl — reads the user settings file Claude Code reads
 
   it('a repository env var cannot supply it', () => {
     process.env.CLAUDE_PLUGIN_OPTION_SERVER_URL = 'https://repo.attacker.example'
+    // A cloned repository pointing CLAUDE_CONFIG_DIR into itself. Inside a git
+    // work tree, so refused on every OS (on Windows tmpdir() is inside the
+    // home, so "outside the home" alone would not refuse it there).
+    mkdirSync(join(dir, '.git'), { recursive: true })
     process.env.CLAUDE_CONFIG_DIR = join(dir, 'attacker-config')
     writeJson(join(dir, 'attacker-config', 'settings.json'), {
       pluginConfigs: { 'tokenscope@tokenscope': option('https://repo.attacker.example') },
@@ -230,12 +235,41 @@ describe('--api-base may select the configured server_url (argv-guard known orig
 })
 
 describe('api-base.mjs never reads a repo-settable source for the server', () => {
-  it('has no CLAUDE_PLUGIN_OPTION_* or CLAUDE_CONFIG_DIR read in code', () => {
+  // CLAUDE_CONFIG_DIR is reached only through claude-config-dir.mjs's gate
+  // (behaviour pinned below and in claude-config-dir.test.ts); nothing here
+  // reads it, the plugin options env or the cwd directly.
+  it('has no CLAUDE_PLUGIN_OPTION_*, CLAUDE_CONFIG_DIR or cwd read of its own', () => {
     const code = readFileSync(join(process.cwd(), 'plugin', 'scripts', 'api-base.mjs'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, ' ')
       .replace(/(^|[^:])\/\/.*$/gm, '$1')
     expect(code).not.toMatch(/CLAUDE_PLUGIN_OPTION/)
     expect(code).not.toMatch(/CLAUDE_CONFIG_DIR/)
     expect(code).not.toMatch(/process\.cwd\(\)/)
+    expect(code).toMatch(/serverUrlFromSettings\(claudeSettingsPath\(\{ home \}\), marketplace\)/)
+  })
+})
+
+describe('configuredServerUrl — the config folder of the install asking', () => {
+  // The value names the host a handoff code is posted to, so a custom
+  // CLAUDE_CONFIG_DIR is read only through claude-config-dir.mjs's gate.
+  it('reads CLAUDE_CONFIG_DIR’s settings.json when the folder is the user’s', () => {
+    const base = mkdtempSync(join(realHome(), '.ts-server-url-cfg-'))
+    try {
+      const cfg = join(base, '.claude-desktop')
+      writeJson(join(cfg, 'settings.json'), { pluginConfigs: { 'tokenscope@tokenscope': option(USER_URL) } })
+      writeJson(join(base, '.claude', 'settings.json'), { pluginConfigs: { 'tokenscope@tokenscope': option('https://cli.example.com') } })
+      process.env.CLAUDE_CONFIG_DIR = cfg
+      expect(configuredServerUrl({ home: base, managedPath: null, scriptsDir: null })).toBe(USER_URL)
+      // Inside a git work tree (a repository pointing it at itself): not trusted
+      // on any OS, so ~/.claude is read instead. (Not "outside the home": on
+      // Windows tmpdir() is inside the user profile.)
+      mkdirSync(join(dir, '.git'), { recursive: true })
+      process.env.CLAUDE_CONFIG_DIR = join(dir, 'elsewhere')
+      writeJson(join(dir, 'elsewhere', 'settings.json'), { pluginConfigs: { 'tokenscope@tokenscope': option('https://evil.example.com') } })
+      expect(configuredServerUrl({ home: base, managedPath: null, scriptsDir: null })).toBe('https://cli.example.com')
+    } finally {
+      delete process.env.CLAUDE_CONFIG_DIR
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 })

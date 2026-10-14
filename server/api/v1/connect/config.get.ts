@@ -16,6 +16,7 @@ import { requireAuth } from '../../../auth/rbac'
 import { withRequestRls } from '../../../db/request-rls'
 import { getClientConnectionPolicy } from '../../../db/client-connection'
 import { trustedPublicOrigin } from '../../../utils/public-url'
+import { servedMarketplaceUrlIfBuildable } from '../../../utils/plugin-marketplace'
 import {
   CLAUDE_PLUGIN_DEFAULT_ORIGIN,
   COPILOT_PLUGIN_BUNDLED_ORIGIN,
@@ -35,5 +36,6 @@ export default defineEventHandler(async (event): Promise<ConnectConfig> => {
     mcpUrl: origin ? `${origin}/api/v1/mcp` : null,
     claudeBundledOrigin: CLAUDE_PLUGIN_DEFAULT_ORIGIN,
     copilotBundledOrigin: COPILOT_PLUGIN_BUNDLED_ORIGIN,
+    claudeMarketplaceUrl: servedMarketplaceUrlIfBuildable(origin),
   }
 })

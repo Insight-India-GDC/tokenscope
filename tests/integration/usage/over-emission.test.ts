@@ -15,6 +15,11 @@ import { reconcileUnaccountedUsage } from '../../../server/usage/unaccounted-rec
 import { getMyUsage } from '../../../server/utils/me-queries'
 import overGet from '../../../server/api/v1/me/over-emission.get'
 import resolveHandler from '../../../server/api/v1/me/over-emission/[id]/resolve.post'
+import { getWorker } from '../../../server/workers/registry'
+import inboxListHandler from '../../../server/api/v1/me/inbox/index.get'
+import inboxForwardHandler from '../../../server/api/v1/me/inbox/[id]/route.post'
+import { dispatchInbox } from '../../../server/notifications/dispatch'
+import { notifyEscalatedOverEmission } from '../../../server/notifications/over-emission'
 
 let t: TestDb
 let regionId = ''
@@ -34,7 +39,17 @@ async function otelSession(conv: string, costUsd: string): Promise<void> {
     fidelityTier: 'tier-1', costBasis: 'estimated', tsEvent: new Date(`${DAY}T12:00:00.000Z`), sourceRunId: randomUUID(),
   })
 }
-function ev(opts: { id?: string; body?: unknown }) {
+// A record of `conv` OUTSIDE the flag's (DAY, claude-code) cell — another day or tool.
+async function otelRecordAt(conv: string, costUsd: string, ts: string, tool = 'claude-code'): Promise<void> {
+  await t.db.insert(schema.attributionRecord).values({
+    instanceId, claudeSessionId: conv, teammateId, regionId, orgUnitId,
+    tool, model: 'opus', tokenType: 'output', tokens: 1000n, costUsd,
+    fidelityTier: 'tier-1', costBasis: 'estimated', tsEvent: new Date(ts), sourceRunId: randomUUID(),
+  })
+}
+// Real Entra OIDs are v4-shaped GUIDs (CLAUDE.md rule 18).
+const REAL_ADMIN_OID = '9a1e0000-0000-4000-8000-0000000000ad'
+function ev(opts: { id?: string; body?: unknown; impersonatorOid?: string }) {
   const headers: Record<string, string> = { host: 'localhost:3450', origin: 'http://localhost:3450', 'content-type': 'application/json' }
   const e = {
     method: 'POST', path: '/x', context: { params: opts.id ? { id: opts.id } : {} },
@@ -48,7 +63,10 @@ function ev(opts: { id?: string; body?: unknown }) {
       },
     },
   }
-  injectTestSession(e as unknown as Parameters<typeof injectTestSession>[0], { teammateId, email: 'oe@x.test', displayName: 'OE', role: 'developer', regionId, orgPath: 'oe' } as Session)
+  injectTestSession(e as unknown as Parameters<typeof injectTestSession>[0], {
+    teammateId, email: 'oe@x.test', displayName: 'OE', role: 'developer', regionId, orgPath: 'oe',
+    ...(opts.impersonatorOid ? { impersonatorOid: opts.impersonatorOid, impersonatorEmail: 'admin@x.test', impersonatedAt: new Date().toISOString() } : {}),
+  } as Session)
   return e
 }
 
@@ -306,5 +324,403 @@ describe('over-emission (§A integrity)', () => {
     // accept changes NOTHING in v_complete_usage — it must not queue a rollup recompute.
     const refresh = await t.client`SELECT 1 FROM usage_rollup_refresh WHERE teammate_id = ${teammateId}::uuid`
     expect(refresh).toHaveLength(0)
+  })
+
+  /*
+   * C13/H34 — the quarantine is bound to the FLAG's (UTC day, tool) cell. It removes
+   * the whole conversation from §A, so a conversation with usage outside the cell
+   * would remove more than the flag covers.
+   */
+  it('REFUSES (422) to quarantine a conversation that has usage on another day, and writes nothing', async () => {
+    await bill('50.00'); await otelSession('sess-big', '450.00'); await otelSession('sess-small', '50.00')
+    await detectOverEmission(t.db, WINDOW)
+    // The same conversation also carries $5,000 on a day the flag says nothing about.
+    await otelRecordAt('sess-big', '5000.00', '2026-06-10T12:00:00.000Z')
+    const [flag] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM over_emission WHERE teammate_id = ${teammateId}::uuid AND day = ${DAY}::date`
+    await expect(
+      resolveHandler(ev({ id: flag!.id, body: { action: 'quarantine', conversation_id: 'sess-big' } }) as never),
+    ).rejects.toMatchObject({ statusCode: 422 })
+    // Nothing half-applied: no quarantine, flag still open, no recompute queued, no audit.
+    expect(await t.client`SELECT 1 FROM session_quarantine WHERE teammate_id = ${teammateId}::uuid`).toHaveLength(0)
+    const [still] = await t.client<{ state: string }[]>`SELECT state FROM over_emission WHERE id = ${flag!.id}::uuid`
+    expect(still!.state).toBe('open')
+    expect(await t.client`SELECT 1 FROM usage_rollup_refresh WHERE teammate_id = ${teammateId}::uuid`).toHaveLength(0)
+    expect(await t.client`SELECT 1 FROM audit_event WHERE subject_id = ${flag!.id}::uuid`).toHaveLength(0)
+  })
+
+  it('REFUSES (422) a conversation with usage under another tool on the flagged day', async () => {
+    await bill('50.00'); await otelSession('sess-big', '450.00'); await otelSession('sess-small', '50.00')
+    await detectOverEmission(t.db, WINDOW)
+    await otelRecordAt('sess-big', '300.00', `${DAY}T13:00:00.000Z`, 'copilot-cli')
+    const [flag] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM over_emission WHERE teammate_id = ${teammateId}::uuid AND tool = 'claude-code'`
+    await expect(
+      resolveHandler(ev({ id: flag!.id, body: { action: 'quarantine', conversation_id: 'sess-big' } }) as never),
+    ).rejects.toMatchObject({ statusCode: 422 })
+    expect(await t.client`SELECT 1 FROM session_quarantine WHERE teammate_id = ${teammateId}::uuid`).toHaveLength(0)
+  })
+
+  /*
+   * C2 — under persona override the session IS the persona, so actor_teammate_id
+   * names the persona. audit_event.impersonator_oid (mig 0154) records the real
+   * admin, stamped centrally by recordAuditEvent from withRequestRls's context.
+   */
+  it('an audited action under persona override records the real admin as impersonator', async () => {
+    await bill('50.00'); await otelSession('sess-x', '450.00'); await otelSession('sess-y', '50.00')
+    await detectOverEmission(t.db, WINDOW)
+    const [flag] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM over_emission WHERE teammate_id = ${teammateId}::uuid`
+    await resolveHandler(ev({ id: flag!.id, body: { action: 'escalate' }, impersonatorOid: REAL_ADMIN_OID }) as never)
+    const rows = await t.client<{ actor: string; impersonator: string | null }[]>`
+      SELECT actor_teammate_id::text AS actor, impersonator_oid AS impersonator
+      FROM audit_event WHERE subject_id = ${flag!.id}::uuid AND event_type = 'over-emission-resolved'`
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.actor).toBe(teammateId) // the persona
+    expect(rows[0]!.impersonator).toBe(REAL_ADMIN_OID) // the admin behind it
+  })
+
+  it('the same action with no override records impersonator NULL', async () => {
+    await bill('50.00'); await otelSession('sess-x', '450.00'); await otelSession('sess-y', '50.00')
+    await detectOverEmission(t.db, WINDOW)
+    const [flag] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM over_emission WHERE teammate_id = ${teammateId}::uuid`
+    await resolveHandler(ev({ id: flag!.id, body: { action: 'accept' } }) as never)
+    const rows = await t.client<{ impersonator: string | null }[]>`
+      SELECT impersonator_oid AS impersonator FROM audit_event
+      WHERE subject_id = ${flag!.id}::uuid AND event_type = 'over-emission-resolved'`
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.impersonator).toBeNull()
+  })
+
+  /*
+   * The resolve route's cell bound is a snapshot. A quarantine is conversation-wide,
+   * so records the same conversation writes LATER (another day or tool) would be
+   * hidden from §A with no check covering them. The usage-reconciliation worker
+   * sweeps for that: lift the quarantine, escalate the flag, audit, queue a rollup.
+   * Driven through the registry entry the scheduler calls (rules 10/16).
+   */
+  async function quarantineViaRoute(conv: string): Promise<string> {
+    await bill('50.00'); await otelSession(conv, '450.00'); await otelSession('sess-honest', '50.00')
+    await detectOverEmission(t.db, WINDOW)
+    const [flag] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM over_emission WHERE teammate_id = ${teammateId}::uuid`
+    await resolveHandler(ev({ id: flag!.id, body: { action: 'quarantine', conversation_id: conv } }) as never)
+    // The route queued its own recompute; clear it so the sweep's is observable.
+    await t.client`DELETE FROM usage_rollup_refresh WHERE teammate_id = ${teammateId}::uuid`
+    return flag!.id
+  }
+  async function runScheduledWorker(): Promise<void> {
+    const worker = getWorker('usage-reconciliation')
+    expect(worker).toBeDefined()
+    await worker!.run(t.db)
+  }
+
+  it('the scheduled sweep LIFTS a quarantine whose conversation later records usage on another day, and escalates the flag', async () => {
+    const flagId = await quarantineViaRoute('sess-reuse')
+    // Same conversation id, used again two days later (UTC).
+    await otelRecordAt('sess-reuse', '120.00', '2026-06-22T09:00:00.000Z')
+
+    await runScheduledWorker()
+
+    const [sq] = await t.client<{ resolved: boolean; reason: string }[]>`
+      SELECT resolved_at IS NOT NULL AS resolved, reason FROM session_quarantine
+      WHERE teammate_id = ${teammateId}::uuid AND conversation_id = 'sess-reuse'`
+    expect(sq!.reason).toBe('api-uncorroborated') // kept, not deleted
+    expect(sq!.resolved).toBe(true)
+    const [flag] = await t.client<{ state: string; conv: string | null; by: string | null }[]>`
+      SELECT state, quarantined_conversation_id AS conv, resolved_by::text AS by FROM over_emission WHERE id = ${flagId}::uuid`
+    expect(flag!.state).toBe('escalated')
+    expect(flag!.conv).toBe('sess-reuse')
+    expect(flag!.by).toBeNull() // the system made this call, not the developer
+    expect(await t.client`SELECT 1 FROM usage_rollup_refresh WHERE teammate_id = ${teammateId}::uuid`).toHaveLength(1)
+    const audits = await t.client<{ actor: string | null; system: string; payload: { conversation_id: string; previous_state: string } }[]>`
+      SELECT actor_teammate_id::text AS actor, actor_system AS system, payload FROM audit_event
+      WHERE subject_id = ${flagId}::uuid AND event_type = 'over-emission-quarantine-lifted'`
+    expect(audits).toHaveLength(1)
+    expect(audits[0]!.actor).toBeNull()
+    expect(audits[0]!.system).toBe('usage-reconciliation')
+    expect(audits[0]!.payload.conversation_id).toBe('sess-reuse')
+    expect(audits[0]!.payload.previous_state).toBe('quarantined')
+    // The developer can no longer re-quarantine from this flag.
+    await expect(
+      resolveHandler(ev({ id: flagId, body: { action: 'quarantine', conversation_id: 'sess-reuse' } }) as never),
+    ).rejects.toMatchObject({ statusCode: 409 })
+
+    // Idempotent: a second tick changes nothing and audits nothing more.
+    await t.client`DELETE FROM usage_rollup_refresh WHERE teammate_id = ${teammateId}::uuid`
+    await runScheduledWorker()
+    expect(await t.client`SELECT 1 FROM audit_event WHERE subject_id = ${flagId}::uuid AND event_type = 'over-emission-quarantine-lifted'`).toHaveLength(1)
+    expect(await t.client`SELECT 1 FROM usage_rollup_refresh WHERE teammate_id = ${teammateId}::uuid`).toHaveLength(0)
+  })
+
+  it('the sweep also catches a later record under ANOTHER TOOL on the flagged day', async () => {
+    const flagId = await quarantineViaRoute('sess-reuse')
+    await otelRecordAt('sess-reuse', '30.00', `${DAY}T23:30:00.000Z`, 'copilot-cli')
+    await runScheduledWorker()
+    const [flag] = await t.client<{ state: string }[]>`SELECT state FROM over_emission WHERE id = ${flagId}::uuid`
+    expect(flag!.state).toBe('escalated')
+    expect(await t.client`SELECT 1 FROM session_quarantine WHERE teammate_id = ${teammateId}::uuid AND resolved_at IS NULL`).toHaveLength(0)
+  })
+
+  it('the sweep leaves a quarantine alone while its conversation stays inside the flag cell', async () => {
+    const flagId = await quarantineViaRoute('sess-reuse')
+    // More of the same conversation, still on the flag's UTC day and tool.
+    await otelRecordAt('sess-reuse', '20.00', `${DAY}T23:59:00.000Z`)
+    await runScheduledWorker()
+    const [flag] = await t.client<{ state: string }[]>`SELECT state FROM over_emission WHERE id = ${flagId}::uuid`
+    expect(flag!.state).toBe('quarantined')
+    expect(await t.client`SELECT 1 FROM session_quarantine WHERE teammate_id = ${teammateId}::uuid AND resolved_at IS NULL`).toHaveLength(1)
+    expect(await t.client`SELECT 1 FROM audit_event WHERE subject_id = ${flagId}::uuid AND event_type = 'over-emission-quarantine-lifted'`).toHaveLength(0)
+    expect(await t.client`SELECT 1 FROM usage_rollup_refresh WHERE teammate_id = ${teammateId}::uuid`).toHaveLength(0)
+  })
+})
+
+/*
+ * An escalated flag leaves the developer's queue, so the usage-reconciliation
+ * worker puts it in the admins' inbox (server/notifications/over-emission.ts):
+ * the flag's region's admins and the platform admins, never a sibling region's.
+ * Driven through the registry entry the scheduler calls, after a real escalation
+ * through the route (rules 10/16).
+ */
+describe('escalated flags reach the region admins', () => {
+  let regionAdmin = ''
+  let platformAdmin = ''
+  let otherRegionAdmin = ''
+  beforeAll(async () => {
+    const [other] = await t.db.insert(schema.region).values({ code: 'oe-other', displayName: 'Other' }).returning()
+    const [otherOu] = await t.db.insert(schema.orgUnit).values({ regionId: other!.id, path: 'oe_other', code: 'oe-other-bu', displayName: 'Other', unitType: 'bu', isCostOwningUnit: true }).returning()
+    // Placed in a unit of their region: teammate.region_id follows the unit.
+    const mk = async (email: string, role: string, region: string, unit: string) => {
+      const [tm] = await t.db.insert(schema.teammate).values({ entraOid: `oid-${email}`, email, displayName: email, role, regionId: region, orgUnitId: unit } as never).returning()
+      return tm!.id
+    }
+    regionAdmin = await mk('ra@x.test', 'admin', regionId, orgUnitId)
+    platformAdmin = await mk('pa@x.test', 'platform-admin', regionId, orgUnitId)
+    otherRegionAdmin = await mk('ora@x.test', 'admin', other!.id, otherOu!.id)
+  })
+  beforeEach(async () => {
+    await t.client`DELETE FROM inbox_item WHERE category = 'over-emission-escalated'`
+  })
+  async function escalatedFlag(): Promise<string> {
+    await bill('50.00'); await otelSession('sess-x', '450.00'); await otelSession('sess-y', '50.00')
+    await detectOverEmission(t.db, WINDOW)
+    const [flag] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM over_emission WHERE teammate_id = ${teammateId}::uuid`
+    await resolveHandler(ev({ id: flag!.id, body: { action: 'escalate' } }) as never)
+    return flag!.id
+  }
+  const items = (flagId: string) => t.client<{ recipient: string; severity: string; body: Record<string, unknown>; kind: string }[]>`
+    SELECT recipient_teammate_id::text AS recipient, severity, body, related_entity_kind AS kind
+    FROM inbox_item WHERE category = 'over-emission-escalated' AND related_entity_id = ${flagId}::uuid`
+
+  it('a developer escalation raises one item per region and platform admin, with the facts', async () => {
+    const flagId = await escalatedFlag()
+    expect(await items(flagId)).toHaveLength(0) // the route itself raises nothing (developer RLS)
+    await getWorker('usage-reconciliation')!.run(t.db)
+
+    const rows = await items(flagId)
+    expect(rows.map((r) => r.recipient).sort()).toEqual([regionAdmin, platformAdmin].sort())
+    expect(rows.map((r) => r.recipient)).not.toContain(otherRegionAdmin)
+    expect(rows[0]!.kind).toBe('over-emission')
+    expect(rows[0]!.severity).toBe('attention')
+    expect(rows[0]!.body).toMatchObject({
+      overEmissionId: flagId, teammateId, day: DAY, tool: 'claude-code',
+      resolvedOverUsd: 450, currentOverUsd: 450, escalatedBy: 'teammate',
+    })
+    // A framed link: the teammate report refuses to load without ?src= (D33).
+    const href = new URL(String(rows[0]!.body.actionHref), 'http://x')
+    expect(href.pathname).toBe(`/reporting/teammate/${teammateId}`)
+    expect(Object.fromEntries(href.searchParams)).toEqual({ src: `region:${regionId}`, from: DAY, to: DAY })
+  })
+
+  it('keeps the excess the flag was escalated on beside the current one', async () => {
+    const flagId = await escalatedFlag()
+    // A provider correction, then a detection run outside this worker (the
+    // backfill runs one too) before the notice: the stored figures change.
+    await t.client`UPDATE actual_spend SET cost_usd = 500 WHERE teammate_id = ${teammateId}::uuid`
+    await detectOverEmission(t.db, WINDOW)
+    await getWorker('usage-reconciliation')!.run(t.db)
+    const body = (await items(flagId))[0]!.body
+    expect(body).toMatchObject({ resolvedOverUsd: 450, currentOverUsd: 0 })
+    expect(typeof body.computedAt).toBe('string')
+    // Not sent: detection can leave them stale beside a zeroed excess.
+    expect(body).not.toHaveProperty('otelUsd')
+    expect(body).not.toHaveProperty('apiUsd')
+  })
+
+  it('a flag with no region goes to the platform admins only, framed on the whole company', async () => {
+    const flagId = await escalatedFlag()
+    await t.client`UPDATE over_emission SET region_id = NULL WHERE id = ${flagId}::uuid`
+    await getWorker('usage-reconciliation')!.run(t.db)
+    const rows = await items(flagId)
+    expect(rows.map((r) => r.recipient)).toEqual([platformAdmin])
+    expect(new URL(String(rows[0]!.body.actionHref), 'http://x').searchParams.get('src')).toBe('across')
+  })
+
+  it('notifies once per escalation, and again after the flag is re-opened and escalated again', async () => {
+    const flagId = await escalatedFlag()
+    await getWorker('usage-reconciliation')!.run(t.db)
+    await getWorker('usage-reconciliation')!.run(t.db)
+    expect(await items(flagId)).toHaveLength(2) // two recipients, one escalation
+
+    // Re-opened by the detector, then escalated again: a new notice.
+    await t.client`UPDATE over_emission SET state = 'open' WHERE id = ${flagId}::uuid`
+    await resolveHandler(ev({ id: flagId, body: { action: 'escalate' } }) as never)
+    await getWorker('usage-reconciliation')!.run(t.db)
+    expect(await items(flagId)).toHaveLength(4)
+  })
+
+  it('the notice is remembered on the flag, not looked up in inbox history', async () => {
+    const flagId = await escalatedFlag()
+    await getWorker('usage-reconciliation')!.run(t.db)
+    const [row] = await t.client<{ notified: boolean }[]>`
+      SELECT escalation_notified_at >= resolved_at AS notified FROM over_emission WHERE id = ${flagId}::uuid`
+    expect(row!.notified).toBe(true)
+    // Items deleted (or archived) later do not make the worker notify again.
+    await t.client`DELETE FROM inbox_item WHERE category = 'over-emission-escalated'`
+    await getWorker('usage-reconciliation')!.run(t.db)
+    expect(await items(flagId)).toHaveLength(0)
+    // The partial index serves exactly the worker's predicate.
+    const [idx] = await t.client<{ def: string }[]>`
+      SELECT indexdef AS def FROM pg_indexes WHERE indexname = 'over_emission_escalation_unnotified'`
+    expect(idx!.def).toContain("WHERE ((state = 'escalated'::text) AND ((escalation_notified_at IS NULL) OR (escalation_notified_at < resolved_at)))")
+  })
+
+  /** A route event as `who` (an admin of this region). */
+  function adminEv(who: string, opts: { method: 'GET' | 'POST'; url: string; params?: Record<string, string>; body?: unknown }) {
+    const headers: Record<string, string> = { host: 'localhost:3450', origin: 'http://localhost:3450', 'content-type': 'application/json' }
+    const e = {
+      method: opts.method, path: opts.url, context: { params: opts.params ?? {} },
+      node: {
+        req: { method: opts.method, url: opts.url, body: opts.body, socket: { remoteAddress: '127.0.0.1' }, get headers() { return headers } },
+        res: {
+          _headers: {} as Record<string, string | string[]>, statusCode: 200,
+          getHeader(n: string) { return this._headers[n.toLowerCase()] }, setHeader(n: string, v: string | string[]) { this._headers[n.toLowerCase()] = v },
+          removeHeader(n: string) { this._headers[n.toLowerCase()] = '' }, appendHeader(n: string, v: string | string[]) { this._headers[n.toLowerCase()] = v },
+          get headersSent() { return false },
+        },
+      },
+    }
+    injectTestSession(e as unknown as Parameters<typeof injectTestSession>[0], {
+      teammateId: who, email: `${who}@x.test`, displayName: 'Admin', role: who === platformAdmin ? 'platform-admin' : 'admin', regionId, orgPath: 'oe',
+    } as Session)
+    return e
+  }
+  const listAs = async (who: string) =>
+    ((await inboxListHandler(adminEv(who, { method: 'GET', url: '/api/v1/me/inbox?category=over-emission-escalated' }) as never)) as {
+      items: { id: string; category: string }[]
+    }).items
+  const deny = async (who: string) =>
+    (await t.client<{ id: string }[]>`
+      INSERT INTO report_access_grant (teammate_id, permission, granted_by)
+      VALUES (${who}::uuid, 'revoke-all', ${platformAdmin}::uuid) RETURNING id::text AS id`)[0]!.id
+
+  it('the inbox list route serves the Over-emission filter the inbox page sends (was a 400)', async () => {
+    await escalatedFlag()
+    await getWorker('usage-reconciliation')!.run(t.db)
+    const items = await listAs(regionAdmin)
+    expect(items.length).toBe(1)
+    expect(items.every((i) => i.category === 'over-emission-escalated')).toBe(true)
+  })
+
+  it('a deny granted after delivery hides the notice already sent, and lifting it shows it again', async () => {
+    await escalatedFlag()
+    await getWorker('usage-reconciliation')!.run(t.db)
+    const g = await deny(regionAdmin)
+    try {
+      expect(await listAs(regionAdmin)).toHaveLength(0)
+      await t.client`UPDATE report_access_grant SET revoked_at = now(), revoked_by = ${platformAdmin}::uuid WHERE id = ${g}::uuid`
+      expect(await listAs(regionAdmin)).toHaveLength(1)
+    } finally {
+      await t.client`DELETE FROM report_access_grant WHERE id = ${g}::uuid`
+    }
+  })
+
+  it('report data is not forwarded by, or to, an admin with a deny', async () => {
+    await escalatedFlag()
+    await getWorker('usage-reconciliation')!.run(t.db)
+    const [item] = await listAs(platformAdmin)
+    const g = await deny(regionAdmin)
+    try {
+      const forward = (from: string, to: string) =>
+        inboxForwardHandler(adminEv(from, { method: 'POST', url: `/api/v1/me/inbox/${item!.id}/route`, params: { id: item!.id }, body: { recipient_teammate_id: to } }) as never)
+      await expect(forward(platformAdmin, regionAdmin)).rejects.toMatchObject({ statusCode: 403 })
+      // Nor to an admin of another region.
+      await expect(forward(platformAdmin, otherRegionAdmin)).rejects.toMatchObject({ statusCode: 403 })
+      // Nor to a teammate outside the roles these notices go to, deny or not.
+      await t.client`DELETE FROM report_access_grant WHERE id = ${g}::uuid`
+      await expect(forward(platformAdmin, teammateId)).rejects.toMatchObject({ statusCode: 403 })
+    } finally {
+      await t.client`DELETE FROM report_access_grant WHERE id = ${g}::uuid`
+    }
+  })
+
+  it('the billing notices (copilot-bill-*) skip a denied admin too', async () => {
+    const g = await deny(regionAdmin)
+    try {
+      await dispatchInbox(t.db as never, {
+        category: 'copilot-bill-unclassified',
+        subject: 'Unclassified Copilot spend',
+        body: { amountUsd: 12 },
+        regionId,
+      } as never)
+      const to = await t.client<{ r: string }[]>`
+        SELECT recipient_teammate_id::text AS r FROM inbox_item WHERE category = 'copilot-bill-unclassified'`
+      expect(to.map((x) => x.r)).not.toContain(regionAdmin)
+      expect(to.map((x) => x.r)).toContain(platformAdmin)
+    } finally {
+      await t.client`DELETE FROM report_access_grant WHERE id = ${g}::uuid`
+      await t.client`DELETE FROM inbox_item WHERE category = 'copilot-bill-unclassified'`
+    }
+  })
+
+  it('a sweep escalation is marked as the system\'s, not the developer\'s', async () => {
+    await bill('50.00'); await otelSession('sess-reuse', '450.00'); await otelSession('sess-honest', '50.00')
+    await detectOverEmission(t.db, WINDOW)
+    const [flag] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM over_emission WHERE teammate_id = ${teammateId}::uuid`
+    await resolveHandler(ev({ id: flag!.id, body: { action: 'quarantine', conversation_id: 'sess-reuse' } }) as never)
+    await otelRecordAt('sess-reuse', '120.00', '2026-06-22T09:00:00.000Z')
+    await getWorker('usage-reconciliation')!.run(t.db)
+    const rows = await items(flag!.id)
+    expect(rows).toHaveLength(2)
+    expect(rows[0]!.body.escalatedBy).toBe('system')
+  })
+
+  it('an admin with an active report-access deny is not sent the teammate\'s figures', async () => {
+    const [g] = await t.client<{ id: string }[]>`
+      INSERT INTO report_access_grant (teammate_id, permission, granted_by)
+      VALUES (${regionAdmin}::uuid, 'revoke-all', ${platformAdmin}::uuid) RETURNING id::text AS id`
+    try {
+      const flagId = await escalatedFlag()
+      await getWorker('usage-reconciliation')!.run(t.db)
+      expect((await items(flagId)).map((r) => r.recipient)).toEqual([platformAdmin])
+    } finally {
+      await t.client`DELETE FROM report_access_grant WHERE id = ${g!.id}::uuid`
+    }
+  })
+
+  it('flags with no recipient do not hold the queue for flags that have one', async () => {
+    const flagId = await escalatedFlag()
+    // Older escalations nobody can receive: in a region with no admin, and
+    // with every platform admin denied.
+    const [lonely] = await t.db.insert(schema.region).values({ code: 'oe-lonely', displayName: 'Lonely' }).returning()
+    const stale = await t.client<{ id: string }[]>`
+      INSERT INTO over_emission (teammate_id, region_id, day, tool, otel_usd, api_usd, over_usd, state, resolved_at)
+      SELECT ${teammateId}::uuid, ${lonely!.id}::uuid, ('2026-01-01'::date + g), 'claude-code', 10, 0, 10, 'escalated', now() - interval '30 days'
+      FROM generate_series(1, 3) g
+      RETURNING id::text AS id`
+    const g = await deny(platformAdmin)
+    try {
+      const out = await notifyEscalatedOverEmission(t.db as never, { limit: 1, scanLimit: 10 })
+      expect(out.notified).toBe(1)
+      expect((await items(flagId)).map((r) => r.recipient)).toEqual([regionAdmin])
+    } finally {
+      await t.client`DELETE FROM report_access_grant WHERE id = ${g}::uuid`
+      await t.client`DELETE FROM over_emission WHERE id IN ${t.client(stale.map((s) => s.id))}`
+    }
+  })
+
+  it('accepting or quarantining raises nothing', async () => {
+    await bill('50.00'); await otelSession('sess-x', '450.00'); await otelSession('sess-y', '50.00')
+    await detectOverEmission(t.db, WINDOW)
+    const [flag] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM over_emission WHERE teammate_id = ${teammateId}::uuid`
+    await resolveHandler(ev({ id: flag!.id, body: { action: 'accept' } }) as never)
+    await getWorker('usage-reconciliation')!.run(t.db)
+    expect(await items(flag!.id)).toHaveLength(0)
   })
 })

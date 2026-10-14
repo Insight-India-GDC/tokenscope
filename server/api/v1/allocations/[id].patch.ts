@@ -11,6 +11,7 @@
  *   - Save writes both rows atomically; "Saved · audit logged"
  *     flash on the client
  */
+import { requestClock } from '../../../utils/request-clock'
 import { defineEventHandler, createError, readValidatedBody, getRequestIP, getHeader } from 'h3'
 import { sql, eq } from 'drizzle-orm'
 import { z } from 'zod'
@@ -19,7 +20,13 @@ import { allocationScopePredicate } from '../../../auth/allocation-scope'
 import { assertSameOrigin } from '../../../auth/csrf'
 import { withRequestRls } from '../../../db/request-rls'
 import { requireUuidParam } from '../../../utils/require-uuid-param'
-import { BudgetUsdSchema, EffectiveRangeSchema } from '../../../utils/allocation-validation'
+import {
+  BudgetUsdSchema,
+  EffectiveRangeSchema,
+  MAX_LIVE_TOPUPS_PER_PROJECT,
+  TopUpBudgetUsdSchema,
+} from '../../../utils/allocation-validation'
+import { advisoryXactLock } from '../../../db/advisory-lock'
 import { translatePgConstraintError } from '../../../utils/pg-constraint-error'
 import { allocation } from '../../../../drizzle/schema'
 import { recordAuditEvent } from '../../../db/audit'
@@ -30,6 +37,9 @@ const PatchBody = z.object({
 })
 
 export default defineEventHandler(async (event) => {
+  // The SERVER owns `now`, once per request (CLAUDE.md §The clock); SQL's own
+  // now() is a second clock that a pinned request would not move.
+  const at = requestClock(event).now
   await requireRole(event, 'manager', 'admin')
   assertSameOrigin(event)
   const session = await requireAuth(event)
@@ -62,6 +72,30 @@ export default defineEventHandler(async (event) => {
       // Out-of-scope or non-existent — same 404, and we never reach the
       // UPDATE below, so a manager cannot mutate another org's allocation.
       throw createError({ statusCode: 404, statusMessage: 'Allocation not found' })
+    }
+
+    // A top-up keeps its own limits on edit, not only on create (H32): the
+    // per-top-up ceiling, and the per-project live cap when this edit makes it
+    // live, counted under the same project-keyed lock topups.post.ts takes.
+    if (beforeRow.allocation_kind === 'top-up') {
+      const amount = TopUpBudgetUsdSchema.safeParse(body.budget_usd)
+      if (!amount.success) {
+        throw createError({ statusCode: 400, statusMessage: amount.error.issues[0]?.message ?? 'Invalid top-up amount' })
+      }
+      await tx.execute(advisoryXactLock('allocationTopup', beforeRow.scope_id))
+      const [cap] = await tx.execute<{ becomes_live: boolean; others_live: number }>(sql`
+        SELECT upper(${body.effective}::tstzrange) > ${at}::timestamptz AS becomes_live,
+               (SELECT COUNT(*)::int FROM allocation
+                 WHERE scope_type = 'project' AND scope_id = ${beforeRow.scope_id}::uuid
+                   AND allocation_kind = 'top-up' AND upper(effective) > ${at}::timestamptz
+                   AND id <> ${id}::uuid) AS others_live
+      `)
+      if (cap?.becomes_live && (cap.others_live ?? 0) >= MAX_LIVE_TOPUPS_PER_PROJECT) {
+        throw createError({
+          statusCode: 409,
+          statusMessage: `This project already has ${MAX_LIVE_TOPUPS_PER_PROJECT} active top-ups, the most allowed. Let one end before extending this one.`,
+        })
+      }
     }
 
     // 1) Record audit_event first so we have its id for the FK on the

@@ -67,14 +67,15 @@ the difference between a tool people trust and a tool people game.
   single OAuth-2.1 MCP server. **Zero-touch by design** — "emit now, attribute
   later"; a developer is onboarded once and never fills a form.
 - **Attribution hierarchy.** `teammate → instance → session → project`. Every
-  token is priced by a rate card into an `attribution_record`, joined on an
-  unspoofable server-minted instance identity.
+  token lands in an `attribution_record`, priced by a rate card or by the
+  provider's own figure, and joined on a server-minted instance identity.
 - **Reconciliation.** A batch truth-poller (the provider's usage API) runs
   alongside the streaming OTel signal, so usage completeness holds even for
-  people who never enrolled — for the lanes that are metered today. Some
-  surfaces are not yet covered; `docs/wiki/Reporting.md` §6 lists them. Reporting
-  the coverage denominator alongside those totals, rather than leaving a gap
-  silent, is designed and not yet built.
+  people who never enrolled — for the lanes that are metered today. Where a
+  GitHub org is not connected, enterprise totals carry a coverage denominator
+  ("covers 12 of 15 orgs") rather than reading as complete; when the org census
+  is unavailable, capped or stale, they show coverage unknown or stale instead;
+  `docs/wiki/Reporting.md` §6a describes it.
 - **Project budgets with financial gravity.** A base allowance for exploration
   vs a real project budget for budgeted work, with **volume** and **velocity**
   limits — budgets that teach, not gates that block.

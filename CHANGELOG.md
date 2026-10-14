@@ -7,8 +7,57 @@ the publish tooling stamps the heading and a pre-PR gate reminds you to add
 the line — see the internal `tools/publish/README.md`, which is not part of
 the public mirror.)
 
-## v1.0.2 — 2026-10-07 (snapshot 21ce1514)
+## v1.0.2 — 2026-10-14 (snapshot d12dab88)
 
+- Moving someone to another Business Unit, alone or in a bulk placement, now
+  moves their devices too, so new spend lands on the new unit from the next
+  attribution run, as a region move already did. A device set up or confirmed
+  while a move is in progress now lands on the new placement.
+- Escalated over-emission flags now reach the inbox of the admins of the flag's region, with the day's figures and a link to the teammate's usage.
+- An admin whose report access is revoked is no longer sent inbox notices that
+  carry report data (over-emission escalations and Copilot bill notices),
+  cannot see ones already delivered, and cannot forward or be forwarded one.
+- The wiki has a new page, Attributed and Billed, on the trust model: which
+  figures are money and which are indicative, what a developer can and cannot
+  change, the checks and who sees them, and the known limitations. Security
+  Overview and Authentication & Security no longer say reconciliation deletes
+  spend that does not match the provider; it flags it for review.
+- The wiki has a Design Decisions page summarising each architecture decision
+  as it stands, so the decisions the wiki refers to can be read publicly. The
+  wiki now describes the system as it is, and several statements that no longer
+  matched the code are corrected, notably that row-level security policies
+  exist but do not run (the app enforces authorisation itself).
+- Security fixes: provider-governance diagnostics (Anthropic org health, GitHub
+  org discovery, backfill, cost drift) are now platform-admin only; self-claimed
+  identities are capped at 10 per person; budget top-ups have an explicit role
+  check, a 50-live-top-up cap per project and a $1,000,000 ceiling; resolving an
+  over-emission flag can only quarantine usage inside the flagged day and tool;
+  admins acting through persona override are recorded on audit rows; and seven
+  vulnerable runtime dependencies are patched.
+- Connecting Claude Code no longer needs Git, a GitHub account or a server-URL
+  step: each TokenScope deployment serves its own plugin marketplace, already
+  pointed at itself (Claude Code 2.1.224+). In a terminal, one
+  `/plugin marketplace add https://<your-tokenscope>/api/v1/plugin/marketplace.json`
+  is enough. Claude Desktop gets its own Connect guide: its marketplace form
+  takes only Git hosts, so you paste a short prompt into a Code session that
+  adds the marketplace to your settings, and signing in with `/mcp` works in
+  the app (verified on macOS). In the app, setup also puts this computer in
+  your login environment, because the app ignores the tracking labels in the
+  settings file; without that, Desktop usage arrived but could not be linked to
+  you. The admin Client connection page also shows
+  the same keys for managed settings; that route is not yet tested.
+  Installing from Git is still there as the CLI troubleshooting fallback.
+- Claude Desktop with its own settings folder (`CLAUDE_CONFIG_DIR`, as some
+  Claude app installs have) is now set up as itself: the Connect guide's paste,
+  `/tokenscope:setup` and `/tokenscope:status` use that folder instead of
+  `~/.claude`, so setup no longer writes the terminal CLI's settings and status
+  no longer reports the CLI's sign-in as the app's. Claude Desktop on Linux is
+  now linked to you after setup and one log out and back in. The Desktop guide
+  also says to leave Auto mode before the paste (Auto mode refuses edits to
+  Claude's own settings), and the marketplace entry keeps plugin updates on.
+- A repo under your home folder with no `.tokenscope` of its own no longer
+  reads TokenScope's own `~/.tokenscope` folder as its project tag, and on
+  Windows the session-start hook's fallback search path works again.
 - Claude Code and the Claude Desktop Code tab now report usage from Windows,
   and Windows users can set up without installing Node (emit-only, through
   Windows PowerShell); Copilot CLI and the Copilot App work on Windows too.

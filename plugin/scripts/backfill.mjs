@@ -65,6 +65,7 @@ import {
 import { assertSafeEndpoint, unsafeEndpointError } from './endpoint-guard.mjs'
 import { resolveRepoRoot } from './tag-repo.mjs'
 import { emitHelperSpawn, helperScriptName } from './emit-helper-spawn.mjs'
+import { claudeConfigDir } from './claude-config-dir.mjs'
 
 // Re-export so existing callers (tests, file-forwarder) can import from here.
 export { encodeExportLogsServiceRequest } from './otlp-logs.mjs'
@@ -461,7 +462,7 @@ async function run(opts, env, now = new Date()) {
   // ~/.claude/projects; sweeping them all re-emits other containers' sessions
   // under this instance (untagged). Explicit --projects-dir or --all-projects
   // (loud) to widen; never silently sweep the host.
-  const projectsRoot = join(homedir(), '.claude', 'projects')
+  const projectsRoot = join(claudeConfigDir({ home: homedir() }), 'projects')
   let projectsDir, scope
   if (opts.projectsDir) {
     projectsDir = opts.projectsDir

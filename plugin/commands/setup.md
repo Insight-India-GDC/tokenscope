@@ -127,7 +127,10 @@ per-instance **redeem URL**, and a short local-redeem instruction.
 ### 4. Redeem locally (process → process, NOT through this chat)
 
 Run **your lane's** local redeem helper, passing **only the handoff code**
-`provision_emit` returned — do not construct any other invocation. `--redeem-url` no longer
+`provision_emit` returned — do not construct any other invocation. Ignore the
+`redeem_command` in `provision_emit`'s answer: it is for clients without this
+plugin and looks under `~/.claude`, which is the wrong folder for an install
+with its own config folder (`CLAUDE_CONFIG_DIR`, e.g. the Claude app's). `--redeem-url` no longer
 exists, and the helper checks `--api-base` against the origins the device already
 knows (loopback, the packaged deployment, the server URL configured for this
 plugin, the MCP server registered in your own client config), so a relayed value
@@ -153,7 +156,9 @@ and does not work without Node. It runs the emit helper from a **snapshot** it
 copies into the TokenScope state folder, so a plugin update cannot strand it, but
 an update does not refresh it either: re-running setup after an update does.
 
-It redeems the handoff code and writes this device's Claude Code settings itself.
+It redeems the handoff code and writes this device's Claude Code settings itself,
+in this install's config folder (`CLAUDE_CONFIG_DIR` when it is set to a folder
+of the user's, else `~/.claude`); its last line names the file.
 **Do not** ask for, print, or store the durable credential in this conversation,
 and do not read the settings back to check it — the helper's own output already
 says whether it succeeded.
@@ -168,6 +173,8 @@ user, in these words or close to them (one short line each):
   lines on what needs Node.js and why to run setup again after each plugin update.
 - **Restart Claude Code** to start tracking. "In a repo with a `.tokenscope`
   file, restart once more if you see a *superseded device enrolment* warning."
+  In the Claude app, repeat the helper's own `Next:` line instead: quit the app
+  completely, or on Linux log out and back in.
 - **Check with `/tokenscope:status`.** "Green means setup worked. Your usage
   shows in TokenScope about 5 minutes after you use Claude Code."
 - **Next:** "To bill a repo to a project, run the `project` prompt in that repo."

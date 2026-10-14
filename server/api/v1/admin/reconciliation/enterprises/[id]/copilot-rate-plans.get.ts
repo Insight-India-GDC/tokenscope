@@ -4,7 +4,7 @@
  * (ADR-0011 D9, design §5.3). Newest-starting first, including retired rows
  * (a complete audit trail, not just the live set).
  *
- * RBAC: requireRole(admin).
+ * RBAC: requireRole(platform-admin).
  */
 import { defineEventHandler } from 'h3'
 import { requireRole } from '../../../../../../auth/rbac'
@@ -13,7 +13,8 @@ import { requireUuidParam } from '../../../../../../utils/require-uuid-param'
 import { listCopilotRatePlans } from '../../../../../../governance/copilot-rate-plan'
 
 export default defineEventHandler(async (event) => {
-  await requireRole(event, 'admin')
+  // Provider configuration is estate config (owner ruling 2026-10-08): a rate plan hangs off a region-less provider_enterprise, so platform-admin is the only clamp.
+  await requireRole(event, 'platform-admin')
   const id = requireUuidParam(event, 'id', 'provider-enterprise id')
   return withRequestRls(event, async (tx) => {
     const plans = await listCopilotRatePlans(tx, id)

@@ -14,8 +14,8 @@
  * reads available:false / state:'coverage-unknown' regardless of what was last
  * observed) — this route is a thin pass-through of that guarantee, never re-derives it.
  *
- * RBAC: requireRole(admin) — same guard as the enterprises/health
- * readers. Database access still uses request-scoped RLS context consistently.
+ * RBAC: requireRole(platform-admin) — same guard as the github health / unresolved
+ * probes. Database access still uses request-scoped RLS context consistently.
  */
 import { defineEventHandler, createError } from 'h3'
 import { sql } from 'drizzle-orm'
@@ -32,7 +32,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const Query = z.object({ enterpriseId: z.string().regex(UUID_RE).optional() })
 
 export default defineEventHandler(async (event) => {
-  await requireRole(event, 'admin')
+  // Provider configuration is estate config (owner ruling 2026-10-08): coverage is per region-less provider_enterprise, so platform-admin is the only clamp.
+  await requireRole(event, 'platform-admin')
   const query = await getValidated(event, Query)
 
   return withRequestRls(event, async (db) => {

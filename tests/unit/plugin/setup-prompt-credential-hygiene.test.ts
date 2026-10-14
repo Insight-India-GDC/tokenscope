@@ -29,8 +29,9 @@
  *   5. copilot-plugin/skills/tokenscope-setup/SKILL.md (Copilot lane)
  */
 import { describe, it, expect } from 'vitest'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { PUBLIC_SNAPSHOT } from '../helpers/public-snapshot'
 import { SKILL_SETUP } from '../../../server/utils/skill-prompts.gen'
 
 // Vitest runs with cwd at the repo root (see command-frontmatter.test.ts).
@@ -75,14 +76,11 @@ function provisionEmitDeclaration(): string {
  */
 const SKILL_SOURCE_MD = 'docs/skills/tokenscope/tokenscope-setup.md'
 /*
- * Keyed on the DIRECTORY, not on the markdown file — deliberately, and the same
- * condition check-skill-prompts-sync.mjs uses. Keying on the file would make a
- * DELETED prompt look identical to the public mirror's dropped directory, so an
- * internal deletion would silently drop this surface instead of failing. With the
- * directory as the condition, a tree that has it but is missing the file lets
- * `read()` throw, loudly, which is what should happen.
+ * Keyed on the public-snapshot marker, not on the directory or the file: either
+ * would make a DELETED prompt look like the mirror, so an internal deletion would
+ * silently drop this surface instead of failing. Here `read()` throws, loudly.
  */
-const HAS_SKILL_SOURCE = existsSync(join(root, 'docs/skills/tokenscope'))
+const HAS_SKILL_SOURCE = !PUBLIC_SNAPSHOT
 
 const SURFACES: Array<{ label: string; text: () => string }> = [
   { label: 'plugin/commands/setup.md (Claude client copy)', text: () => read('plugin/commands/setup.md') },

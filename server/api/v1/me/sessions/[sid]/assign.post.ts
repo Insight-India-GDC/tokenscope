@@ -22,6 +22,7 @@
  * also covers itemised unallocated rows. Membership gate (tag proposes, membership
  * disposes) applies only when SETTING a non-null project.
  */
+import { ACTIVITY_LABEL_MAX, displayText } from '../../../../../../shared/schemas/display-text'
 import { createError, defineEventHandler, readValidatedBody, getRouterParam } from 'h3'
 import { z } from 'zod'
 import { requireAuth } from '../../../../../auth/rbac'
@@ -34,7 +35,7 @@ const Body = z
     // uuid = set/re-point; null = move off budget; omitted = preserve.
     project_id: z.string().uuid().nullable().optional(),
     // non-empty string = tag; null = clear; omitted = preserve.
-    activity: z.union([z.string().trim().min(1).max(64), z.null()]).optional(),
+    activity: z.union([displayText(ACTIVITY_LABEL_MAX, { trim: true }), z.null()]).optional(),
   })
   .refine((b) => b.project_id !== undefined || b.activity !== undefined, {
     message: 'Provide project_id and/or activity (or null to clear).',

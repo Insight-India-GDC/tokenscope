@@ -21,7 +21,19 @@
  */
 import net from 'node:net'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
+import { sql } from 'drizzle-orm'
 import { auditEvent } from '../../drizzle/schema'
+
+/*
+ * THE REAL ACTOR UNDER PERSONA OVERRIDE (mig 0154). An override rewrites the
+ * request session to the persona, so actor_teammate_id names the persona. The
+ * admin behind it reaches this helper through the transaction-local GUC
+ * `app.impersonator_oid`, which withRequestRls → applyRlsContext sets from
+ * Session.impersonatorOid — one place, so no caller can forget to pass it and
+ * no caller can claim one. A handle that never set it (machine lane, worker,
+ * a test's bare db) reads NULL/'' and writes NULL.
+ */
+const IMPERSONATOR_FROM_TX = sql`NULLIF(current_setting('app.impersonator_oid', true), '')`
 
 /*
  * Every audit event names its actor (SYS-3, robustness-review-2026-06-09):
@@ -92,6 +104,7 @@ export async function recordAuditEvent(
       payload: input.payload,
       ipAddress: normalizeInet(input.ipAddress),
       userAgent: input.userAgent ?? null,
+      impersonatorOid: IMPERSONATOR_FROM_TX,
     })
     .returning({ id: auditEvent.id })
 

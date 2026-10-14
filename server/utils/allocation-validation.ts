@@ -26,6 +26,23 @@ export const BudgetUsdSchema = z
     'budget_usd must be a positive USD amount with at most 2 decimals and at most 12 integer digits',
   )
 
+/**
+ * Ceiling on ONE top-up (H32). A top-up is an in-period increment to a
+ * project pool, not a pool itself: baselines keep the column-wide bound above,
+ * but a single top-up beyond $1M is a typo or abuse, not a budget decision.
+ * Validated as a decimal string so no float rounding touches the comparison.
+ */
+export const MAX_TOPUP_USD = 1_000_000
+
+export const TopUpBudgetUsdSchema = BudgetUsdSchema.refine(
+  (v) => {
+    const [int = '', frac = ''] = v.split('.')
+    const n = Number(int)
+    return n < MAX_TOPUP_USD || (n === MAX_TOPUP_USD && /^0*$/.test(frac))
+  },
+  { message: `budget_usd for a top-up must be at most ${MAX_TOPUP_USD} USD` },
+)
+
 const RANGE_RE = /^\[([^,]+),([^)]+)\)$/
 
 /** Parse one tstzrange bound (optionally double-quoted, as PG renders it).
@@ -90,3 +107,11 @@ export function parseTstzrangeText(text: string | null | undefined): {
   const to = parseBound(m[2]!)
   return { from: from ? from.toISOString() : null, to: to ? to.toISOString() : null }
 }
+
+/**
+ * Most top-ups a project pool may carry that are still live (effective range
+ * not yet ended). Top-ups stack and every one is a row summed on each budget
+ * read, so an unbounded count is unbounded growth from one caller (H32);
+ * expired top-ups do not count, so a long-lived project is never locked out.
+ */
+export const MAX_LIVE_TOPUPS_PER_PROJECT = 50

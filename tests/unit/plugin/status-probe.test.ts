@@ -11,6 +11,20 @@
  */
 import { describe, it, expect } from 'vitest'
 import { interpretEmissionProbe, isMcpAuthed } from '../../../plugin/scripts/status.mjs'
+import {
+  KEYCHAIN_SERVICE,
+  MCP_AUTH_CACHE,
+  MCP_AUTH_TTL_MS,
+  mcpAuthRefreshDue,
+  mcpAuthRefreshSpawn,
+  probeMcpAuth,
+  readClaudeCredentials,
+  readMcpAuthCache,
+  writeMcpAuthCache,
+} from '../../../plugin/scripts/claude-credentials.mjs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { safeProcessEnv, REPO_UNTRUSTED_ENV_KEYS } from '../../../plugin/scripts/plugin-runtime.mjs'
 
 describe('interpretEmissionProbe', () => {
@@ -156,5 +170,82 @@ describe('safeProcessEnv — S1 fix 2: the hostile-repo fixture, mirrored from s
   it('an ordinary, non-credential key survives the spread untouched', () => {
     const safe = safeProcessEnv(hostileProcessEnv)
     expect(safe.PATH).toBe('/usr/bin')
+  })
+})
+
+describe('readClaudeCredentials — where Claude Code keeps the store', () => {
+  const signedIn = { mcpOAuth: { 'plugin:tokenscope:tokenscope|cede10a471a2a954': {} } }
+  const fail = () => {
+    throw new Error('must not be read')
+  }
+
+  it('macOS reads the Keychain item first: a Mac has no ~/.claude/.credentials.json', () => {
+    expect(readClaudeCredentials({ platform: 'darwin', readKeychain: () => signedIn, readFile: fail })).toBe(signedIn)
+    expect(probeMcpAuth({ platform: 'darwin', readKeychain: () => signedIn, readFile: () => null })).toBe(true)
+  })
+
+  it('macOS never falls back to a file under HOME (a repository can move HOME)', () => {
+    const fail = () => {
+      throw new Error('must not be read')
+    }
+    expect(readClaudeCredentials({ platform: 'darwin', readKeychain: () => null, readFile: fail })).toBeNull()
+    expect(readClaudeCredentials({ platform: 'darwin', readKeychain: () => 'not an object', readFile: fail })).toBeNull()
+  })
+
+  it.each(['linux', 'win32'])('%s reads only the file, never the Keychain', (platform) => {
+    expect(readClaudeCredentials({ platform, readKeychain: fail, readFile: () => signedIn })).toBe(signedIn)
+  })
+
+  it('a reader that throws is not signed in, never an error', () => {
+    expect(probeMcpAuth({ platform: 'darwin', readKeychain: () => null, readFile: fail })).toBe(false)
+  })
+
+  it('asks the Keychain for the service Claude Code writes', () => {
+    expect(KEYCHAIN_SERVICE).toBe('Claude Code-credentials')
+  })
+})
+
+describe('the status line’s cached sign-in answer (macOS)', () => {
+  const now = Date.parse('2026-10-08T10:00:00Z')
+  const ago = (ms: number) => new Date(now - ms).toISOString()
+
+  it('a fresh cache is used as is: no Keychain process on this render', () => {
+    expect(mcpAuthRefreshDue({ authed: true, checkedAt: ago(10_000) }, null, now)).toBe(false)
+  })
+
+  it('a future-dated cache or stamp is not fresh (clock rollback, a corrupt file)', () => {
+    const future = new Date(now + 3_600_000).toISOString()
+    expect(mcpAuthRefreshDue({ authed: true, checkedAt: future }, null, now)).toBe(true)
+    expect(mcpAuthRefreshDue(null, future, now)).toBe(true)
+  })
+
+  it('the background refresh starts with an EMPTY environment: no NODE_OPTIONS reaches the Keychain reader', () => {
+    const spec = mcpAuthRefreshSpawn('/p/claude-credentials.mjs')
+    expect(spec.options.env).toEqual({})
+    expect(spec.args).toEqual(['/p/claude-credentials.mjs', '--refresh-cache'])
+  })
+
+  it('a stale or missing cache refreshes, unless a refresh started within the TTL', () => {
+    expect(mcpAuthRefreshDue({ authed: true, checkedAt: ago(MCP_AUTH_TTL_MS + 1) }, null, now)).toBe(true)
+    expect(mcpAuthRefreshDue(null, null, now)).toBe(true)
+    expect(mcpAuthRefreshDue(null, ago(5_000), now)).toBe(false)
+    expect(mcpAuthRefreshDue(null, ago(MCP_AUTH_TTL_MS + 1), now)).toBe(true)
+  })
+
+  it('caches only a yes/no and a time, and rejects anything else', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ts-mcp-auth-'))
+    try {
+      expect(readMcpAuthCache(dir)).toBeNull()
+      writeMcpAuthCache(true, dir, new Date(now))
+      expect(JSON.parse(readFileSync(join(dir, MCP_AUTH_CACHE), 'utf8'))).toEqual({
+        authed: true,
+        checkedAt: new Date(now).toISOString(),
+      })
+      expect(readMcpAuthCache(dir)).toEqual({ authed: true, checkedAt: new Date(now).toISOString() })
+      writeFileSync(join(dir, MCP_AUTH_CACHE), JSON.stringify({ authed: 'yes', checkedAt: 1 }))
+      expect(readMcpAuthCache(dir)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

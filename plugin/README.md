@@ -5,32 +5,35 @@ project.
 
 ## Quick start
 
-About 5 minutes, once per computer. Do every step in Claude Code.
+About 5 minutes, once per computer. Do every step in Claude Code in a
+terminal. **Using the Claude app?** Follow [Claude Desktop](#claude-desktop)
+instead: the app can't add this marketplace with `/plugin`.
 Windows: nothing else to install. macOS / Linux: needs Node.js.
 
-1. **Install the plugin.** Run these one at a time:
+1. **Install the plugin.** Run these one at a time, with your TokenScope
+   address in place of `<your-tokenscope>`:
 
    ```
-   /plugin marketplace add <owner>/<repo>
+   /plugin marketplace add https://<your-tokenscope>/api/v1/plugin/marketplace.json
    /plugin install tokenscope@tokenscope
    ```
 
-   When asked, choose **Install for you**.
-2. **Point the plugin at your server.** Skip this unless your TokenScope Connect
-   dialog shows it. Run `/plugin`, open **tokenscope** → **Configure options**,
-   and paste the server URL.
-3. **Sign in.** Run `/mcp`, choose **tokenscope**, and approve in your browser.
-4. **Turn on tracking.** Run `/tokenscope:setup`.
-5. **Restart Claude Code.**
-6. **Check it works.** Run `/tokenscope:status`. Green means you're done.
+   When asked, choose **Install for you**. If it asks for a server URL, keep
+   the one it shows.
+2. **Sign in.** Run `/mcp`, choose **tokenscope**, and approve in your browser.
+3. **Turn on tracking.** Run `/tokenscope:setup`.
+4. **Restart Claude Code.**
+5. **Check it works.** Run `/tokenscope:status`. Green means you're done.
 
 Then, in each repo you bill to a project, run the `project` prompt once and
 commit the `.tokenscope` file it writes.
 
-Use the marketplace your TokenScope Connect dialog names for `<owner>/<repo>`.
-Stuck? See [Troubleshooting](#troubleshooting). How each step works:
-[Install](#install), [Point the plugins at your deployment](#point-the-plugins-at-your-deployment)
-and [How setup works](#how-setup-works).
+Your TokenScope Connect dialog shows the exact commands. The plugin your
+deployment serves already points at it, so there is no server URL to set, and
+you don't need Git. It needs Claude Code 2.1.224 or later. Can't use that
+address? [Install from Git](#install-from-git-fallback) instead. Stuck? See
+[Troubleshooting](#troubleshooting). How setup works:
+[How setup works](#how-setup-works).
 
 ## What the plugin gives you
 
@@ -69,30 +72,115 @@ committed `.tokenscope` and the device is connected (see *Zero-touch tagging*).
 
 ## Install
 
-The marketplace manifest lives at the **repo root** (`.claude-plugin/marketplace.json`),
-so the GitHub shorthand resolves it. Add the marketplace your TokenScope Connect
-dialog names, then set your deployment's URL in the plugin (see
-[Point the plugins at your deployment](#point-the-plugins-at-your-deployment)).
+Every TokenScope deployment serves its own Claude Code marketplace at
+`/api/v1/plugin/marketplace.json`. The plugin in it is a zip of this `plugin/`
+directory, with that deployment's address written in. Adding it needs no Git and
+no GitHub account. In a terminal, run the two commands **one at a time**, because
+Claude Code treats a multi-line paste as one command:
 
-The simplest path — **works inside any Claude Code session, no `claude` CLI on
-PATH required** — is the slash form. Run the two commands **individually** (paste
-one, run it, then the next — Claude Code treats a multi-line paste as a single
-command):
+```
+/plugin marketplace add https://<your-tokenscope>/api/v1/plugin/marketplace.json
+/plugin install tokenscope@tokenscope
+```
+
+When prompted for an install scope, choose **"Install for you (user scope)"**.
+The plugin is a personal tool that emits across all your repos. Don't use
+*project* scope (commits plugin config into the repo + force-installs it on
+collaborators) or *local* scope (this repo only). The committed `.tokenscope`
+file is what travels per-repo, not the plugin.
+
+This needs Claude Code 2.1.224 or later (`archive` plugin sources). The
+deployment must know its own public HTTPS address (`appPublicOrigin`). Without
+it, the marketplace answers 503 and the Connect dialog shows the Git steps.
+
+An organisation can try adding the marketplace for every device in managed settings
+(not yet tested with TokenScope; see the note after the block):
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "tokenscope": { "source": { "source": "url", "url": "https://<your-tokenscope>/api/v1/plugin/marketplace.json" } }
+  },
+  "enabledPlugins": { "tokenscope@tokenscope": true }
+}
+```
+
+Put it in `managed-settings.json`: `/Library/Application Support/ClaudeCode/` on
+macOS, `C:\Program Files\ClaudeCode\` on Windows, `/etc/claude-code/` on Linux.
+Claude Code documents that it reads these keys from managed settings. This route
+is not yet tested with TokenScope, and Claude Code issue [#16870](https://github.com/anthropics/claude-code/issues/16870) reports managed `extraKnownMarketplaces`
+being ignored, including by the Windows desktop app; try one device first. The admin
+**Client connection** page shows the block with your deployment's address filled in.
+
+### Claude Desktop
+
+Don't run `/plugin marketplace add` in the Claude app. Its Code tab hands it to the
+app's own **Add marketplace** form, which accepts only Git hosts and answers
+"This host isn't supported" for a deployment's URL. The app does read the same
+settings files as the CLI, so add the marketplace there instead:
+
+1. In a **local** Code session, paste the prompt from your Connect dialog
+   (**Connect Claude Desktop**). It asks Claude to merge two keys into
+   `~/.claude/settings.json` (on Windows, `%USERPROFILE%\.claude\settings.json`):
+
+   ```json
+   {
+     "extraKnownMarketplaces": {
+       "tokenscope": { "source": { "source": "url", "url": "https://<your-tokenscope>/api/v1/plugin/marketplace.json" } }
+     },
+     "enabledPlugins": { "tokenscope@tokenscope": true }
+   }
+   ```
+
+   Editing the file yourself works too. Keep the keys already in it.
+2. Quit the app completely and open it again. The plugin installs when the next
+   session starts. It **won't** appear under **+ → Plugins**, which lists
+   marketplaces added in the app, not ones added in settings; type `/tokenscope:`
+   to see its commands.
+3. Run `/mcp`, choose **tokenscope**, select **Connect**, and approve in your
+   browser.
+4. Run `/tokenscope:setup`, quit and reopen the app, then run `/tokenscope:status`.
+   In the app, setup also puts this device's labels
+   (`OTEL_RESOURCE_ATTRIBUTES=tokenscope.instance_id=…,tool=claude-code`) in your
+   login environment: `launchctl setenv` plus a LaunchAgent
+   (`~/Library/LaunchAgents/com.tokenscope.desktop-otel-env.plist`) on macOS, a
+   user environment variable on Windows. The app launches Claude Code with its own
+   `OTEL_RESOURCE_ATTRIBUTES` and ignores the settings file's
+   ([anthropics/claude-code#67657](https://github.com/anthropics/claude-code/issues/67657)),
+   but it merges the login value into its own. Without this, Desktop usage arrives
+   and cannot be linked to you. The CLI is unaffected: setup run from a terminal
+   does not do this, and the CLI keeps reading its settings file. `/tokenscope:status`
+   in the app reports `desktop_env` when the login value is missing or names
+   another device. To undo on macOS: `launchctl unsetenv OTEL_RESOURCE_ATTRIBUTES`
+   and delete the LaunchAgent; on Windows, remove the user variable.
+
+Cloud and WSL sessions in the app don't load plugins. If you added a `tokenscope`
+marketplace from Git before, Claude Code keeps that one and refuses a second
+source under the same name: remove it first. Verified on macOS (app with bundled
+Claude Code 2.1.293); not yet on Windows.
+
+### Install from Git (fallback)
+
+Use this when the URL above doesn't work for you, or to install a fork. It needs
+Git on your PATH and read access to the repository your Connect dialog names. The
+marketplace manifest is at the **repo root** (`.claude-plugin/marketplace.json`),
+so the GitHub shorthand resolves it:
 
 ```
 /plugin marketplace add <owner>/<repo>
 /plugin install tokenscope@tokenscope
 ```
 
-When prompted for an install scope, choose **"Install for you (user scope)"** —
-the plugin is a personal tool that emits across all your repos. Don't use
-*project* scope (commits plugin config into the repo + force-installs it on
-collaborators) or *local* scope (this repo only). The committed `.tokenscope`
-file is what travels per-repo, not the plugin.
+A plugin installed from Git does not know your deployment's address. Set it
+next ([Point the plugins at your deployment](#point-the-plugins-at-your-deployment)).
 
-**Lighter alternative (needs the standalone `claude` CLI on PATH).** The terminal
-form supports `--sparse`, a git sparse-checkout of just `.claude-plugin` + `plugin`
-so the whole repository isn't checked out:
+Both marketplaces are named `tokenscope`, and Claude Code keeps one per name.
+To switch, run `/plugin marketplace remove tokenscope` first. That also removes
+the plugin and its saved options.
+
+**Lighter Git alternative (needs the standalone `claude` CLI on PATH).** The
+terminal form supports `--sparse`, a git sparse-checkout of just `.claude-plugin`
++ `plugin`, so the whole repository isn't checked out:
 
 ```
 claude plugin marketplace add <owner>/<repo> --sparse .claude-plugin plugin
@@ -103,7 +191,11 @@ From a local checkout you can instead `claude plugin marketplace add .`.
 
 ## Point the plugins at your deployment
 
-**Claude Code: set the plugin's server URL.** No fork is needed. The plugin
+**Claude Code from your deployment's own marketplace: nothing to do.** The
+served plugin already carries the address ([Install](#install)). The rest of
+this section is for a plugin installed from Git.
+
+**Claude Code from Git: set the plugin's server URL.** No fork is needed. The plugin
 declares one option, `server_url`. Copy the server URL from your TokenScope
 deployment's Connect dialog, then in Claude Code run `/plugin`, choose
 **tokenscope**, then **Configure**, and paste it (just the address, such as
@@ -132,10 +224,14 @@ What the default is depends on the build:
   *"URL is unset or invalid — open /plugin manage and configure"* and the setup
   helpers stop with *"No TokenScope server is configured"*.
 
-If you run Claude Code with a custom `CLAUDE_CONFIG_DIR`, the scripts do not see
-the value (they read the account's own `~/.claude/settings.json`, because that
-variable can be set by a repository). Register the server instead:
-`claude mcp add --transport http --scope user tokenscope https://<your-host>/api/v1/mcp`.
+If you run Claude Code with a custom `CLAUDE_CONFIG_DIR` (the Claude app can
+have its own, e.g. `~/.claude-desktop`), the scripts read and write that
+folder's files instead of `~/.claude`, but only when the folder is inside your
+home, outside any git repository, and no project settings file sets the
+variable: a repository can set it for hook processes, and this folder decides
+where the credential is written. Otherwise they use `~/.claude`, and
+`/tokenscope:status` says why (`config_dir_refused`). The Windows PowerShell
+lane (no Node) always uses `~/.claude`.
 
 **Copilot CLI: register the server.** Copilot has no plugin options. Run the
 `copilot mcp add` command your Connect dialog shows:
@@ -298,9 +394,11 @@ the same verdict in detail; for your spend breakdown use the `usage` prompt /
 The plugin registers a **remote MCP server** (`plugin/.mcp.json`) — a
 streamable-HTTP server at the deployed base + `/api/v1/mcp`, authenticated by
 OAuth 2.1 (no token to paste; the browser consent runs on first connect). It
-points at the same deployment as the rest of the plugin: its URL is
+points at the same deployment as the rest of the plugin. From Git its URL is
 `${user_config.server_url}/api/v1/mcp`, the `server_url` option you configure
 (see [Point the plugins at your deployment](#point-the-plugins-at-your-deployment)).
+The plugin a deployment serves has the literal URL written in instead: the Claude
+app's `/mcp` Connect cannot expand the template and refuses to sign in.
 
 Over MCP the server exposes read tools (`list_my_projects`, `list_activity_types`,
 `my_usage`, `resolve_repo_project`) + a tag tool (`tag_session`), and **prompts**
@@ -325,9 +423,14 @@ Claude-specific surface.
 
 | Problem | What to do |
 | --- | --- |
+| "Failed to add marketplace" with `owner/repo` | That form runs Git, which isn't installed. Use your deployment's URL instead ([Install](#install)). |
+| Claude app: "This host isn't supported" | The app's marketplace form takes only Git hosts. Add the marketplace through settings instead ([Claude Desktop](#claude-desktop)). |
+| Claude app: "Couldn't start sign-in … points at a different server URL" | The app is using a plugin from before the literal MCP URL (0.1.45 or older). Quit the app completely, reopen it and retry. If it stays, the app hasn't picked up 0.1.46 yet. |
+| "Failed to add marketplace … source doesn't match" | You added TokenScope from the other source before. Run `/plugin marketplace remove tokenscope`, then add it again. This also removes the plugin. |
+| The URL install fails, or your Claude Code is older than 2.1.224 | [Install from Git](#install-from-git-fallback), then set the server URL. |
 | Windows without Node.js | Tracking works. The status line, `/tokenscope:backfill` and tagging sessions from a `.tokenscope` file need Node.js. Without it, a plugin update doesn't update your tracking settings, so run `/tokenscope:setup` again after each update. To get everything, run `winget install OpenJS.NodeJS.LTS`, then `/tokenscope:setup` again. |
 | macOS / Linux: setup says `node: command not found` | Install Node.js (`sudo apt-get install -y nodejs`, `brew install node`, or add it to your container image), then run `/tokenscope:setup` again. |
 | The browser sign-in can't get back to Claude Code | Copy the link the sign-in page shows into Claude Code. |
-| `/mcp` says "URL is unset or invalid" | Set the plugin's server URL ([Point the plugins at your deployment](#point-the-plugins-at-your-deployment)), then restart Claude Code. |
+| `/mcp` says "URL is unset or invalid" | A Git install. Set the plugin's server URL ([Point the plugins at your deployment](#point-the-plugins-at-your-deployment)), then restart Claude Code. |
 | `/tokenscope:status` isn't green | Check you restarted Claude Code. In a repo with a `.tokenscope` file, restart once more if you see a "superseded device enrolment" warning. Still not green? Run `/tokenscope:setup` again. |
 | Green, but no usage in TokenScope yet | Usage shows about 5 minutes after you use Claude Code. Status checks the credential, not delivery. |

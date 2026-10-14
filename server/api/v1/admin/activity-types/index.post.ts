@@ -26,12 +26,13 @@ import { requireActivityScope } from '../../../../auth/activity-scope'
 import { withRequestRls } from '../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../db/audit'
 import { pgErrorCode } from '../../../../db/pg-error'
+import { displayText, ACTIVITY_LABEL_MAX } from '#shared/schemas/display-text'
 import { activityType } from '../../../../../drizzle/schema'
 
 const Body = z.object({
   // null = a global/standard entry (org-wide roles only).
   region_id: z.string().uuid().nullable(),
-  label: z.string().trim().min(1).max(64),
+  label: displayText(ACTIVITY_LABEL_MAX, { trim: true }),
   sort_order: z.coerce.number().int().min(0).max(100000).optional(),
 })
 

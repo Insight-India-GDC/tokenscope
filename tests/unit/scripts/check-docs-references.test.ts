@@ -36,6 +36,8 @@ afterEach(() => rmSync(root, { recursive: true, force: true }))
 
 const messages = () => checkTree(root).map((p: { file: string; message: string }) => `${p.file}: ${p.message}`)
 
+// Fixture names avoid anything tools/publish/substitutions.txt rewrites, so this
+// suite passes in the public snapshot too (publish.sh runs it there).
 describe('check-docs-references', () => {
   it('passes a tree whose docs only reference things that exist', () => {
     expect(messages()).toEqual([])
@@ -82,11 +84,11 @@ describe('check-docs-references', () => {
   it('reports a credential name that maps to no wired key, including when the phrase wraps', () => {
     write(
       'docs/DEPLOY-AZURE.md',
-      'The app reads it under the credential name\n  `insight`: use that name.\n\n| `GH_PAT_X` | `enterprise-nfr` |\n| `GH_PAT_Y` | `enterprise-nfr` |\n',
+      'The app reads it under the credential name\n  `insight`: use that name.\n\n| `GH_PAT_X` | `enterprise-nfr` |\n| `GH_PAT_Y` | `regional-nfr` |\n',
     )
     const m = messages().join('\n')
     expect(m).toContain('credential name "insight" maps to no key')
-    expect(m).toContain('credential name "enterprise-nfr" maps to no key')
+    expect(m).toContain('credential name "regional-nfr" maps to no key')
     expect(m).not.toContain('"enterprise-nfr" maps')
   })
 
@@ -152,13 +154,13 @@ describe('check-docs-references', () => {
     })
 
     it('reports a deployed resource name in a public diagram but not in one the publish drops', () => {
-      write('docs/wiki/images/pub.svg', svg('<text>ca-tokenscope-example</text>'))
+      write('docs/wiki/images/pub.svg', svg('<text>ca-widgets-prod-eus2</text>'))
       write('docs/wiki/images/internal.svg', svg('<text>log-ops-tokenscope-dev-wus3</text>'))
       write('docs/wiki/Page.md', '![a](images/pub.svg) ![b](images/internal.svg) and ca-&lt;name&gt; is fine\n')
       write('tools/publish/internal-only-paths.txt', 'docs/wiki/images/internal.svg\n')
       const m = messages()
       expect(m).toHaveLength(1)
-      expect(m[0]).toContain('docs/wiki/images/pub.svg: public diagram names a deployed resource ("ca-tokenscope-example")')
+      expect(m[0]).toContain('docs/wiki/images/pub.svg: public diagram names a deployed resource ("ca-widgets-prod-eus2")')
     })
   })
 

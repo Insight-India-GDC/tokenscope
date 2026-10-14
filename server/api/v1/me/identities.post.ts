@@ -18,6 +18,14 @@ import { assertSameOrigin } from '../../../auth/csrf'
 import { withRequestRls } from '../../../db/request-rls'
 import { recordAuditEvent } from '../../../db/audit'
 import { translatePgConstraintError } from '../../../utils/pg-constraint-error'
+import { advisoryXactLock } from '../../../db/advisory-lock'
+
+/**
+ * Most self-claimed (`source='self'`) identities one teammate may hold. A person
+ * has a handful of Claude/GitHub/client logins; without a ceiling one caller
+ * could squat an unbounded slice of the identifier namespace (D5).
+ */
+export const MAX_SELF_LINKED_IDENTITIES = 10
 
 const Body = z.object({
   system: z.enum(['claude-code', 'github', 'copilot-cli', 'other']),
@@ -77,6 +85,21 @@ export default defineEventHandler(async (event) => {
           existing.teammate_id === session.teammateId
             ? 'Already linked to your account.'
             : 'That identity is linked to another teammate.',
+        )
+      }
+
+      // Per-caller cap (D5). The principal lock serialises this teammate's
+      // concurrent links so N parallel requests cannot all read the same
+      // pre-insert count and land past the cap. Only self-claimed rows count:
+      // directory/admin-sourced rows are not the caller's to spend.
+      await tx.execute(advisoryXactLock('principal', session.teammateId))
+      const [held] = await tx.execute<{ n: number }>(sql`
+        SELECT COUNT(*)::int AS n FROM teammate_identity_map
+        WHERE teammate_id = ${session.teammateId}::uuid AND source = 'self'
+      `)
+      if ((held?.n ?? 0) >= MAX_SELF_LINKED_IDENTITIES) {
+        throw conflict(
+          `You already have ${MAX_SELF_LINKED_IDENTITIES} linked identities, the most allowed. Unlink one before adding another.`,
         )
       }
 

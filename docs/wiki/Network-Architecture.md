@@ -65,8 +65,8 @@ those zones registers its records.
 
 The network perimeter is the ingress control; the app still enforces Entra OIDC +
 RBAC, per-request scope checks in the queries and CSRF on every request.
-(Postgres row-level security is only enforced once the app runs as the
-non-owner app role; see Authentication and Security.)
+Postgres row-level security does not execute: the app connects as the table
+owner ([ADR-0013](Design-Decisions.md#adr-0013--authorization-is-enforced-in-the-application); see Authentication and Security).
 
 ---
 

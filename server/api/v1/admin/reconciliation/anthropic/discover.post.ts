@@ -14,7 +14,7 @@
  * SAME safe vocabulary health.ts uses. The KEY IS NEVER returned or logged, and no
  * raw provider error text (which could echo the key) is surfaced.
  *
- * RBAC: requireRole(admin) + assertSameOrigin. (No audit row: this
+ * RBAC: requireRole(platform-admin) + assertSameOrigin. (No audit row: this
  * is a read-only probe — it writes nothing. The onboarding orgs.post that follows
  * is the audited mutation.)
  */
@@ -31,7 +31,8 @@ const Body = z.object({
 })
 
 export default defineEventHandler(async (event) => {
-  await requireRole(event, 'admin')
+  // Provider configuration is estate config (owner ruling 2026-10-08): it resolves a deployment-wide credential namespace and probes the provider, so platform-admin is the only clamp.
+  await requireRole(event, 'platform-admin')
   assertSameOrigin(event)
   const body = await readValidated(event, Body)
 

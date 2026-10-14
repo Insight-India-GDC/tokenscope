@@ -16,13 +16,14 @@
  * collapsed "Trouble connecting?" (#418).
  */
 import { computed } from 'vue'
-import type { ConnectClient, ConnectConfig } from '#shared/connect'
+import { guideClient, type ConnectGuideKind, type ConnectConfig } from '#shared/connect'
 import UiCodeBlock from '../ui/CodeBlock.vue'
 import ConnectSegments from './ConnectSegments.vue'
 import { buildGuide } from './connect-guides'
 
 const props = defineProps<{
-  client: ConnectClient
+  /* Claude Desktop and the CLI share one policy client but install differently. */
+  kind: ConnectGuideKind
   /* null while loading or when the fetch failed (see `failed`). */
   config: ConnectConfig | null
   failed?: boolean
@@ -30,14 +31,16 @@ const props = defineProps<{
   titleId?: string
 }>()
 
-const CLIENT_LABEL: Record<ConnectClient, { name: string; icon: string; accent: string; testid: string }> = {
-  'claude-code': { name: 'Claude Code', icon: 'logos:claude-icon', accent: '#D97757', testid: 'connect-claude-code' },
+const CLIENT_LABEL: Record<ConnectGuideKind, { name: string; icon: string; accent: string; testid: string }> = {
+  'claude-desktop': { name: 'Claude Desktop', icon: 'logos:claude-icon', accent: '#D97757', testid: 'connect-claude-desktop' },
+  'claude-cli': { name: 'Claude Code CLI', icon: 'logos:claude-icon', accent: '#D97757', testid: 'connect-claude-code' },
   'copilot-cli': { name: 'Copilot CLI', icon: 'logos:github-copilot', accent: '#3e332d', testid: 'connect-copilot-cli' },
 }
 
-const head = computed(() => CLIENT_LABEL[props.client])
-const enabled = computed(() => !props.config || props.config.enabledClients.includes(props.client))
-const guide = computed(() => (props.config && enabled.value ? buildGuide(props.client, props.config) : null))
+const head = computed(() => CLIENT_LABEL[props.kind])
+const client = computed(() => guideClient(props.kind))
+const enabled = computed(() => !props.config || props.config.enabledClients.includes(client.value))
+const guide = computed(() => (props.config && enabled.value ? buildGuide(props.kind, props.config) : null))
 </script>
 
 <template>
@@ -132,7 +135,19 @@ const guide = computed(() => (props.config && enabled.value ? buildGuide(props.c
             <p class="text-[12px] font-semibold text-carbon">This deployment’s server</p>
             <UiCodeBlock class="mt-1" :code="config.origin" data-testid="connect-server-url" />
           </template>
-          <p class="text-[12px] text-carbon-3 mt-1.5" data-testid="connect-marketplace">
+          <p v-if="kind === 'claude-desktop' && config.claudeMarketplaceUrl" class="text-[12px] text-carbon-3 mt-1.5" data-testid="connect-marketplace">
+            The plugin comes from this deployment’s marketplace
+            <code class="text-[11px] bg-calm/40 px-1 rounded">{{ config.claudeMarketplaceUrl }}</code>.
+          </p>
+          <p v-else-if="client === 'claude-code' && config.claudeMarketplaceUrl" class="text-[12px] text-carbon-3 mt-1.5" data-testid="connect-marketplace">
+            The plugin comes from this deployment’s marketplace
+            <code class="text-[11px] bg-calm/40 px-1 rounded">{{ config.claudeMarketplaceUrl }}</code>. The Git fallback uses
+            <code class="text-[11px] bg-calm/40 px-1 rounded">{{ config.marketplaceSource }}</code
+            ><template v-if="config.marketplaceRef">
+              at <code class="text-[11px] bg-calm/40 px-1 rounded">{{ config.marketplaceRef }}</code></template
+            >.
+          </p>
+          <p v-else class="text-[12px] text-carbon-3 mt-1.5" data-testid="connect-marketplace">
             Plugins come from the marketplace
             <code class="text-[11px] bg-calm/40 px-1 rounded">{{ config.marketplaceSource }}</code
             ><template v-if="config.marketplaceRef">

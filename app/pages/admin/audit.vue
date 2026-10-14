@@ -20,6 +20,8 @@ interface AuditEvent extends Record<string, unknown> {
   actorTeammateId: string | null
   actorEmail: string | null
   actorSystem: string | null
+  /** Entra OID of the admin acting through persona override, when one was. */
+  impersonatorOid: string | null
   subjectKind: string | null
   subjectId: string | null
   payload: unknown
@@ -182,7 +184,15 @@ const isAdmin = computed(() => {
             <td class="px-5 py-3 text-sm">
               <UiBadge kind="vision">{{ asAuditEvent(row).eventType }}</UiBadge>
             </td>
-            <td class="px-5 py-3 text-sm text-carbon">{{ asAuditEvent(row).actorEmail ?? asAuditEvent(row).actorSystem ?? '—' }}</td>
+            <td class="px-5 py-3 text-sm text-carbon">
+              {{ asAuditEvent(row).actorEmail ?? asAuditEvent(row).actorSystem ?? '—' }}
+              <span
+                v-if="asAuditEvent(row).impersonatorOid"
+                class="ml-1 text-[11px] font-semibold text-brand-hunger"
+                :title="`Done by admin ${asAuditEvent(row).impersonatorOid} acting as this persona`"
+                :data-testid="`admin-audit-impersonated-${asAuditEvent(row).id}`"
+              >(via persona override)</span>
+            </td>
             <td class="px-5 py-3 text-sm text-carbon-2">
               {{ asAuditEvent(row).subjectKind ?? '—' }}<span v-if="asAuditEvent(row).subjectId" class="text-carbon-3 font-mono"> · {{ (asAuditEvent(row).subjectId ?? '').slice(0, 8) }}</span>
             </td>
@@ -190,6 +200,9 @@ const isAdmin = computed(() => {
           </tr>
           <tr v-if="expandedId === asAuditEvent(row).id" :data-testid="`admin-audit-payload-${asAuditEvent(row).id}`" class="bg-calm/30">
             <td colspan="5" class="px-5 py-4">
+              <p v-if="asAuditEvent(row).impersonatorOid" class="text-xs text-carbon mb-2" :data-testid="`admin-audit-impersonator-${asAuditEvent(row).id}`">
+                Acting admin (persona override): <span class="font-mono">{{ asAuditEvent(row).impersonatorOid }}</span>
+              </p>
               <pre class="text-xs text-carbon font-mono whitespace-pre-wrap break-all bg-white border border-calm-2 rounded p-3 overflow-auto max-h-96">{{ JSON.stringify(asAuditEvent(row).payload, null, 2) }}</pre>
             </td>
           </tr>

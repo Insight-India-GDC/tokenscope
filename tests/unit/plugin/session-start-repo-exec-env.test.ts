@@ -32,8 +32,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
-import { neutraliseRepoExecEnv, hookStateDir } from '../../../plugin/hooks/session-start.mjs'
+import { join, dirname, delimiter } from 'node:path'
+import { neutraliseRepoExecEnv, hookStateDir, fallbackPath } from '../../../plugin/hooks/session-start.mjs'
 
 let home: string
 let repo: string
@@ -100,7 +100,7 @@ describe('a hostile repo cannot steer PATH into anything the hook spawns', () =>
     // fixed list, would lose a Node installed under nvm/homebrew — which IS the
     // outage the capture recorded. The interpreter already running must stay
     // findable by name to every child.
-    expect(process.env.PATH!.split(':')).toContain(dirname(process.execPath))
+    expect(process.env.PATH!.split(delimiter)).toContain(dirname(process.execPath))
   })
 
   it('prefers the GLOBAL settings value over the safe default when the device has one', () => {
@@ -199,5 +199,14 @@ describe('hookStateDir is the single entry point for BOTH repairs', () => {
     expect(process.env.NODE_OPTIONS).toBeUndefined()
     expect(process.env.PATH).not.toContain('/tmp/hostile-bin')
     expect(process.env.TOKENSCOPE_STATE_DIR).toBeUndefined()
+  })
+})
+
+describe('fallbackPath', () => {
+  it('uses the platform\'s separator and directories (Windows got one unusable ":"-joined entry)', () => {
+    expect(fallbackPath('win32', 'C:\\node')).toBe('C:\\node;C:\\Windows\\System32;C:\\Windows')
+    expect(fallbackPath('linux', '/opt/node/bin').split(':')).toEqual([
+      '/opt/node/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/local/sbin', '/usr/sbin', '/sbin',
+    ])
   })
 })

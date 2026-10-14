@@ -385,7 +385,7 @@ export const WORKERS: ReadonlyArray<WorkerEntry> = [
     run: (db) => runUsageReconciliation(db),
     recommendedCron: '0 */2 * * *', // every 2h — refresh per-day API-minus-OTel unaccounted usage
     description:
-      'Reconcile provider API usage truth vs OTel-captured per (teammate, day); upsert the taggable "unaccounted usage" records (provider-billing-attribution-model.md §A)',
+      'Reconcile provider API usage truth vs OTel-captured per (teammate, day); upsert the taggable "unaccounted usage" records, detect over-emission, and lift any developer quarantine whose conversation strayed outside its flag\'s (UTC day, tool) cell, escalating the flag, and send each newly escalated flag to its region admins\' inbox (provider-billing-attribution-model.md §A)',
   },
   {
     name: 'reconciliation-backfill',

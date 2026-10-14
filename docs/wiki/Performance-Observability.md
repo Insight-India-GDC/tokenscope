@@ -21,7 +21,7 @@ inventory, the triage ladder, and the recorded baselines.
    probes, a dead worker — you should have been pinged.** The `ops-alert`
    worker pages the external ntfy channel for exactly that class
    ([Background Workers](Background-Workers.md); [Deployment & Operations](Deployment-and-Operations.md#ops-alerting)).
-   If you weren't pinged, check ops-alert's own health FIRST — the A4 dead-man
+   If you weren't pinged, check ops-alert's own health FIRST — the dead-man
    metric alert on the `caj-ts-ops-alert` job's successful-execution count, and
    the worker's `worker_run` rows — before trusting any in-app signal: a silent
    alerting channel and a healthy product look identical from the inside.
@@ -75,28 +75,24 @@ not a database one.
 
 ## Recorded baselines — the two product pages, cold, F12
 
-All from the same operator, same pages, cold loads (reference deployment).
+One operator, same pages, cold loads, on the reference deployment, measured
+2026-08-20. The run coincided with the `*/15` worker tick grid and with a
+wider `usage-rollup` recompute than the worker does now, so read the report
+rows as an upper bound.
 
-| endpoint | 2026-08-19 pre-#277 | 2026-08-20 post-#277 | 2026-08-20 post-#278 |
-|---|---|---|---|
-| `/me/usage` | 4.52 s | 4.43 s | 5.03 s |
-| `/me/activity?limit=25` | 5.02 s | 1.13 s | 4.43 s |
-| `/me/sessions/untagged` | 2.36 s | 0.61 s | 0.38 s |
-| usage-page floor endpoints | ~0.85 s | ~0.55 s | 0.23–0.47 s |
-| `/reports/region?region=all` | 9.92 s | 12.81 s | 6.89 s |
-| `/reports/region/trend` | 8.38 s | 10.75 s | 3.94 s |
-| `/reports/region/active-trend` | 6.37 s | 7.58 s | 2.04 s |
-| `/reports/region/drivers` (project / model) | 3.91 / 3.90 s | 7.27 / 7.25 s | 5.87 / 2.03 s |
-| `/reports/region/behaviour` | 5.73 s | 6.71 s | 4.81 s |
-| `/me/inbox` beside the reports burst | 4.14 s | 7.60 s | 2.22 s |
-| Home cold load | — | — | 96 req · 2.2 MB (≈uncompressed) · DCL 3.14 s · finish 6.65 s |
-
-Notes attached to these numbers: the post-#277 report column ran before the
-rollup lane existed; the post-#278 evening column ran while the first-day
-`usage-rollup` cadence was still wide (41-day recompute per tick — narrowed
-since) and coincided with the `*/15` tick grid. The unexplained
-`/me/activity` swing (1.1 s → 4.4 s) is exactly the class of question the
-`Server-Timing` header now answers directly.
+| endpoint | cold load |
+|---|---|
+| `/me/usage` | 5.03 s |
+| `/me/activity?limit=25` | 4.43 s |
+| `/me/sessions/untagged` | 0.38 s |
+| usage-page floor endpoints | 0.23–0.47 s |
+| `/reports/region?region=all` | 6.89 s |
+| `/reports/region/trend` | 3.94 s |
+| `/reports/region/active-trend` | 2.04 s |
+| `/reports/region/drivers` (project / model) | 5.87 / 2.03 s |
+| `/reports/region/behaviour` | 4.81 s |
+| `/me/inbox` beside the reports burst | 2.22 s |
+| Home cold load | 96 req · 2.2 MB (≈uncompressed) · DCL 3.14 s · finish 6.65 s |
 
 ## Escape hatches / rollback
 

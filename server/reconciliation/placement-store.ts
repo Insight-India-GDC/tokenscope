@@ -35,6 +35,7 @@ import { eligibleUnitOwnerPredicate } from './unit-owner-eligibility'
 import { parseActualSpendSourceOrgRef } from './source-org-ref'
 import { loadGovernanceResolutionContext, resolveAnthropicVerdict, resolveGithubVerdict } from '../governance/verdict'
 import { recordAuditEvent } from '../db/audit'
+import { followPlacement } from '../utils/device-lifecycle'
 
 type Db = PostgresJsDatabase<typeof schema>
 
@@ -254,10 +255,24 @@ export function makePlacementStore(db: Db): PlacementStore {
     },
 
     async homeTeammate(teammateId, orgUnitId) {
-      // org_unit_id only; region_id follows via the mig-0066 trigger.
-      await db.execute(sql`
-        UPDATE teammate SET org_unit_id = ${orgUnitId}::uuid, last_sync_at = now()
-        WHERE id = ${teammateId}::uuid`)
+      // org_unit_id only; region_id follows via the mig-0066 trigger. The caller's
+      // rehome_safe came from an earlier read: re-asserted here under the teammate
+      // lock (FOR UPDATE conflicts with a device INSERT's FOR KEY SHARE, as in
+      // homeTeammateIfStillDerivable), so a device provisioned since is never
+      // moved without its revoke cascade (#417).
+      return await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT 1 FROM teammate WHERE id = ${teammateId}::uuid FOR UPDATE`)
+        const moved = await tx.execute<{ id: string }>(sql`
+          UPDATE teammate t SET org_unit_id = ${orgUnitId}::uuid, last_sync_at = now()
+          WHERE t.id = ${teammateId}::uuid AND ${rehomeSafePredicate(sql`t`)}
+            -- Still on a holding node, as when the caller selected it: an admin
+            -- placement made since is deliberate and is not overwritten.
+            AND EXISTS (SELECT 1 FROM org_unit cur WHERE cur.id = t.org_unit_id AND cur.unit_type = ${HOLDING_UNIT_TYPE})
+          RETURNING t.id::text AS id`)
+        if ([...moved].length === 0) return false
+        await followPlacement(tx as never, teammateId)
+        return true
+      })
     },
 
     async homeTeammateIfStillDerivable(teammateId, orgUnitId, regionId) {
@@ -314,7 +329,10 @@ export function makePlacementStore(db: Db): PlacementStore {
                 AND ou.is_cost_owning_unit
             )
           RETURNING t.id::text AS id`)
-        return [...moved].length > 0
+        if ([...moved].length === 0) return false
+        // Moves nothing while rehome_safe holds; keeps the rule true if it changes (#417).
+        await followPlacement(tx as never, teammateId)
+        return true
       })
     },
 
@@ -389,6 +407,9 @@ export function makePlacementStore(db: Db): PlacementStore {
         )
         await writePlacementProvenance(tx, teammateId, provenance)
         if (moving) {
+          // Moves nothing while the candidate predicate holds (rehome-safe); keeps
+          // the rule true if it changes (#417).
+          await followPlacement(tx as never, teammateId)
           // In the same transaction as the move: an audit row for a move that
           // rolled back, or a move with no audit row, are both worse than neither.
           await recordAuditEvent(tx as unknown as PostgresJsDatabase<Record<string, unknown>>, {

@@ -29,7 +29,7 @@ import { withRequestRls } from '../../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../../db/audit'
 import { unplacedOrgUnitIdForRegion } from '../../../../../auth/placement-home'
 import { revokeInteractiveCredentialsOf } from '../../../../../auth/emit-revocation'
-import { rehomeLiveDevicesOf } from '../../../../../utils/device-lifecycle'
+import { followPlacement } from '../../../../../utils/device-lifecycle'
 
 const Body = z.object({
   region_id: z.string().uuid(),
@@ -46,12 +46,24 @@ export default defineEventHandler(async (event) => {
   const body = await readValidated(event, Body)
 
   const result = await withRequestRls(event, async (tx) => {
-    const targetRows = await tx.execute<{ id: string; region_id: string; email: string }>(sql`
-      SELECT id::text AS id, region_id::text AS region_id, email
+    // Locked before anything else: a concurrent provision or confirmation takes
+    // this row the same way before writing a device's placement (#417), so the
+    // two serialise and the device ends on the new placement in either order.
+    // NO KEY UPDATE, not FOR UPDATE: it must not conflict with the FOR KEY SHARE
+    // that a device-first path takes on this row (session-gc's audit insert),
+    // or that path and this move's device step form a deadlock.
+    const targetRows = await tx.execute<{ id: string; region_id: string; email: string; provisional: boolean }>(sql`
+      SELECT id::text AS id, region_id::text AS region_id, email, provisional
       FROM teammate WHERE id = ${teammateId}::uuid LIMIT 1
+      FOR NO KEY UPDATE
     `)
     const target = [...targetRows][0]
     if (!target) throw createError({ statusCode: 404, statusMessage: 'Teammate not found' })
+    // A provisional (shadow) teammate is placed by identity confirmation, which
+    // also places its devices; an admin move would leave them behind (#417).
+    if (target.provisional) {
+      throw createError({ statusCode: 422, statusMessage: 'A provisional teammate is placed when their device is confirmed, not by a placement move' })
+    }
 
     const regionRows = await tx.execute<{ id: string }>(
       sql`SELECT id::text AS id FROM region WHERE id = ${body.region_id}::uuid LIMIT 1`,
@@ -85,10 +97,7 @@ export default defineEventHandler(async (event) => {
     // region's admin finds devices by it. Ended devices and attributed history
     // keep the placement they were emitted under. Lock order: teammate, then
     // devices (as revoke-sessions), then oauth_token (device-lifecycle.ts).
-    const rehomedInstanceIds = await rehomeLiveDevicesOf(tx as never, target.id, {
-      regionId: body.region_id,
-      orgUnitId,
-    })
+    const rehomedInstanceIds = await followPlacement(tx as never, target.id)
 
     // E2 (ADR-0005) as amended by #414: same split as the role-change PATCH.
     // Interactive credentials die; the teammate's devices keep emitting, and

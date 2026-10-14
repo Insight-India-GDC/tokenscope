@@ -76,6 +76,97 @@ export interface ConnectConfig extends ClientConnectionPolicy {
   claudeBundledOrigin: string
   /** COPILOT_PLUGIN_BUNDLED_ORIGIN, shipped so the client never hardcodes it. */
   copilotBundledOrigin: string
+  /**
+   * The Claude Code marketplace this deployment serves itself, or null when
+   * the routes would refuse (an unusable origin, or a plugin that cannot be
+   * packaged).
+   */
+  claudeMarketplaceUrl: string | null
+}
+
+/** The served marketplace's `plugin@marketplace`; fixed, because the plugin's own path checks use it. */
+export const SERVED_PLUGIN_REF = 'tokenscope@tokenscope'
+
+/** Where a deployment serves its own Claude Code marketplace. */
+export const SERVED_MARKETPLACE_PATH = '/api/v1/plugin/marketplace.json'
+
+/**
+ * Why `origin` cannot serve the self-hosted marketplace, or null when it can.
+ *
+ * Claude Code refuses an `archive` plugin URL that is not https or that points
+ * at a loopback, link-local or metadata host, so a marketplace naming one
+ * would only fail later, at install. This list approximates that rule; it is
+ * not Claude Code's own. The routes and the connect dialog both start from it.
+ */
+export function servedMarketplaceRefusal(origin: string | null): string | null {
+  if (!origin) return ORIGIN_NOT_PINNED_REASON
+  let u: URL
+  try {
+    u = new URL(origin)
+  } catch {
+    return ORIGIN_NOT_PINNED_REASON
+  }
+  if (u.protocol !== 'https:') return 'Claude Code installs plugins only from https:// addresses.'
+  const h = u.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  if (
+    h === 'localhost' ||
+    h.endsWith('.localhost') ||
+    /^127\./.test(h) ||
+    /^169\.254\./.test(h) ||
+    h === '0.0.0.0' ||
+    h === '::1' ||
+    /^fe[89ab][0-9a-f]:/.test(h) ||
+    h === 'metadata.google.internal'
+  ) {
+    return 'Claude Code does not install plugins from a local or link-local address.'
+  }
+  return null
+}
+
+/** `${origin}${SERVED_MARKETPLACE_PATH}`, or null when the origin cannot serve it. */
+export function servedMarketplaceUrl(origin: string | null): string | null {
+  return origin && !servedMarketplaceRefusal(origin) ? `${origin}${SERVED_MARKETPLACE_PATH}` : null
+}
+
+/**
+ * The settings that install the served plugin: what the Claude Desktop guide
+ * asks the user to add to their user settings, and what an administrator puts
+ * in managed settings. Claude Desktop needs this because its Code tab hands
+ * `/plugin marketplace add` to a form that accepts only Git hosts.
+ */
+export function servedPluginSettings(marketplaceUrl: string) {
+  return {
+    // autoUpdate: a URL marketplace serves each new plugin version from this
+    // deployment; without it an install stays on the version it first fetched.
+    extraKnownMarketplaces: { tokenscope: { source: { source: 'url', url: marketplaceUrl }, autoUpdate: true } },
+    enabledPlugins: { [SERVED_PLUGIN_REF]: true },
+  }
+}
+
+/**
+ * The managed-settings block the admin page offers IT, as JSON text, or null
+ * when there is nothing to push: no served marketplace, or the saved policy has
+ * Claude Code turned off.
+ */
+export function managedSettingsJson(
+  claudeMarketplaceUrl: string | null,
+  enabledClients: readonly ConnectClient[],
+): string | null {
+  if (!claudeMarketplaceUrl || !enabledClients.includes('claude-code')) return null
+  return JSON.stringify(servedPluginSettings(claudeMarketplaceUrl), null, 2)
+}
+
+/**
+ * The connect guides a user can open. Claude Desktop and the Claude Code CLI are
+ * one client to the admin policy (the same tool, the same telemetry), but they
+ * install the plugin differently, so each gets its own guide.
+ */
+export const CONNECT_GUIDES = ['claude-desktop', 'claude-cli', 'copilot-cli'] as const
+export type ConnectGuideKind = (typeof CONNECT_GUIDES)[number]
+
+/** The policy client a guide belongs to. */
+export function guideClient(kind: ConnectGuideKind): ConnectClient {
+  return kind === 'copilot-cli' ? 'copilot-cli' : 'claude-code'
 }
 
 // ── Formats ─────────────────────────────────────────────────────────────────

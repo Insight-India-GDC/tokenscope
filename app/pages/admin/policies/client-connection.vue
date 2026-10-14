@@ -7,10 +7,16 @@
  * here: it is the deployment's appPublicOrigin, shown read-only from the same
  * config the dialog reads.
  */
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useAdminAccess } from '../../../composables/useAdminAccess'
 import { apiErrorDetail } from '../../../composables/useApiError'
-import { CONNECT_CLIENTS, needsMcpRegistration, type ConnectClient, type ConnectConfig } from '#shared/connect'
+import {
+  CONNECT_CLIENTS,
+  needsMcpRegistration,
+  managedSettingsJson,
+  type ConnectClient,
+  type ConnectConfig,
+} from '#shared/connect'
 
 definePageMeta({ layout: 'admin', middleware: 'admin' })
 
@@ -39,7 +45,16 @@ const { data: connect } = useLazyFetch<ConnectConfig | null>('/api/v1/connect/co
   immediate: isPlatform.value,
 })
 
-const CLIENT_NAMES: Record<ConnectClient, string> = { 'claude-code': 'Claude Code', 'copilot-cli': 'Copilot CLI' }
+const CLIENT_NAMES: Record<ConnectClient, string> = {
+  'claude-code': 'Claude Code (Desktop and CLI)',
+  'copilot-cli': 'Copilot CLI',
+}
+
+/* The same two keys the Desktop guide has each user add, for IT to push instead.
+ * Gated on the SAVED policy: unticked-but-unsaved Claude Code still shows it. */
+const managedSettings = computed(() =>
+  managedSettingsJson(connect.value?.claudeMarketplaceUrl ?? null, policy.value?.enabled_clients ?? []),
+)
 
 const source = ref('')
 const pinnedRef = ref('')
@@ -116,9 +131,12 @@ const inputClass =
         <p v-else-if="connect" class="text-sm text-rag-red mt-2" role="alert" data-testid="admin-client-connection-origin-missing">
           {{ connect.originMissingReason }} Until then the Connect dialog cannot show a server URL.
         </p>
+        <p v-if="connect?.claudeMarketplaceUrl" class="text-[12px] text-carbon-3 mt-1" data-testid="admin-client-connection-claude-served">
+          Claude Code installs from this deployment's own marketplace, <code class="text-[12px] bg-calm/40 px-1 rounded">{{ connect.claudeMarketplaceUrl }}</code>, and that plugin already points here. No Git needed. Claude Desktop users add it to their settings file, because the app's own marketplace form accepts only Git hosts. The Git marketplace below is the CLI fallback the dialog lists under troubleshooting.
+        </p>
         <p v-if="connect && needsMcpRegistration(connect, 'claude-code')" class="text-[12px] text-carbon-3 mt-1" data-testid="admin-client-connection-claude-step">
-          <template v-if="connect.claudeBundledOrigin">The default Claude Code plugin build connects to {{ connect.claudeBundledOrigin }}</template>
-          <template v-else>The Claude Code plugin build ships without a server</template>, so the dialog adds a step that points it at this server.
+          <template v-if="connect.claudeBundledOrigin">The Claude Code plugin from Git connects to {{ connect.claudeBundledOrigin }}</template>
+          <template v-else>The Claude Code plugin from Git ships without a server</template>, so the dialog's Git steps include one that points it at this server.
         </p>
         <p v-if="connect && connect.origin && needsMcpRegistration(connect, 'copilot-cli')" class="text-[12px] text-carbon-3 mt-1" data-testid="admin-client-connection-copilot-step">
           The default Copilot CLI plugin build connects to {{ connect.copilotBundledOrigin }}, so the dialog adds a step that registers this server for the user.
@@ -175,6 +193,32 @@ const inputClass =
             </UiButton>
           </div>
         </div>
+      </UiCard>
+
+      <UiCard v-if="managedSettings" class="max-w-2xl mt-5" data-testid="admin-client-connection-managed">
+        <UiEyebrow>Install for everyone (untested)</UiEyebrow>
+        <p class="text-sm mt-2">
+          Claude Code documents these keys in its managed settings file as the way to install a plugin on every
+          computer. This has not been tested with TokenScope, and an open Claude Code issue
+          (<a href="https://github.com/anthropics/claude-code/issues/16870" target="_blank" rel="noopener noreferrer" class="text-brand-harmony font-semibold hover:underline">#16870</a>)
+          reports managed marketplaces being ignored, including by the Windows desktop app. Try one computer before
+          rolling it out. Developers still sign in and run <code class="text-[12px] bg-calm/40 px-1 rounded">/tokenscope:setup</code> once.
+        </p>
+        <UiCodeBlock class="mt-2" :code="managedSettings" data-testid="admin-client-connection-managed-json" />
+        <p class="text-[12px] text-carbon-3 mt-2">
+          A device that already added a <code class="text-[11px] bg-calm/40 px-1 rounded">tokenscope</code> marketplace from Git keeps that one,
+          and Claude Code refuses a second source under the same name: remove it there first
+          (<code class="text-[11px] bg-calm/40 px-1 rounded">/plugin marketplace remove tokenscope</code>). To also limit which marketplaces
+          developers can add, set <code class="text-[11px] bg-calm/40 px-1 rounded">strictKnownMarketplaces</code> as well; this block does not.
+        </p>
+        <p class="text-[12px] text-carbon-3 mt-2">
+          Merge them into the file your device management already deploys, or create it:
+        </p>
+        <ul class="text-[12px] text-carbon-3 list-disc pl-5 mt-1 space-y-0.5">
+          <li>macOS: <code class="text-[11px] bg-calm/40 px-1 rounded">/Library/Application Support/ClaudeCode/managed-settings.json</code></li>
+          <li>Windows: <code class="text-[11px] bg-calm/40 px-1 rounded">C:\Program Files\ClaudeCode\managed-settings.json</code></li>
+          <li>Linux: <code class="text-[11px] bg-calm/40 px-1 rounded">/etc/claude-code/managed-settings.json</code></li>
+        </ul>
       </UiCard>
     </template>
   </div>

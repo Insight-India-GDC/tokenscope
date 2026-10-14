@@ -156,6 +156,13 @@ export const LOCK_NAMESPACE = {
    * one first.
    */
   providerTransform: 9,
+  /**
+   * One project's top-up pool, keyed on the project id. Serialises the
+   * count-then-insert in `POST /allocations/{id}/topups` so concurrent top-ups
+   * cannot all read the same pre-insert count and land past the per-project
+   * cap. Acquired alone; that transaction takes no other namespaced lock.
+   */
+  allocationTopup: 10,
 } as const
 
 export type LockNamespace = keyof typeof LOCK_NAMESPACE

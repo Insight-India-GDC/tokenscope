@@ -44,6 +44,7 @@ import { writeFakeHomePreload, fakeHomeNode, realIsolatedIndex } from './helpers
 import { resolvePwsh } from './helpers/shells'
 const { realHome } = await import('../../../plugin/scripts/real-home.mjs')
 const { buildHelperCommand } = await import('../../../plugin/scripts/env-builder.mjs')
+const { mergeDesktopAttrs } = await import('../../../plugin/scripts/desktop-env.mjs')
 
 const SCRIPTS = join(process.cwd(), 'plugin/scripts')
 const NODE_REDEEM = join(SCRIPTS, 'claude-redeem.mjs')
@@ -193,6 +194,8 @@ describe.skipIf(SKIP_PWSH || !REAL_PROFILE_OK)('claude-redeem.ps1 writes what cl
     noEnvBase?: boolean
     /** Working directory, relative to the case dir. */
     cwd?: string
+    /** Extra environment for the run. */
+    env?: NodeJS.ProcessEnv
   }
 
   // Async spawn: the stub server runs on this worker's event loop.
@@ -225,7 +228,7 @@ describe.skipIf(SKIP_PWSH || !REAL_PROFILE_OK)('claude-redeem.ps1 writes what cl
     return spawnRun(process.execPath, [...fake.args, NODE_REDEEM, ...args], env, o.cwd ? join(dir, o.cwd) : undefined)
   }
   const runPs = (args: string[], o: LaneOpts, dir: string) => {
-    const env: NodeJS.ProcessEnv = WIN ? {} : { HOME: dir }
+    const env: NodeJS.ProcessEnv = { ...(WIN ? {} : { HOME: dir }), ...o.env }
     if (o.noEnvBase) env.TOKENSCOPE_API_BASE = ''
     return spawnRun(
       PWSH,
@@ -348,6 +351,35 @@ describe.skipIf(SKIP_PWSH || !REAL_PROFILE_OK)('claude-redeem.ps1 writes what cl
     // cmd.exe would look for a bare `powershell.exe` in the repository first.
     const helper = JSON.parse(r.ps.files.repoSettings ?? r.ps.files.settings ?? '{}').otelHeadersHelper
     expect(helper).toMatch(/^"C:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe" -NoProfile /)
+  }, 60_000)
+
+  /*
+   * Claude Desktop (desktop-env.mjs): the device goes into the USER environment,
+   * which the app merges at launch. Only Windows persists a 'User' variable
+   * (.NET ignores that target elsewhere), so the stored value is asserted on the
+   * Windows runner, and the runner's previous value is put back.
+   */
+  it('Claude Desktop: the device goes into the user environment, with the restart step; the CLI never touches it', async () => {
+    const ps = (cmd: string) => spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', cmd], { encoding: 'utf8' })
+    const userEnv = () => ps("[Environment]::GetEnvironmentVariable('OTEL_RESOURCE_ATTRIBUTES', 'User')").stdout.trim()
+    const setUserEnv = (v: string) =>
+      ps(`[Environment]::SetEnvironmentVariable('OTEL_RESOURCE_ATTRIBUTES', ${v ? `'${v.replace(/'/g, "''")}'` : '$null'}, 'User')`)
+    const before = WIN ? userEnv() : ''
+    try {
+      if (WIN) setUserEnv('team=apac')
+      const cli = await lane('ps', join(root, 'desktop-cli'), noSeed, stdArgs, { cwd: '.', env: { CLAUDE_CODE_ENTRYPOINT: 'cli' } })
+      expect(cli.run.status, cli.run.stderr).toBe(0)
+      expect(cli.run.stdout).not.toContain('Claude Desktop')
+      if (WIN) expect(userEnv()).toBe('team=apac')
+
+      const desk = await lane('ps', join(root, 'desktop'), noSeed, stdArgs, { cwd: '.', env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
+      expect(desk.run.status, desk.run.stderr).toBe(0)
+      expect(desk.run.stdout).toContain('Claude Desktop: this device is set in your user environment, so Desktop sessions are attributed.')
+      expect(desk.run.stdout).toContain('Next: quit the Claude app completely and open it again.')
+      if (WIN) expect(userEnv()).toBe(mergeDesktopAttrs('team=apac', 'f825e796-ef29-4aa0-9a35-4aa2a5b8059c'))
+    } finally {
+      if (WIN) setUserEnv(before)
+    }
   }, 60_000)
 
   it('emit-only: the helper is a snapshot in the state dir that survives the install being removed', async () => {

@@ -6,7 +6,8 @@
  *     usage; the next detector run recomputes the over down. The dev picks the session
  *     (the API has no session ids — the system never auto-picks).
  *   - action 'accept': "this OTel is real despite the bill lag" → acknowledge, keep counting.
- *   - action 'escalate': hand it to the region admin (audit + state) for investigation.
+ *   - action 'escalate': hand it to the region admin for investigation (audit + state;
+ *     the usage-reconciliation worker raises the admins' inbox item on its next run).
  *
  * docs/design/provider-billing-attribution-model.md §A + ADR-0010 rule 2 / ADR-0008.
  */
@@ -50,8 +51,8 @@ export default defineEventHandler(async (event) => {
     // Resolving one would let a lane with no review semantics acquire a resolution,
     // a watermark and an audit trail claiming the developer answered for it. Not
     // listed, not resolvable: it 404s exactly like someone else's flag.
-    const flagRows = await tx.execute<{ state: string; over_usd: string }>(sql`
-      SELECT state, over_usd::text AS over_usd FROM over_emission
+    const flagRows = await tx.execute<{ state: string; over_usd: string; day: string; tool: string }>(sql`
+      SELECT state, over_usd::text AS over_usd, day::text AS day, tool FROM over_emission
       WHERE id = ${id}::uuid AND teammate_id = ${session.teammateId}::uuid
         AND reason = ${OVER_EMISSION_REASON_API_UNCORROBORATED}
       FOR UPDATE
@@ -63,14 +64,37 @@ export default defineEventHandler(async (event) => {
 
     if (body.action === 'quarantine') {
       // Derive the conversation's context from the dev's own ledger (unspoofable join).
+      //
+      // BOUND TO THE FLAG (C13/H34). A quarantine removes the WHOLE conversation from
+      // the developer's §A usage — every day and tool it touched — while the flag only
+      // vouches for one (UTC day, tool) cell. Without a bound, any open flag let a
+      // developer delete an arbitrarily large conversation of their own from §A.
+      //
+      // The bound is the flag's WINDOW, not its amount: every record of the
+      // conversation must sit in the flag's (UTC day, tool) cell — the same day
+      // expression the detector buckets on (corroborated-otel.ts). Inside that cell
+      // the removal is already capped by the under lane: with the conversation
+      // excluded, its next run writes unaccounted_usage = max(0, api − remaining OTel)
+      // for the cell (unaccounted-reconciliation.ts nets the same operand), so the cell
+      // cannot fall below the provider's own figure — the most that leaves §A is the
+      // over the flag recorded. An AMOUNT bound (conversation cost ≤ over_usd) would
+      // be wrong: with API $100, a real $50 and a $450 forgery the over is $400, and
+      // the forgery — the very session the flag exists for — would be refused.
+      // A conversation that strays outside the cell is refused; the developer can
+      // escalate instead, which hands it to the region admin.
       const convRows = await tx.execute<{
         instance_id: string; region_id: string; org_unit_id: string
         ts_start: string; ts_end: string; cost_usd: string; tokens: string
+        outside_cell: string
       }>(sql`
         SELECT MAX(ar.instance_id::text) AS instance_id, MAX(ar.region_id::text) AS region_id,
                MAX(ar.org_unit_id::text) AS org_unit_id,
                MIN(ar.ts_event)::text AS ts_start, MAX(ar.ts_event)::text AS ts_end,
-               SUM(ar.cost_usd)::text AS cost_usd, SUM(ar.tokens)::text AS tokens
+               SUM(ar.cost_usd)::text AS cost_usd, SUM(ar.tokens)::text AS tokens,
+               COUNT(*) FILTER (
+                 WHERE (ar.ts_event AT TIME ZONE 'UTC')::date <> ${flag.day}::date
+                    OR ar.tool <> ${flag.tool}
+               )::text AS outside_cell
         FROM attribution_record ar
         WHERE ar.teammate_id = ${session.teammateId}::uuid
           AND COALESCE(ar.claude_session_id, ar.instance_id::text) = ${body.conversation_id}
@@ -78,6 +102,12 @@ export default defineEventHandler(async (event) => {
       const conv = [...convRows][0]
       if (!conv || !conv.instance_id) {
         throw createError({ statusCode: 404, statusMessage: 'That conversation is not in your usage' })
+      }
+      if (Number(conv.outside_cell) > 0) {
+        throw createError({
+          statusCode: 422,
+          statusMessage: `That conversation has usage outside this flag (${flag.day}, ${flag.tool}); quarantine would remove more than the flag covers. Escalate instead.`,
+        })
       }
       // Quarantine the suspect session (reason='api-uncorroborated' → excluded from usage).
       await tx.execute(sql`

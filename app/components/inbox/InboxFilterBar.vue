@@ -12,14 +12,10 @@
  */
 
 import UiCard from '../ui/Card.vue'
+import type { INBOX_CATEGORIES } from '#shared/schemas/inbox'
 
-export type InboxCategoryFilter =
-  | 'all'
-  | 'over-budget'
-  | 'velocity-warning'
-  | 'sync-conflict'
-  | 'untagged-backlog'
-  | 'personal-subscription-prompt'
+// From the list endpoint's own enum: a filter it would reject cannot compile.
+export type InboxCategoryFilter = 'all' | (typeof INBOX_CATEGORIES)[number]
 
 export type InboxSeverityFilter = 'all' | 'info' | 'attention' | 'urgent'
 
@@ -32,6 +28,7 @@ const CATEGORY_OPTIONS: Array<{ key: InboxCategoryFilter; label: string }> = [
   { key: 'sync-conflict', label: 'Sync conflicts' },
   { key: 'untagged-backlog', label: 'Untagged' },
   { key: 'personal-subscription-prompt', label: 'Personal subscription' },
+  { key: 'over-emission-escalated', label: 'Over-emission' },
 ]
 
 const SEVERITY_OPTIONS: Array<{ key: InboxSeverityFilter; label: string }> = [

@@ -9,6 +9,7 @@
  *   - Writes an audit_event recording the actor + reason
  *   - CSRF guarded
  */
+import { requestClock } from '../../../../utils/request-clock'
 import {
   defineEventHandler,
   createError,
@@ -24,13 +25,15 @@ import { isPlatformAdmin } from '../../../../../shared/auth/roles'
 import { assertSameOrigin } from '../../../../auth/csrf'
 import { withRequestRls } from '../../../../db/request-rls'
 import { requireUuidParam } from '../../../../utils/require-uuid-param'
-import { BudgetUsdSchema, EffectiveRangeSchema } from '../../../../utils/allocation-validation'
+import { EffectiveRangeSchema, MAX_LIVE_TOPUPS_PER_PROJECT, TopUpBudgetUsdSchema } from '../../../../utils/allocation-validation'
 import { translatePgConstraintError } from '../../../../utils/pg-constraint-error'
 import { allocation } from '../../../../../drizzle/schema'
 import { recordAuditEvent } from '../../../../db/audit'
+import { advisoryXactLock } from '../../../../db/advisory-lock'
+
 
 const PostBody = z.object({
-  budget_usd: BudgetUsdSchema,
+  budget_usd: TopUpBudgetUsdSchema,
   effective: EffectiveRangeSchema,
   reason: z.string().min(1).max(500).optional(),
 })
@@ -42,6 +45,9 @@ interface BaseRow {
 }
 
 export default defineEventHandler(async (event) => {
+  // The SERVER owns `now`, once per request (CLAUDE.md §The clock); SQL's own
+  // now() is a second clock that a pinned request would not move.
+  const at = requestClock(event).now
   assertSameOrigin(event)
   const session = await requireAuth(event)
   // J2: budget authority is role OR relationship. Org roles keep the
@@ -54,6 +60,30 @@ export default defineEventHandler(async (event) => {
     session.role === 'admin'
 
   const id = requireUuidParam(event, 'id', 'allocation id')
+
+  // Explicit gate (H32): the ONLY callers who may top up are the org roles
+  // above or a currently-effective project manager of SOME project. Anyone
+  // else is refused here, before the allocation id is looked at, so the 403
+  // carries nothing about whether that id exists. Whether the PM manages THIS
+  // allocation's project is still decided by the pmArm query below (404).
+  if (!hasOrgRole) {
+    const [pm] = await withRequestRls(event, (tx) =>
+      tx.execute<{ ok: boolean }>(sql`
+        SELECT EXISTS (
+          SELECT 1 FROM project_assignment pa
+          WHERE pa.teammate_id = ${session.teammateId}::uuid
+            AND pa.role = 'manager'
+            AND pa.effective @> ${at}::timestamptz
+        ) AS ok
+      `),
+    )
+    if (!pm?.ok) {
+      throw createError({
+        statusCode: 403,
+        statusMessage: 'Top-ups require a manager or admin role, or being a project manager',
+      })
+    }
+  }
 
   const body = await readValidatedBody(event, (data) => PostBody.parse(data))
   const ip = getRequestIP(event, { xForwardedFor: true }) ?? null
@@ -83,7 +113,7 @@ export default defineEventHandler(async (event) => {
             WHERE pa.project_id = a.scope_id
               AND pa.teammate_id = ${session.teammateId}::uuid
               AND pa.role = 'manager'
-              AND pa.effective @> now()
+              AND pa.effective @> ${at}::timestamptz
           )
         LIMIT 1
       `)
@@ -119,6 +149,25 @@ export default defineEventHandler(async (event) => {
       throw createError({
         statusCode: 400,
         statusMessage: 'Top-ups apply to the project pool — focus the baseline, not a per-developer cap',
+      })
+    }
+
+    // Per-project live top-up cap (H32), counted under a project-keyed lock
+    // so concurrent requests serialise and cannot all pass the same count.
+    // Only a top-up that is itself live counts against the cap: recording an
+    // already-ended one never adds to the live set (same rule as PATCH).
+    await tx.execute(advisoryXactLock('allocationTopup', base.scope_id))
+    const [live] = await tx.execute<{ n: number; becomes_live: boolean }>(sql`
+      SELECT upper(${body.effective}::tstzrange) > ${at}::timestamptz AS becomes_live,
+             (SELECT COUNT(*)::int FROM allocation
+               WHERE scope_type = 'project' AND scope_id = ${base.scope_id}::uuid
+                 AND allocation_kind = 'top-up'
+                 AND upper(effective) > ${at}::timestamptz) AS n
+    `)
+    if (live?.becomes_live && (live.n ?? 0) >= MAX_LIVE_TOPUPS_PER_PROJECT) {
+      throw createError({
+        statusCode: 409,
+        statusMessage: `This project already has ${MAX_LIVE_TOPUPS_PER_PROJECT} active top-ups, the most allowed. Wait for one to end, or raise the baseline instead.`,
       })
     }
 

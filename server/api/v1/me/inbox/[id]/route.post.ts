@@ -15,7 +15,8 @@ import { eq, sql } from 'drizzle-orm'
 import { assertSameOrigin } from '../../../../../auth/csrf'
 import { requireRole, requireRegionScope } from '../../../../../auth/rbac'
 import { withRequestRls } from '../../../../../db/request-rls'
-import { InboxRouteBody } from '../../../../../../shared/schemas/inbox'
+import { InboxRouteBody, REPORT_DATA_INBOX_CATEGORIES } from '../../../../../../shared/schemas/inbox'
+import { activeReportDenySql } from '../../../../../auth/report-deny-sql'
 import { schema } from '../../../../../db'
 import { recordAuditEvent } from '../../../../../db/audit'
 import { requireUuidParam } from '../../../../../utils/require-uuid-param'
@@ -120,6 +121,28 @@ export default defineEventHandler(async (event) => {
             'Pick an active teammate or reactivate the target first.',
         },
       })
+    }
+
+    // Report data moves only between admins who may see it: a platform admin, or
+    // an admin of the region the notice was delivered in, and neither side may
+    // hold an active report-access deny.
+    if (REPORT_DATA_INBOX_CATEGORIES.includes(source.category)) {
+      const [check] = [
+        ...(await tx.execute<{ caller: boolean; target: boolean; target_admin: boolean }>(sql`
+          SELECT ${activeReportDenySql(sql`${session.teammateId}::uuid`)} AS caller,
+                 ${activeReportDenySql(sql`${body.recipient_teammate_id}::uuid`)} AS target,
+                 EXISTS (SELECT 1 FROM teammate WHERE id = ${body.recipient_teammate_id}::uuid
+                          AND (role = 'platform-admin'
+                               OR (role = 'admin' AND region_id = ${source.region_id}::uuid))) AS target_admin`)),
+      ]
+      if (check?.caller || check?.target || !check?.target_admin) {
+        throw createError({
+          statusCode: 403,
+          statusMessage: check?.caller
+            ? 'You do not have report access, so you cannot forward this item'
+            : 'This item carries report data and can only be forwarded to a platform admin, or an admin of its region, with report access',
+        })
+      }
     }
 
     const [forwarded] = await tx

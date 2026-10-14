@@ -46,7 +46,9 @@ export default defineEventHandler(async (event) => {
       FROM allocation a
       LEFT JOIN project p ON p.id = a.scope_id AND a.scope_type = 'project'
       WHERE ${allocationScopePredicate('a')}
-      ORDER BY a.budget_usd::numeric DESC
+      -- a.id tie-breaks equal budgets (H33): without it Postgres may return
+      -- tied rows in any order, so limit/offset pages could repeat or skip rows.
+      ORDER BY a.budget_usd::numeric DESC, a.id
       LIMIT ${query.limit} OFFSET ${query.offset}
     `)
     const totalRows = await tx.execute<{ total: string }>(sql`

@@ -106,14 +106,32 @@ export async function confirmProvisionalInstance(
   const realEmail = normalizeEmail(input.realTeammateEmail)
 
   return db.transaction(async (tx) => {
-    // Advisory locks BEFORE the row lock, and in ascending namespace order.
-    // provisionEmit takes principal(2) then globalCap(3) and only THEN writes
-    // instance_attestation rows. If we took the row lock first we would hold it
-    // while waiting for the advisory locks that provisionEmit holds while
-    // waiting for the row: a textbook deadlock. Taking them here also makes the
-    // cap reads below serialise against the create door, which is the only way
-    // a count-then-write can hold. Both keys are known upfront, so hoisting
-    // them costs nothing. See server/db/advisory-lock.ts for the contract.
+    // LOCK ORDER, the same as provisionEmit's: teammate row, then the principal
+    // and global-cap advisory keys (ascending namespace order), then the device
+    // row. The advisory keys before the DEVICE row: provisionEmit holds them
+    // while it writes instance_attestation, so taking the device first would
+    // deadlock against it. They also make the cap reads below serialise against
+    // the create door, the only way a count-then-write can hold. See
+    // server/db/advisory-lock.ts.
+    //
+    // Load the real teammate's authoritative placement + verified identity,
+    // LOCKED, first (#417): FOR NO KEY UPDATE makes a concurrent placement move
+    // wait, so the placement read here is current, and teammate-before-device is
+    // the order every move uses. Then the principal and global-cap keys, the same
+    // order provisionEmit takes them in (teammate, principal, global cap, rows),
+    // so waiting on a busy teammate never holds the shared cap key.
+    // The NOT provisional guard makes it impossible to re-point onto another shadow.
+    const realRows = await tx.execute<RealRow>(sql`
+      SELECT entra_oid,
+             email,
+             region_id::text  AS region_id,
+             org_unit_id::text AS org_unit_id
+        FROM teammate
+       WHERE id = ${input.realTeammateId}::uuid
+         AND NOT provisional
+       LIMIT 1
+         FOR NO KEY UPDATE
+    `)
     await tx.execute(advisoryXactLock('principal', input.realTeammateId))
     await tx.execute(advisoryGlobalCapLock('confirmed'))
 
@@ -160,18 +178,6 @@ export async function confirmProvisionalInstance(
       })
     }
 
-    // Load the real teammate's authoritative placement + verified identity. The
-    // NOT provisional guard makes it impossible to re-point onto another shadow.
-    const realRows = await tx.execute<RealRow>(sql`
-      SELECT entra_oid,
-             email,
-             region_id::text  AS region_id,
-             org_unit_id::text AS org_unit_id
-        FROM teammate
-       WHERE id = ${input.realTeammateId}::uuid
-         AND NOT provisional
-       LIMIT 1
-    `)
     const real = [...realRows][0]
     if (!real) {
       throw createError({ statusCode: 404, statusMessage: 'Confirming teammate not found' })

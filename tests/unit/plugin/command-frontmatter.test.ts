@@ -23,6 +23,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { PUBLIC_SNAPSHOT } from '../helpers/public-snapshot'
 
 // Vitest runs with cwd at the repo root (see version-sync.test.ts / claude-redeem.test.ts).
 const COMMANDS_DIR = join(process.cwd(), 'plugin/commands')
@@ -208,10 +209,13 @@ describe('command-frontmatter — Windows PowerShell is never resolved through P
   // absolute system path, in the unquoted forward-slash form that runs verbatim
   // in both Git Bash and the PowerShell tool.
   const ABSOLUTE = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
+  // docs/skills is internal-only: in the public snapshot only the shipped
+  // command files are checked.
   const SKILLS_DIR = join(process.cwd(), 'docs/skills/tokenscope')
+  const HAS_SKILLS = !PUBLIC_SNAPSHOT
   const docs = [
     ...commandFiles.map((f) => join(COMMANDS_DIR, f)),
-    ...readdirSync(SKILLS_DIR).filter((f) => f.endsWith('.md')).map((f) => join(SKILLS_DIR, f)),
+    ...(HAS_SKILLS ? readdirSync(SKILLS_DIR).filter((f) => f.endsWith('.md')).map((f) => join(SKILLS_DIR, f)) : []),
   ]
   // An invocation is the interpreter name followed by a flag. Prose that only
   // names the executable (the troubleshooting row) is not one.
@@ -240,7 +244,9 @@ describe('command-frontmatter — Windows PowerShell is never resolved through P
   })
 
   it('names the fallback for a Windows not installed on C:', () => {
-    for (const file of [join(COMMANDS_DIR, 'setup.md'), join(COMMANDS_DIR, 'status.md'), join(SKILLS_DIR, 'tokenscope-setup.md')]) {
+    const files = [join(COMMANDS_DIR, 'setup.md'), join(COMMANDS_DIR, 'status.md')]
+    if (HAS_SKILLS) files.push(join(SKILLS_DIR, 'tokenscope-setup.md'))
+    for (const file of files) {
       expect(readFileSync(file, 'utf8'), file).toContain('$env:SystemRoot')
     }
   })

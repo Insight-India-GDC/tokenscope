@@ -30,7 +30,7 @@ function fakeStore(
     loadActiveRegionLeaders: vi.fn(async () => new Map<string, string>()),
     loadActiveUnitOwners: vi.fn(async () => new Map()),
     createBillTeammate: vi.fn(async () => 'tm-new'),
-    homeTeammate: vi.fn(async () => {}),
+    homeTeammate: vi.fn(async () => true),
     homeTeammateIfStillDerivable: vi.fn(async () => true),
     stampPlacementAttempt: vi.fn(async () => {}),
     setPlacementProvenance: vi.fn(async () => {}),
@@ -149,6 +149,15 @@ describe('provisionAndPlace', () => {
     const r = await provisionAndPlace('dev@example.com', { store, lookupDirectory: async () => dirUser('CC-4310') })
     expect(r).toMatchObject({ teammateId: 'tm-x', created: false, homed: true })
     expect(store.homeTeammate).toHaveBeenCalledWith('tm-x', 'ou-apac')
+  })
+
+  it('eligible when read, refused at write time (homeTeammate false) → not homed, no provenance stamped', async () => {
+    const store = fakeStore({ existing: { id: 'tm-race', onUnplaced: true, rehomeSafe: true } })
+    store.homeTeammate = vi.fn(async () => false)
+    const r = await provisionAndPlace('dev@example.com', { store, lookupDirectory: async () => dirUser('CC-4310') })
+    expect(store.homeTeammate).toHaveBeenCalledWith('tm-race', 'ou-apac')
+    expect(r).toMatchObject({ homed: false })
+    expect(store.setPlacementProvenance).not.toHaveBeenCalled()
   })
 
   it('existing on holding but NOT rehome-safe (live session) → not moved, bills still replay', async () => {

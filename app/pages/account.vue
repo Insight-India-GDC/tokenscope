@@ -578,15 +578,20 @@ async function revokePersonalSubscription(tool: string) {
       </p>
     </UiCard>
 
-    <!-- Card 1 — connect Claude Code (install the plugin once). The instructions
+    <!-- Cards 1a/1b — connect Claude Desktop, then the Claude Code CLI: one policy
+         client, two installs (the app cannot add a URL marketplace). The instructions
          live in ConnectClientGuide so they can't drift from the homepage dialog. -->
     <UiCard v-if="isClientEnabled('claude-code')" class="mt-5">
-      <ConnectClientGuide client="claude-code" :config="connectConfig" :failed="connectConfigFailed" />
+      <ConnectClientGuide kind="claude-desktop" :config="connectConfig" :failed="connectConfigFailed" />
+    </UiCard>
+
+    <UiCard v-if="isClientEnabled('claude-code')" class="mt-5">
+      <ConnectClientGuide kind="claude-cli" :config="connectConfig" :failed="connectConfigFailed" />
     </UiCard>
 
     <!-- Card 1b — connect Copilot CLI (same shared guide component). -->
     <UiCard v-if="isClientEnabled('copilot-cli')" id="connect-copilot-cli" class="mt-5">
-      <ConnectClientGuide client="copilot-cli" :config="connectConfig" :failed="connectConfigFailed" />
+      <ConnectClientGuide kind="copilot-cli" :config="connectConfig" :failed="connectConfigFailed" />
     </UiCard>
 
     <!-- Card 2 — tag a repo's project (one step: writes .tokenscope + tags) -->

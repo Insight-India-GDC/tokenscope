@@ -50,13 +50,14 @@
     "test:fidelity": "bash tests/fidelity/check.sh",
     "test:smoke": "bash tests/smoke/run-smoke.sh",
     "test:nav": "node tests/smoke/admin-nav-timing.mjs",
-    "test:reap": "docker ps -aq --filter label=tokenscope.test=true | xargs -r docker rm -f && echo 'reaped orphaned tokenscope test containers'"
+    "test:reap": "docker ps -aq --filter label=tokenscope.test=true | xargs -r docker rm -f && echo 'reaped orphaned tokenscope test containers'",
+    "check:upstream-backlinks": "node scripts/check-no-upstream-backlinks.mjs --commits origin/main..HEAD"
   },
   "dependencies": {
     "@azure/identity": "^4.13.3",
     "@azure/monitor-query": "^1.3.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@nuxt/ui": "^4.10.0",
+    "@nuxt/ui": "^4.11.2",
     "consola": "^3.4.2",
     "drizzle-orm": "^0.45.3",
     "echarts": "^6.1.0",
@@ -68,14 +69,14 @@
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.15",
     "vue": "^3.5.43",
-    "vue-echarts": "^8.2.0",
+    "vue-echarts": "^8.3.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@nuxt/eslint": "^1.15.1",
     "@playwright/cli": "^0.1.21",
     "@playwright/test": "^1.63.0",
-    "@testcontainers/postgresql": "^12.0.0",
+    "@testcontainers/postgresql": "^12.2.0",
     "@types/node": "^26.6.2",
     "@vitejs/plugin-vue": "^6.0.9",
     "@vue/test-utils": "^2.5.1",
@@ -85,7 +86,7 @@
     "playwright-chromium": "^1.63.0",
     "prettier": "^3.9.8",
     "typescript": "^5.7.0",
-    "vitest": "^5.0.0",
+    "vitest": "^5.0.2",
     "vue-tsc": "^3.3.10"
   },
   "engines": {
@@ -97,6 +98,7 @@
     "esbuild": ">=0.25.0",
     "minimatch": "^10.2.5",
     "brace-expansion": "^5.0.8",
+    "simple-git": "^4.0.2",
     "@unhead/vue": "^3.2.3",
     "@modelcontextprotocol/sdk": {
       "@hono/node-server": "^2.0.5"

@@ -433,6 +433,15 @@ const adminSession = (): Session => ({
   regionId,
   orgPath: 'pcd.svc',
 })
+// v_cost_drift has no region_id, so only platform-admin gets the drift section.
+const platformSession = (): Session => ({
+  teammateId: '9a1e0000-0000-4000-8000-0000000000a2',
+  email: 'pcd-platform@x.test',
+  displayName: 'Platform',
+  role: 'platform-admin',
+  regionId,
+  orgPath: 'pcd.svc',
+})
 const devSession = (): Session => ({
   teammateId: '00000000-0000-0000-0000-0000000000d1',
   email: 'pcd-dev@x.test',
@@ -459,12 +468,13 @@ interface DiagResp {
     providerPricedSpans: number
     rateCardPricedSpans: number
     worstSpan: { model: string; pricedBy: string; driftUsd: string } | null
-  }
+  } | null
+  costDriftScopedOut?: { reason: string; detail: string }
   // Per-read availability. The zero shapes above are indistinguishable from a
   // failed query without it, so this is the only field that lets the page tell
   // "nothing happened" from "we could not find out".
   reads: {
-    costDrift: { available: boolean; error?: string; errorCorrelationId?: string }
+    costDrift?: { available: boolean; error?: string; errorCorrelationId?: string }
     costingRungs: { available: boolean; error?: string; errorCorrelationId?: string }
   }
 }
@@ -472,7 +482,10 @@ interface DiagResp {
 // The costing aggregates moved off the main snapshot to their own endpoint
 // (docs/design/admin-nav-responsiveness.md D4); this block moved with them.
 describe('GET /api/v1/admin/diagnostics/costing — costing rungs', () => {
+  // Region admin: region-clamped rungs, no drift section.
   let resp: DiagResp
+  // Platform-admin: the drift section, read from the same seeded window.
+  let platformResp: DiagResp
 
   async function loadHandler() {
     vi.resetModules()
@@ -545,6 +558,7 @@ describe('GET /api/v1/admin/diagnostics/costing — costing rungs', () => {
 
     const handler = await loadHandler()
     resp = await handler(makeEvent(adminSession()))
+    platformResp = await handler(makeEvent(platformSession()))
   }, 60_000)
 
   it('REJECTS a developer — diagnostics is admin / platform-admin only', async () => {
@@ -552,23 +566,38 @@ describe('GET /api/v1/admin/diagnostics/costing — costing rungs', () => {
     await expect(handler(makeEvent(devSession()))).rejects.toMatchObject({ statusCode: 403 })
   })
 
-  it('returns EXACTLY the two keys the main snapshot used to carry, in their old shapes', () => {
+  it('returns EXACTLY the two keys the main snapshot used to carry, in their old shapes (platform-admin)', () => {
     // The page re-points its drift and rungs cards at this read; a key that
     // silently stays on (or comes back to) the main snapshot would render as
     // "no data" there while looking green here.
-    expect(Object.keys(resp).sort()).toEqual(['costDrift', 'costingRungs', 'reads'])
+    expect(Object.keys(platformResp).sort()).toEqual(['costDrift', 'costingRungs', 'reads'])
     // `reads` carries one entry per independently-fallible read and NOTHING is
     // merged into the two data shapes, so a consumer pinned to their fields is
     // untouched by the availability signal.
-    expect(Object.keys(resp.reads).sort()).toEqual(['costDrift', 'costingRungs'])
-    expect(resp.reads.costDrift).toEqual({ available: true })
-    expect(resp.reads.costingRungs).toEqual({ available: true })
-    expect(Object.keys(resp.costingRungs).sort()).toEqual(
+    expect(Object.keys(platformResp.reads).sort()).toEqual(['costDrift', 'costingRungs'])
+    expect(platformResp.reads.costDrift).toEqual({ available: true })
+    expect(platformResp.reads.costingRungs).toEqual({ available: true })
+    expect(Object.keys(platformResp.costingRungs).sort()).toEqual(
       ['fallbackModels', 'ladderSpans', 'other', 'provider', 'rateCard', 'rateCardPct', 'spans', 'windowDays'],
     )
-    expect(Object.keys(resp.costDrift).sort()).toEqual(
+    expect(Object.keys(platformResp.costDrift!).sort()).toEqual(
       ['meanAbsDriftPct', 'providerPricedSpans', 'rateCardPricedSpans', 'spansCompared', 'worstSpan'],
     )
+  })
+
+  it('a REGION admin gets no drift section (v_cost_drift has no region) and is told why; rungs stay region-clamped', () => {
+    // Drift data exists in this window (the platform-admin read sees it), so a
+    // null here is the scope rule, not an empty view.
+    expect(platformResp.costDrift!.spansCompared).toBeGreaterThan(0)
+    expect(Object.keys(resp).sort()).toEqual(['costDrift', 'costDriftScopedOut', 'costingRungs', 'reads'])
+    expect(resp.costDrift).toBeNull()
+    expect(resp.costDriftScopedOut).toMatchObject({ reason: 'platform-admin-only' })
+    // No availability entry for a read that was never run: it must not read as a failure.
+    expect(Object.keys(resp.reads)).toEqual(['costingRungs'])
+    expect(resp.reads.costingRungs).toEqual({ available: true })
+    // Nothing from the estate-wide view leaks through any other field.
+    expect(JSON.stringify(resp)).not.toContain(platformResp.costDrift!.worstSpan!.model + '"')
+    expect(resp.costingRungs.spans).toBe(5)
   })
 
   it('counts SPANS, not rows — a four-token-type provider span is one provider span', () => {
@@ -602,7 +631,7 @@ describe('GET /api/v1/admin/diagnostics/costing — costing rungs', () => {
   })
 
   it('the drift card keeps working across the old/new split and labels the worst span vintage', () => {
-    const d = resp.costDrift
+    const d = platformResp.costDrift!
     // 1 provider-priced + 3 rate-card-priced comparable spans in the window.
     expect(d.spansCompared).toBe(4)
     expect(d.providerPricedSpans).toBe(1)
@@ -632,7 +661,7 @@ describe('GET /api/v1/admin/diagnostics/costing — costing rungs', () => {
     await t.client.unsafe('ALTER VIEW v_cost_drift RENAME TO v_cost_drift_hidden_by_test')
     try {
       const handler = await loadHandler()
-      const r = await handler(makeEvent(adminSession()))
+      const r = await handler(makeEvent(platformSession()))
       expect(r.costDrift).toEqual({
         spansCompared: 0,
         meanAbsDriftPct: null,
@@ -642,9 +671,9 @@ describe('GET /api/v1/admin/diagnostics/costing — costing rungs', () => {
       })
       // The failed read says so, with a reason and a correlation id that ties
       // back to the full-fidelity server log line (never the raw message).
-      expect(r.reads.costDrift.available).toBe(false)
-      expect(r.reads.costDrift.error).toBe('relation-missing')
-      expect(r.reads.costDrift.errorCorrelationId).toMatch(
+      expect(r.reads.costDrift!.available).toBe(false)
+      expect(r.reads.costDrift!.error).toBe('relation-missing')
+      expect(r.reads.costDrift!.errorCorrelationId).toMatch(
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
       )
       // No fragment of the driver's message (which carries the relation name and
@@ -653,7 +682,7 @@ describe('GET /api/v1/admin/diagnostics/costing — costing rungs', () => {
       // The healthy sibling is unaffected: same numbers AND still declared
       // available, so its card is not tarred by its neighbour's failure.
       expect(r.reads.costingRungs).toEqual({ available: true })
-      expect(r.costingRungs).toEqual(resp.costingRungs)
+      expect(r.costingRungs).toEqual(platformResp.costingRungs)
       expect(r.costingRungs.spans).toBe(5)
     } finally {
       await t.client.unsafe('ALTER VIEW v_cost_drift_hidden_by_test RENAME TO v_cost_drift')

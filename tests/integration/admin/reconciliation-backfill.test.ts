@@ -70,6 +70,8 @@ function ev(opts: { method: string; body?: unknown; session: Session; params?: R
 }
 const finops = (): Session => ({ teammateId: finopsId, email: 'bf-fin@x.test', displayName: 'Fin', role: 'platform-admin', regionId, orgPath: 'bf.svc' })
 const dev = (): Session => ({ teammateId: devId, email: 'bf-dev@x.test', displayName: 'Dev', role: 'developer', regionId, orgPath: 'bf.svc' })
+// A region-scoped admin. The target is resolved with no region term, so the route is platform-admin only.
+const regionAdmin = (): Session => ({ teammateId: '9a1e0000-0000-4000-8000-0000000000b3', email: 'bf-ra@x.test', displayName: 'RA', role: 'admin', regionId, orgPath: 'bf.svc' })
 
 beforeAll(async () => {
   t = await startTestDb(); process.env.DATABASE_URL = t.url
@@ -105,6 +107,13 @@ describe('backfill endpoint (POST/GET)', () => {
 
   it('rejects a non-admin (developer) with 403', async () => {
     await expect(backfillPost(ev({ method: 'POST', session: dev(), body: { targetKind: 'enterprise', targetId: entReconciledId, startDate: daysAgo(30) } }))).rejects.toMatchObject({ statusCode: 403 })
+  })
+
+  it('rejects a region admin with 403 and enqueues nothing (platform-admin only)', async () => {
+    const before = await t.client<{ n: string }[]>`SELECT COUNT(*)::text AS n FROM reconciliation_backfill_request`
+    await expect(backfillPost(ev({ method: 'POST', session: regionAdmin(), body: { targetKind: 'enterprise', targetId: entReconciledId, startDate: daysAgo(30) } }))).rejects.toMatchObject({ statusCode: 403 })
+    const after = await t.client<{ n: string }[]>`SELECT COUNT(*)::text AS n FROM reconciliation_backfill_request`
+    expect(after[0]!.n).toBe(before[0]!.n)
   })
 
   it('rejects a startDate more than 90 days ago (400)', async () => {

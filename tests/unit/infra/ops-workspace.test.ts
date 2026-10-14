@@ -6,12 +6,14 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { PUBLIC_SNAPSHOT } from '../helpers/public-snapshot'
 
 const ROOT = resolve(__dirname, '../../..')
 const MAIN = readFileSync(resolve(ROOT, 'infra/main.bicep'), 'utf8')
 const MONITORING = readFileSync(resolve(ROOT, 'infra/modules/monitoring.bicep'), 'utf8')
 const CONTAINER_APP = readFileSync(resolve(ROOT, 'infra/modules/container-app.bicep'), 'utf8')
-const DEV_PARAMS = readFileSync(resolve(ROOT, 'infra/parameters/dev.bicepparam'), 'utf8')
+// dev.bicepparam is internal-only: read here, skipped in the public snapshot.
+const DEV_PARAMS = PUBLIC_SNAPSHOT ? null : readFileSync(resolve(ROOT, 'infra/parameters/dev.bicepparam'), 'utf8')
 const OPS_ALERTS = readFileSync(resolve(ROOT, 'infra/modules/ops-alerts.bicep'), 'utf8')
 
 /** The body of `resource <symbol> '...' = ... { ... }` up to the next top-level declaration. */
@@ -111,7 +113,7 @@ describe('ops / telemetry workspace split', () => {
     expect(rule).toMatch(/operator: 'LessThan'\s+threshold: 1/)
   })
 
-  it('Dev pins the split, so backing out private query cannot orphan the ops workspace', () => {
+  it.skipIf(DEV_PARAMS === null)('Dev pins the split, so backing out private query cannot orphan the ops workspace', () => {
     expect(DEV_PARAMS).toMatch(/^param separateOpsWorkspace = true$/m)
   })
 

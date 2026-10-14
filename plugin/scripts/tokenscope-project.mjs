@@ -22,24 +22,34 @@
  * with three string fields. Avoiding the `yaml` npm dep keeps the plugin footprint
  * small (both plugins ship into user space).
  */
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { dirname, resolve, join } from 'node:path'
 import { createHash } from 'node:crypto'
 
 /**
  * Walk up from `startDir` looking for a committed `.tokenscope`. Returns the
  * absolute path of the nearest one, or null if none is found up to the fs root.
+ * A regular file only: the walk from any repo under the home reaches
+ * `~/.tokenscope`, which is this plugin's state DIRECTORY, not a tag.
  */
 export function findTokenscopeFile(startDir) {
   let dir = resolve(startDir)
   const root = resolve('/')
   while (true) {
     const candidate = join(dir, '.tokenscope')
-    if (existsSync(candidate)) return candidate
+    if (isFile(candidate)) return candidate
     if (dir === root) return null
     const parent = dirname(dir)
     if (parent === dir) return null
     dir = parent
+  }
+}
+
+function isFile(p) {
+  try {
+    return statSync(p).isFile()
+  } catch {
+    return false
   }
 }
 

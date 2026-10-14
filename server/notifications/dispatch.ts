@@ -18,6 +18,8 @@ import { and, eq, sql } from 'drizzle-orm'
 import * as schema from '../../drizzle/schema'
 import { isUuid } from '../utils/uuid'
 import { monthStartIso as monthStartIsoFor } from '../utils/period'
+import { REPORT_DATA_INBOX_CATEGORIES } from '../../shared/schemas/inbox'
+import { activeReportDenySql } from '../auth/report-deny-sql'
 
 export type InboxCategory =
   | 'sync-conflict'
@@ -36,6 +38,7 @@ export type InboxCategory =
   | 'project-ending-soon' // D3: a project a dev is tagged to enters its end_date warning window — re-tag ahead
   | 'project-ended-retag' // D2a: a dev's spend spilled to unallocated because the project ended — re-tag the spilled portion
   | 'github-coverage-gap' // a GitHub org transitioned into a non-connected coverage state, or an enterprise lost its census capability (github-coverage-sweep worker); admin-routed — Workstream D, design §6
+  | 'over-emission-escalated' // a teammate's over-emission flag was escalated, by them or by the stray-quarantine sweep (notifications/over-emission.ts); admin-routed to the flag's region
   | 'personal-subscription-prompt' // settled Claude usage has no provider corroboration; prompt the teammate to declare only when personally funded (ADR-0011 D4)
   | 'ops-alert' // A5 inbox parity for an externally-notified ops condition (ops-alert worker); ONE item per condition key (related_entity_kind carries the key), reminders update it in place (docs/design/ops-alerting.md A5, ar-M17); admin-routed
 
@@ -142,6 +145,7 @@ function defaultSeverity(category: InboxCategory): 'info' | 'attention' | 'urgen
     case 'reconciliation-gap':
     case 'project-ending-soon':
     case 'project-ended-retag':
+    case 'over-emission-escalated':
     case 'github-coverage-gap': // per-org gap default; the sweep overrides 'urgent' for a whole-enterprise capability loss
       return 'attention'
     // Silent-attribution failures page like a connector outage, not a nag:
@@ -190,14 +194,17 @@ async function resolveRecipients(
     case 'structural-conflict':
     case 'connector-health':
     case 'copilot-bill-unsettled':
-    case 'copilot-bill-unclassified': {
+    case 'copilot-bill-unclassified':
+    case 'over-emission-escalated': {
       // Admin-routed, region-scoped when derivable (the org's region, passed as input.regionId);
       // otherwise the cross-region finance/ops roles only. A missing-license-SKU month — or an
       // unclassified/conservation-break month (D3) — is a finance data-correctness concern
       // → platform-admin (+ the region's admin).
       const region = await deriveAlertRegion(db, input)
       return {
-        recipientIds: await resolveAdmins(db, region),
+        // Report data (REPORT_DATA_INBOX_CATEGORIES) skips an admin with an
+        // active report-access deny.
+        recipientIds: await resolveAdmins(db, region, { withReportAccess: REPORT_DATA_INBOX_CATEGORIES.includes(input.category) }),
         routingScope: region ? `region:${region}` : 'fail-open',
       }
     }
@@ -426,7 +433,9 @@ async function deriveAlertRegion(
 async function resolveAdmins(
   db: PostgresJsDatabase<typeof schema>,
   regionId: string | null,
+  opts: { withReportAccess?: boolean } = {},
 ): Promise<string[]> {
+  const reportAccess = opts.withReportAccess ? sql`AND NOT ${activeReportDenySql(sql`teammate.id`)}` : sql``
   const rows = await db.execute<{ id: string }>(sql`
     SELECT id::text AS id
     FROM teammate
@@ -438,6 +447,7 @@ async function resolveAdmins(
         -- only. No explicit null-guard needed.
         OR (role = 'admin' AND region_id = ${regionId}::uuid)
       )
+      ${reportAccess}
   `)
   return [...rows].map((r) => r.id)
 }

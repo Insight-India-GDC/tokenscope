@@ -60,6 +60,7 @@ import { assertSafeEndpoint, unsafeEndpointError } from './endpoint-guard.mjs'
 // Re-exported so existing importers keep one name, and so mcp-origin.mjs can
 // reach it without importing this module (copilot-plugin does not vendor it).
 import { realHome } from './real-home.mjs'
+import { claudeSettingsPath } from './claude-config-dir.mjs'
 import { emitHelperSpawn, helperScriptName } from './emit-helper-spawn.mjs'
 export { realHome }
 export {
@@ -604,8 +605,9 @@ export function readRegularFileBounded(path, maxBytes) {
 }
 
 /**
- * The GLOBAL ~/.claude/settings.json `env` block, resolved the way CLAUDE CODE
- * resolves it — through `homedir()`, which honours `HOME`.
+ * The GLOBAL settings.json `env` block of this install's config folder
+ * (claude-config-dir.mjs: a gated CLAUDE_CONFIG_DIR, else ~/.claude), resolved
+ * the way CLAUDE CODE resolves it — through `homedir()`, which honours `HOME`.
  *
  * Correct for "what will Claude Code read?", and safe inside the SessionStart
  * hook, where `neutraliseRepoHome` has already replaced a repo-CLAIMED `HOME`
@@ -613,7 +615,7 @@ export function readRegularFileBounded(path, maxBytes) {
  * anywhere that has not done that repair: see the trusted sibling below.
  */
 export function globalSettingsEnv() {
-  return readSettingsEnv(join(homedir(), '.claude', 'settings.json'))
+  return readSettingsEnv(claudeSettingsPath({ home: homedir() }))
 }
 
 /**
@@ -633,7 +635,7 @@ export function globalSettingsEnv() {
  * one honours the environment, one refuses to.
  */
 export function trustedGlobalSettingsEnv() {
-  return readSettingsEnv(join(realHome(), '.claude', 'settings.json'))
+  return readSettingsEnv(claudeSettingsPath({ home: realHome() }))
 }
 
 /**

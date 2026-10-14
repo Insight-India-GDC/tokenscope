@@ -26,15 +26,17 @@
  * The output object is built from a fixed key set (never a spread of the parsed
  * store), so no future key added to either store can leak through this path.
  *
- * Node built-ins plus ONE project import — real-home.mjs, which is vendored and
- * drift-gated by the same mechanism this file is — so it vendors into
+ * Node built-ins plus project imports that are vendored and drift-gated by the
+ * same mechanism this file is (real-home.mjs, device-store.mjs,
+ * claude-config-dir.mjs and its argv-guard.mjs) — so it vendors into
  * copilot-plugin/scripts/ by scripts/sync-copilot-plugin.mjs and is gated by
  * scripts/check-copilot-plugin-sync.mjs, the same treatment tokenscope-project.mjs
  * and endpoint-guard.mjs get. One implementation, two clients, no drift: a
  * drifted copy would be a second, un-gated reader of a credential file.
  *
  * THE TWO STORES RESOLVE THEIR HOME DIFFERENTLY, deliberately:
- *   - ~/.claude/settings.json → homedir(). This file is read only to learn what
+ *   - ~/.claude/settings.json → homedir() (or the install's own gated
+ *     CLAUDE_CONFIG_DIR folder, claude-config-dir.mjs). This file is read only to learn what
  *     CLAUDE CODE itself will read, and Claude Code resolves its own settings
  *     through $HOME. Following the passwd home instead would report a device as
  *     un-enrolled on a host where it is emitting perfectly well.
@@ -62,6 +64,7 @@ import { homedir } from 'node:os'
 import { isMainModule } from './is-main.mjs'
 import { realHome } from './real-home.mjs'
 import { resolveStorePath } from './device-store.mjs'
+import { resolveClaudeConfigDir } from './claude-config-dir.mjs'
 
 /** The emit tools an instance can be bound to. An instance is bound to exactly one. */
 const EMIT_TOOLS = ['claude-code', 'copilot-cli']
@@ -205,8 +208,26 @@ export function deviceIdentity(tool = 'claude-code', home = undefined) {
     const cfg = readJson(resolveStorePath('copilot-cli', join(home ?? realHome(), '.tokenscope')))
     return cfg === null ? result({ reason: 'no-enrolment' }) : readCopilotDevice(cfg, tool)
   }
-  const settings = readJson(join(home ?? homedir(), '.claude', 'settings.json'))
-  return settings === null ? result({ reason: 'no-enrolment' }) : readClaudeDevice(settings, tool)
+  // The config folder of the install asking (CLAUDE_CONFIG_DIR, gated), so a
+  // Claude Desktop with its own folder reads its own enrolment.
+  const configDir = resolveClaudeConfigDir({ home: home ?? homedir() })
+  const settingsFile = join(configDir.dir, 'settings.json')
+  const settings = readJson(settingsFile)
+  const own = settings === null ? result({ reason: 'no-enrolment' }) : readClaudeDevice(settings, tool)
+  // A second install on this host (its own config folder, not yet set up)
+  // shares the host's claude-code enrolment in ~/.tokenscope, which the emit
+  // helper reads first. Report THAT instance, so setup rotates it rather than
+  // minting a second one and leaving the first install's labels on a
+  // superseded id.
+  // Only when the folder's file is absent or parsed cleanly: setup cannot write
+  // a malformed file, so reusing the shared instance there would rotate the
+  // credential the other install still holds and then fail to save the new one.
+  const cleanlyAbsent = settings !== null || !existsSync(settingsFile)
+  if (own.reason === 'no-enrolment' && configDir.source === 'env' && cleanlyAbsent) {
+    const store = readJson(resolveStorePath('claude-code', join(home ?? realHome(), '.tokenscope')))
+    if (store !== null && store.tool === 'claude-code') return readCopilotDevice(store, tool)
+  }
+  return own
 }
 
 /** Parse `--tool <name>` (also `--tool=<name>`); defaults to claude-code. */

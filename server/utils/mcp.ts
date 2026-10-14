@@ -19,6 +19,7 @@
  * defence-in-depth re-check so a future multi-scope token can't reach a tool it
  * lacks the scope for.
  */
+import { ACTIVITY_LABEL_MAX, displayText } from '../../shared/schemas/display-text'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
@@ -219,7 +220,7 @@ export function createMcpServer(dbOverride?: Db, publicOrigin?: string): McpServ
           'Budget (project) id to assign to; null = move off budget; omit = leave unchanged. Must be a budget you are a member of.',
         ),
       activity: z
-        .union([z.string().trim().min(1).max(64), z.null()])
+        .union([displayText(ACTIVITY_LABEL_MAX, { trim: true }), z.null()])
         .optional()
         .describe('Activity label to set; null = clear; omit = leave unchanged.'),
     },

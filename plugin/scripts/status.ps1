@@ -314,7 +314,45 @@ function Invoke-Status {
   }
   $creds = Read-JsonOrNull ([IO.Path]::Combine($profileDir, '.claude', '.credentials.json'))
   $result.mcp_authed = Test-McpAuthed $creds
+  # Claude Desktop only (desktop-env.mjs): its sessions are attributed through the
+  # user environment, so check it carries this device.
+  if (Test-TsTrustedDesktop ([IO.Path]::Combine($profileDir, '.claude', 'settings.json'))) {
+    $attrs = [string](Get-Prop (Get-Prop $settings 'env') 'OTEL_RESOURCE_ATTRIBUTES')
+    $mine = if ($attrs -match '(?:^|,)tokenscope\.instance_id=([^,]+)') { $Matches[1] } else { '' }
+    $login = [string][Environment]::GetEnvironmentVariable('OTEL_RESOURCE_ATTRIBUTES', 'User')
+    $dv = 'missing'
+    if ($login) {
+      $dv = 'mismatch'
+      if ($mine -and $login -match '(?:^|,)tokenscope\.instance_id=([^,]+)' -and $Matches[1] -ieq $mine) { $dv = 'ok' }
+    }
+    $d = [ordered]@{ verdict = $dv }
+    if ($dv -ne 'ok') { $d['fix'] = 'Run /tokenscope:setup in this Claude app session, then quit the app completely and open it again.' }
+    $result['desktop_env'] = $d
+  }
   return $result
+}
+
+# Claude Desktop gate (desktop-env.mjs): the app's CLAUDE_CODE_ENTRYPOINT, and not
+# one a PROJECT settings file (.claude\settings.json or settings.local.json, from
+# the working directory up) supplied: Claude Code applies a project's env to the
+# session, so a checked-out repository could otherwise switch this on.
+function Test-TsTrustedDesktop([string]$UserSettings) {
+  if ("$env:CLAUDE_CODE_ENTRYPOINT".Trim() -ne 'claude-desktop') { return $false }
+  $dir = (Get-Location).ProviderPath
+  while ($dir) {
+    foreach ($f in @('settings.json', 'settings.local.json')) {
+      $p = [IO.Path]::Combine($dir, '.claude', $f)
+      if ($p -ieq $UserSettings -or -not [IO.File]::Exists($p)) { continue }
+      try {
+        $j = [IO.File]::ReadAllText($p) | ConvertFrom-Json
+        if ($j.env -and ($j.env.PSObject.Properties.Name -contains 'CLAUDE_CODE_ENTRYPOINT')) { return $false }
+      } catch { }
+    }
+    $parent = [IO.Path]::GetDirectoryName($dir)
+    if (-not $parent -or $parent -eq $dir) { break }
+    $dir = $parent
+  }
+  return $true
 }
 
 if ($MyInvocation.InvocationName -ne '.') {

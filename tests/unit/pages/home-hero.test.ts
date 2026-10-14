@@ -809,6 +809,7 @@ describe('dashboard — the parts this change did not touch', () => {
   it('keeps the connect buttons, the tagged card and the Activity table', async () => {
     const w = await mountPage()
     expect(w.find('[data-testid="connect-claude"]').exists()).toBe(true)
+    expect(w.find('[data-testid="connect-desktop"]').exists()).toBe(true)
     expect(w.find('[data-testid="connect-copilot"]').exists()).toBe(true)
     expect(w.find('[data-testid="activity-card-stub"]').exists()).toBe(true)
     expect(w.find('[data-testid="spill-card"]').exists()).toBe(true)

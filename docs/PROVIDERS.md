@@ -31,19 +31,24 @@ the same **zero-touch, emit-now-attribute-later** principle.
 
 ### Install
 
-The plugins talk to the deployment whose host is baked into them, so install from
-the marketplace of the repository that carries **your** deployment's host (your
-fork; see [Point the plugins at your deployment](../plugin/README.md#point-the-plugins-at-your-deployment)).
-The marketplace is named `tokenscope` (`.claude-plugin/marketplace.json`). Inside a
-Claude Code session, run these one at a time:
+Your deployment serves its own Claude Code marketplace, with a plugin that
+already points at it. Inside a Claude Code session, run these one at a time:
 
 ```
-/plugin marketplace add <your-org>/<your-fork>
+/plugin marketplace add https://<your-tokenscope>/api/v1/plugin/marketplace.json
 /plugin install tokenscope@tokenscope
 ```
 
-When asked, choose **Install for you**. Then sign in, turn on tracking and
+When asked, choose **Install for you**. No Git and no server URL to set (Claude
+Code 2.1.224+). If that doesn't work for you, install from your fork with Git
+instead (`/plugin marketplace add <your-org>/<your-fork>`) and then
+[point the plugin at your deployment](../plugin/README.md#point-the-plugins-at-your-deployment). Then sign in, turn on tracking and
 restart, as in the [Quick start](../plugin/README.md#quick-start).
+
+In the Claude desktop app, `/plugin marketplace add` opens a form that takes only
+Git hosts, so the app installs through settings instead: see
+[Claude Desktop](../plugin/README.md#claude-desktop), or the Connect dialog's
+**Claude Desktop** guide.
 
 ## GitHub Copilot
 

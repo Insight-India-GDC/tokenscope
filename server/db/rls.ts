@@ -25,6 +25,15 @@ export interface RlsContext {
   userOrgPath: string
   userRole: 'developer' | 'manager' | 'admin' | 'finance' | 'global-finops'
   userTeammateId: string
+  /**
+   * Entra OID of the admin acting through persona override, when one is
+   * (server/utils/auth.ts — sandbox/local only). Not an RLS input: no policy
+   * reads it. It rides the same statement so recordAuditEvent can stamp the
+   * real actor onto audit_event.impersonator_oid (mig 0154) without every
+   * caller threading it through. Omitted/null → the GUC is set to '' and the
+   * column is written NULL.
+   */
+  impersonatorOid?: string | null
 }
 
 const RLS_ROLES: ReadonlySet<string> = new Set([
@@ -78,14 +87,15 @@ export async function applyRlsContext<TSchema extends Record<string, unknown>>(
   tx: PostgresJsDatabase<TSchema>,
   ctx: RlsContext,
 ): Promise<void> {
-  // All four GUCs in ONE statement — every RLS request pays this roundtrip
+  // All the GUCs in ONE statement — every RLS request pays this roundtrip
   // (docs/design/request-floor-performance.md F1). `true` keeps each
   // transaction-local (SET LOCAL semantics).
   await tx.execute(sql`SELECT
     set_config('app.user_region_id', ${ctx.userRegionId}, true),
     set_config('app.user_org_path', ${ctx.userOrgPath}, true),
     set_config('app.user_role', ${ctx.userRole}, true),
-    set_config('app.user_teammate_id', ${ctx.userTeammateId}, true)`)
+    set_config('app.user_teammate_id', ${ctx.userTeammateId}, true),
+    set_config('app.impersonator_oid', ${ctx.impersonatorOid ?? ''}, true)`)
 }
 
 /**

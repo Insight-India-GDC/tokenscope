@@ -46,7 +46,8 @@ What TokenScope holds, ranked by sensitivity.
 | Data | Class | Where stored | Retention |
 |---|---|---|---|
 | **Identity** — Entra OID, email (`teammate`, `instance_attestation.principal_email`, `teammate_identity_map`) | **PII** | Postgres | ~12 mo active, then soft-purge **[Current]** |
-| **Session token** (CLI auth handle) | Secret | Postgres — **hashed** (HMAC-SHA-256, KV service key) | session-duration; raw never stored |
+| **Emit handoff code** (`emit_handoff`, one-time device setup) | Secret | Postgres — **hashed** (HMAC-SHA-256, KV service key) | ~5 min, single-use; raw never stored |
+| **OAuth access and refresh tokens** (`oauth_token`, the device's durable credential) | Secret | Postgres — **hashed** (HMAC-SHA-256, KV service key) | access 30 days; refresh 90 days, renewed while the device is in use; raw never stored |
 | **Org / project metadata** — units, project codes, `raw_project_code`, client-facing name | Confidential (business) | Postgres | life of project (soft-retire) |
 | **Telemetry-derived usage** — token counts, model, cost, timestamps, session id, token-type (`attribution_record`, `actual_spend`) | Internal (non-PII per row, but joins to a person) | Postgres | ~7 yr finance horizon **[VERIFY w/ finance]** |
 | **Governance** — budgets, allocations, limits, tiers | Internal | Postgres | life of policy |
@@ -65,8 +66,8 @@ What TokenScope holds, ranked by sensitivity.
 
 1. **Device → Azure Monitor.** Each `api_request` log event carries token counts, `cost_usd`, `model`, Claude's `session.id` and TokenScope's resource attributes (`tokenscope.instance_id`, `project.code_hash`, `tool`). Claude Code also attaches `user.email` and `organization.id`. TokenScope does not strip them. **[Current]**, strip/keep policy **[VERIFY / Planned]**.
 2. **Azure Monitor → joiner.** `OTelLogs` keeps every attribute as emitted. The joiner's KQL reads `api_request` rows for one `tokenscope.instance_id` (`server/azure/reader.ts`) and takes the teammate from `instance_attestation`, never from the email.
-3. **Joiner → Postgres.** It writes the ledger row to `attribution_record`, with the email canonicalised into `emitting_email` and the org id into `emitting_org_id` (migration 0119) as evidence for the billing lane. Entra identity (OID, email) lives in `teammate`, `instance_attestation.principal_email` and `teammate_identity_map`.
-4. **Postgres → dashboard.** Reads go through Entra OIDC and the application's role and scope checks (`requireRole`, the region and unit clamps). Row-level security policies exist but bind only after the RLS cutover provisions the non-owner app role; until then the app connects as the table owner, which RLS does not restrict. This is where names and emails are shown back.
+3. **Joiner → Postgres.** It writes the ledger row to `attribution_record`, with the email canonicalised into `emitting_email` and the org id into `emitting_org_id` as evidence for the billing lane. Entra identity (OID, email) lives in `teammate`, `instance_attestation.principal_email` and `teammate_identity_map`.
+4. **Postgres → dashboard.** Reads go through Entra OIDC and the application's role and scope checks (`requireRole`, the region and unit clamps). Row-level security policies exist but do not execute: the app connects as the table owner, which RLS does not restrict, and [ADR-0013](Design-Decisions.md#adr-0013--authorization-is-enforced-in-the-application) keeps it that way. This is where names and emails are shown back.
 5. **Not emitted by default.** TokenScope's client settings never set `OTEL_LOG_USER_PROMPTS` or `OTEL_LOG_TOOL_DETAILS`, so Claude Code sends no prompt text or tool parameters. This is a client default, not an enforced boundary: a user who sets either variable would send that content, and the data collection rule stores every log event it receives. The joiner reads only `api_request` events.
 
 *With the default client settings content stays on the device; identity does not, as `user.email` when Claude Code supplies it, and it is stored twice before anyone signs in to read it.*
@@ -109,8 +110,9 @@ What TokenScope holds, ranked by sensitivity.
   12-month window, one `session-pii-purged` audit event per row). It purges
   ENDED devices only: a device in use renews its life, and needs its identity
   columns while it is live.
-- **Session tokens never stored raw** — only an HMAC-SHA-256 hash (Key-Vault
-  service key), enabling en-masse invalidation via key rotation. **[Current]**
+- **Credentials are never stored raw.** The emit handoff code and the OAuth
+  access and refresh tokens are stored only as an HMAC-SHA-256 hash (Key-Vault
+  service key), so rotating the key invalidates them all at once. **[Current]**
 - **k-anonymity suppression on the directory diagnostic.** The Region-rules
   "which directory attribute maps to region on my tenant?" diagnostic
   (`GET /api/v1/admin/directory/field-distribution`,
@@ -129,8 +131,8 @@ What TokenScope holds, ranked by sensitivity.
 
 | Item | Window | Status |
 |---|---|---|
-| Setup token | short-lived, single-use | **[Current]** |
-| Session token | session-duration, hashed | **[Current]** |
+| Emit handoff code | ~5 min, single-use, hashed | **[Current]** |
+| OAuth access / refresh token | 30 days / 90 days renewed in use, hashed | **[Current]** |
 | `instance_attestation` PII | ~12 mo active → soft-purge (PII cleared, row kept) | **[Current]** — column + the nightly `soft-purge` worker |
 | `attribution_record` | ~7 yr finance-audit horizon | **[Current]** (no automated purge); ~7 yr **[VERIFY w/ finance]** |
 | `audit_event` | indefinite, append-only (trigger-enforced) | **[Current]** |
@@ -139,8 +141,11 @@ What TokenScope holds, ranked by sensitivity.
 
 > **Two retention jobs run today, and the rest are still windows on paper.**
 > The nightly `soft-purge` worker enforces the 12-month `instance_attestation`
-> PII window, and `archive-ledger` retires cold `attribution_record` partitions
-> (off unless `LEDGER_ARCHIVE_ENABLED=true`). Append-only audit retention is
+> PII window. The nightly `session-gc` worker deletes used or expired handoff
+> codes after a day, and revoked or refresh-expired OAuth tokens after 30 days;
+> an expired code or token is refused at use before then. `archive-ledger`, which retires cold `attribution_record`
+> partitions, is registered but not scheduled on any deployment, and does
+> nothing unless `LEDGER_ARCHIVE_ENABLED=true`. Append-only audit retention is
 > enforced by a DB trigger that denies UPDATE/DELETE. Everything else in the
 > table above is a designed window with no job behind it yet.
 
@@ -158,8 +163,8 @@ What TokenScope holds, ranked by sensitivity.
 - **Sovereignty posture:** all stores (Postgres, Key Vault, Log Analytics) are
   Azure PaaS within the deploying tenant and the single deployment region — data
   does not leave Azure / the deployment region. Cross-region data isolation is
-  enforced today by *single-region deployment*, with RLS region-scoping as the
-  in-database backstop once activated. **[VERIFY]** the tenant/region against the
+  enforced by *single-region deployment* and the application's region checks;
+  the RLS region policies do not execute ([ADR-0013](Design-Decisions.md#adr-0013--authorization-is-enforced-in-the-application)). **[VERIFY]** the tenant/region against the
   deployment owner's data-classification policy for the target dataset.
 
 ---
@@ -168,7 +173,7 @@ What TokenScope holds, ranked by sensitivity.
 
 | Control | State |
 |---|---|
-| Formal retention/expiry jobs (Log Analytics tiering; attribution beyond the archive worker) | **[Planned]** — `archive-ledger` retires cold `attribution_record` partitions but is off unless `LEDGER_ARCHIVE_ENABLED=true`; nothing tiers Log Analytics |
+| Formal retention/expiry jobs (Log Analytics tiering; attribution beyond the archive worker) | **[Planned]** — `archive-ledger` (retires cold `attribution_record` partitions) is not scheduled and is off unless `LEDGER_ARCHIVE_ENABLED=true`; nothing tiers Log Analytics |
 | Deployment-time region choice (residency) | **[Planned]** — a single region is fixed per deployment today (via `location`) |
 | AI-coaching privacy boundary (hash-only, aggregates-only, 30 d purge) | **[Planned]** — coach not built; the privacy *contract* is documented as the bar any future build must meet |
 | Strip/keep policy for Claude's own identity attrs in telemetry | **[VERIFY / Planned]** |

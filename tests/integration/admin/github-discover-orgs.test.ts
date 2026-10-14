@@ -105,6 +105,8 @@ function ev(opts: { session: Session; body?: unknown }) {
 }
 const admin = (): Session => ({ teammateId: adminId, email: 'a@x.test', displayName: 'A', role: 'platform-admin', regionId, orgPath: 'd.svc' })
 const dev = (): Session => ({ teammateId: devId, email: 'd@x.test', displayName: 'D', role: 'developer', regionId, orgPath: 'd.svc' })
+// A region-scoped admin. The route re-links provider_org rows of every region, so it is platform-admin only.
+const regionAdmin = (): Session => ({ teammateId: '9a1e0000-0000-4000-8000-0000000000d3', email: 'ra@x.test', displayName: 'RA', role: 'admin', regionId, orgPath: 'd.svc' })
 
 async function orgRows() {
   return t.client<{ external_org_id: string; provider_enterprise_id: string | null }[]>`
@@ -278,5 +280,23 @@ describe('github discover-orgs', () => {
 
   it('a developer is rejected (RBAC)', async () => {
     await expect(discoverOrgs(ev({ session: dev(), body: { enterpriseId: entId } }))).rejects.toMatchObject({ statusCode: 403 })
+  })
+
+  it('a region admin is rejected (403) and nothing is created or re-linked; platform-admin 200', async () => {
+    // An org in some region, linked to no enterprise — discover would re-link it estate-wide.
+    await t.client`
+      INSERT INTO provider_org (provider, external_org_id, display_name, reconciliation_mode, billing, region_id)
+      VALUES ('github', 'acme-eng', 'Acme Eng', 'reconciled', 'tracked', ${regionId}::uuid)`
+    stub.seats = [
+      { assignee: { login: 'u1' }, organization: { login: 'acme-eng' } },
+      { assignee: { login: 'u2' }, organization: { login: 'acme-new' } },
+    ]
+    await expect(discoverOrgs(ev({ session: regionAdmin(), body: { enterpriseId: entId } }))).rejects.toMatchObject({ statusCode: 403 })
+    expect(await orgRows()).toEqual([{ external_org_id: 'acme-eng', provider_enterprise_id: null }])
+    expect(stub.withPatCalls).toEqual([])
+
+    const res = (await discoverOrgs(ev({ session: admin(), body: { enterpriseId: entId } }))) as { created: number; linked: number }
+    expect(res).toMatchObject({ created: 1, linked: 1 })
+    expect((await orgRows()).every((r) => r.provider_enterprise_id === entId)).toBe(true)
   })
 })

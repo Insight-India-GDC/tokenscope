@@ -30,7 +30,7 @@ import type { Session } from '../../../server/utils/auth'
 
 import inboxPatchHandler from '../../../server/api/v1/me/inbox/[id].patch'
 import identitiesGetHandler from '../../../server/api/v1/me/identities.get'
-import identitiesPostHandler from '../../../server/api/v1/me/identities.post'
+import identitiesPostHandler, { MAX_SELF_LINKED_IDENTITIES } from '../../../server/api/v1/me/identities.post'
 import identityDeleteHandler from '../../../server/api/v1/me/identities/[id].delete'
 import myProjectsHandler from '../../../server/api/v1/me/projects.get'
 import adminRegionsHandler from '../../../server/api/v1/admin/regions.get'
@@ -308,6 +308,31 @@ describe('/me/identities — link, list, unlink', () => {
     expect(await auditCount('identity-unlinked')).toBe(1)
   })
 
+  it(`a ${MAX_SELF_LINKED_IDENTITIES + 1}th self-linked identity is refused (409), inserts nothing and audits nothing`, async () => {
+    const mine = async () =>
+      Number(
+        [
+          ...(await t.db.execute<{ c: string }>(sql`
+            SELECT COUNT(*)::text AS c FROM teammate_identity_map WHERE teammate_id = ${peerId}::uuid AND source = 'self'
+          `)),
+        ][0]!.c,
+      )
+    for (let i = await mine(); i < MAX_SELF_LINKED_IDENTITIES; i++) {
+      await identitiesPostHandler(
+        ev({ session: sessionFor(peerId, 'developer'), body: { system: 'github', identifier: `lr-peer-cap-${i}`, identifier_kind: 'username' } }) as never,
+      )
+    }
+    expect(await mine()).toBe(MAX_SELF_LINKED_IDENTITIES)
+    const audits = await auditCount('identity-linked')
+    await expect(
+      identitiesPostHandler(
+        ev({ session: sessionFor(peerId, 'developer'), body: { system: 'github', identifier: 'lr-peer-cap-over', identifier_kind: 'username' } }) as never,
+      ),
+    ).rejects.toMatchObject({ statusCode: 409 })
+    expect(await mine()).toBe(MAX_SELF_LINKED_IDENTITIES)
+    expect(await auditCount('identity-linked')).toBe(audits)
+  })
+
   it('DELETE of an unknown id 404s and writes NO audit row', async () => {
     const before = await auditCount('identity-unlinked')
     await expect(
@@ -395,9 +420,9 @@ describe('GET /admin/reconciliation/anthropic/health', () => {
     `)
   })
 
-  it('an admin gets a per-org verdict; an unset endpoint is amber, not an outbound call', async () => {
+  it('a platform-admin gets a per-org verdict; an unset endpoint is amber, not an outbound call', async () => {
     const out = (await anthropicHealthHandler(
-      ev({ session: sessionFor(adminId, 'admin'), method: 'GET' }) as never,
+      ev({ session: sessionFor(adminId, 'platform-admin'), method: 'GET' }) as never,
     )) as { orgs: Array<{ externalOrgId: string; color: string; reason?: string }>; total: number; endpointConfigured: boolean }
 
     expect(out.endpointConfigured).toBe(false)
@@ -410,6 +435,12 @@ describe('GET /admin/reconciliation/anthropic/health', () => {
   it('a developer is refused (403)', async () => {
     await expect(
       anthropicHealthHandler(ev({ session: sessionFor(devId, 'developer'), method: 'GET' }) as never),
+    ).rejects.toMatchObject({ statusCode: 403 })
+  })
+
+  it('a region admin is refused (403): the route lists and probes every region\'s provider_org', async () => {
+    await expect(
+      anthropicHealthHandler(ev({ session: sessionFor(adminId, 'admin'), method: 'GET' }) as never),
     ).rejects.toMatchObject({ statusCode: 403 })
   })
 })

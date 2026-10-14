@@ -2,37 +2,15 @@
 
 > **Status:** as-built reference + the bar new reporting work is audited
 > against. Canonical model: §A / §B (see [Data Flow](Data-Flow.md)). Governing
-> decisions: ADR-0010 (showback vs chargeback) and ADR-0011 (governance is data,
+> decisions: [ADR-0010](Design-Decisions.md#adr-0010--showback-and-chargeback) (showback vs chargeback) and [ADR-0011](Design-Decisions.md#adr-0011--provider-governance-is-data-not-configuration) (governance is data,
 > not config).
 >
-> **Not everything here is built yet.** Workstream B (2026-07-29) built the
-> governance-is-data mechanism — `billing` is now the read authority, gated
-> behind an activation cutover (§6b) — and the teammate personal-subscription
-> declaration (Axis 2). Workstream C (2026-07-29) built the effective-dated
-> Copilot rate plans (ADR-0011 D9) and the persisted, configurable pooled-
-> overage allocation (D10) — see §5. Workstream D (2026-07-29) built GitHub
-> enterprise-org coverage detection (the seven-state precedence table, the
-> denominator-suppression rule, and a `meta.coverage` marker on the
-> across/regional/cost-centre/finance report routes) — see §6a. Workstream E
-> (2026-07-29) built the reporting-semantics fixes a screenshot review found:
-> the usage-mode composition hero/donut now read canonical §A
-> (`v_complete_usage`), never billed showback (§2 Axis 3); a `surface` driver
-> axis and a per-surface + per-provenance breakdown on driver rows (§2 Axis
-> 1/3); a de-overloaded `indicative` reason; settlement + coverage markers
-> wherever §A/§B figures sit adjacent (§4/§6a); and one reusable Unallocated
-> constant across every report that retains it. The reporting-consolidation
-> engine (PRs #220–#231: `server/reporting/engine/`, the one-route Region
-> scope, the billed lane) and the model-axis subtraction (migs 0118–0124)
-> post-date that snapshot — where a **[BUILT — Workstream E]** tag and
-> §1/§2 disagree, §1/§2 describe the current state. Anything STILL not in the
-> database is tagged inline as **[DESIGNED — not built]** with the
-> workstream that lands it. Treat a tagged row as the contract to build
-> against, not as behaviour you can rely on today.
+> **Not everything here is built.** Anything not yet in the code is tagged
+> inline as **[DESIGNED — not built]**. Treat a tagged row as the contract to
+> build against, not as behaviour you can rely on today.
 
-This page exists because the distinctions below were understood by the people
-who built the views but were never written down. Views drifted from intent, and
-the drift was invisible because there was nothing to audit against. **If you are
-adding or changing a report, this is the contract.**
+**If you are adding or changing a report, this page is the contract.** Views
+are audited against it.
 
 ## 1. The two lenses
 
@@ -44,9 +22,9 @@ together**.
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | Question  | "What did we consume?"                                                                                                                                                | "What do we cross-charge?"                                                                                                                    |
 | Audience  | Practice managers, region leaders, developers                                                                                                                         | Finance                                                                                                                                       |
-| Includes  | **Everything genuine** — NFR, demo, exempt, personal subscriptions, every vendor and surface (mig 0101, Workstream A: every metered surface is now covered — see §6). Personal declarations add self-reported §A context without changing §B. | Only spend the organisation pays _and_ cross-charges                                                                                                   |
-| Excludes  | Only quarantined telemetry (ADR-0010 rule 2)                                                                                                                          | NFR / tracked provider spend; self-declared personal costs never enter the provider ledger                                                     |
-| Source    | `v_complete_usage`                                                                                                                                                    | `v_finance_bill_chargeback` (Anthropic, per-teammate, daily) + `v_finance_copilot_pool_chargeback` (Copilot, pooled per cost-centre, monthly) |
+| Includes  | **Everything genuine** — NFR, demo, exempt, personal subscriptions, every vendor and surface (mig 0101: every metered surface — see §6). Personal declarations add self-reported §A context without changing §B. | Only spend the organisation pays _and_ cross-charges                                                                                                   |
+| Excludes  | Only quarantined telemetry ([ADR-0010](Design-Decisions.md#adr-0010--showback-and-chargeback) rule 2)                                                                                                                          | NFR / tracked provider spend; self-declared personal costs never enter the provider ledger                                                     |
+| Source    | `v_complete_usage`                                                                                                                                                    | `v_finance_bill_chargeback` (Anthropic, per-teammate, daily) + `v_finance_copilot_pool_chargeback` (Copilot, pooled per Business Unit, monthly) |
 | UI toggle | `Usage · attributed`                                                                                                                                                  | `Chargeback · billed`                                                                                                                         |
 
 ### The invariant
@@ -70,18 +48,17 @@ which is real money disappearing from the books to satisfy a bad test.
 So: compare **metered against metered**, excluding licence lanes, and guard it
 with a test rather than with vigilance.
 
-### What the `Chargeback · billed` toggle now moves — including Top drivers
+### What the `Chargeback · billed` toggle moves — including Top drivers
 
-The toggle used to re-lens the KPI hero and the §B cards and leave **Top
-drivers** on §A, so the headline changed and attributed rows stayed underneath
-it. `/reports/region/drivers?lane=chargeback` now answers the selected lane, and
-every response declares the lane of every money measure in `measureLanes` (the
+The toggle re-lenses the KPI hero, the §B cards and **Top drivers**:
+`/reports/region/drivers?lane=chargeback` answers the selected lane, and every
+response declares the lane of every money measure in `measureLanes` (the
 CSV export stamps `lane=` in its header for the same reason — a spreadsheet
 outlives the page).
 
 | Drivers axis | `lane=usage` reads | `lane=chargeback` reads |
 | --- | --- | --- |
-| teammate · cost centre (practice) · surface · model | `v_complete_usage` | `provider_usage_fact`, **per provider** |
+| teammate · Business Unit (practice) · surface · model | `v_complete_usage` | `provider_usage_fact`, **per provider** |
 | **budget** (`axis=project`) | `usage_rollup_daily` (mig 0138 — same seam SQL, rollup-sourced; ≤ one cadence behind the live view, item 13) | **`usage_rollup_daily` — same source both lanes, declared `attributed`** |
 
 (`axis=model` is served but is not in the Top-drivers axis picker — it is the
@@ -127,8 +104,8 @@ rides `billedLane.consumptionUsd` beside it, never inside it, and renders muted.
 ## 2. The three axes
 
 A single dollar carries three independent properties. Every §A surface must
-keep them distinguishable; conflating them is what produced the historical
-defects listed in §6.
+keep them distinguishable; conflating them drops genuine spend from showback
+(see §6).
 
 ### Axis 1 — Provenance (how we learned of the spend)
 
@@ -137,7 +114,7 @@ defects listed in §6.
 | OTel-emitted   | A client emitted it to us directly                    | Claude Code from an enrolled instance             |
 | API-reconciled | A provider API told us                                | GitHub Copilot `users-1-day`; Anthropic Analytics |
 | Both           | Emitted _and_ corroborated — the healthy steady state | Claude Code under Claude Enterprise               |
-| Provider-usage **[BUILT — mig 0101, Workstream A]** | Genuine provider usage truth for a tool that can **never** be OTel-emitted or reconciled into a taggable record — the non-Code Claude surfaces, `copilot-agent` | Claude Chat, Claude Cowork; the GitHub coding agent |
+| Provider-usage (mig 0101) | Genuine provider usage truth for a tool that can **never** be OTel-emitted or reconciled into a taggable record — the non-Code Claude surfaces, `copilot-agent` | Claude Chat, Claude Cowork; the GitHub coding agent |
 
 `v_complete_usage` is built from this axis, as three `UNION ALL` arms carrying an
 explicit `usage_provenance` column (`otel-emitted` \| `api-reconciled` \|
@@ -146,7 +123,7 @@ explicit `usage_provenance` column (`otel-emitted` \| `api-reconciled` \|
 the **ingest-only completeness arm** (mig 0101, reading `v_teammate_usage_daily`
 filtered to the tools that can never reach the first two arms). The union
 recovers usage **for every lane a provider API meters per teammate/day/tool**,
-so §A now reaches provider truth for all three provenances.
+so §A reaches provider truth for all three provenances.
 
 **The §A model split: every attributed dollar with a provider-reported model
 wears it**, whatever its provenance. Arm 1 carries OTel's wire model per event.
@@ -175,52 +152,53 @@ real models only and renders remainder money as a one-line **coverage footer**
 ("Models named for $X · N% of attributed usage", plus the day-grain /
 awaiting-detail figures when present), with the per-reason sentences from
 `shared/reports/model-attribution.ts`. A reader must treat any unrecognised
-reason as a plain remainder, never a category. Top drivers no longer offers a
+reason as a plain remainder, never a category. Top drivers does not offer a
 `model` axis — the dedicated Top models card beside it is the single model
 surface (the endpoint keeps accepting `axis=model`; that is the card's own
 fetch, and a saved `?axis=model` drivers URL is normalised to the default
 client-side).
 
-**[BUILT — Workstream E, 2026-07-29]** The provenance axis is now fully
-exposed, not just consumed internally to pick a model label: `DriverRow`
+The provenance axis is exposed on driver rows, not only used internally to
+pick a model label: `DriverRow`
 (`shared/reports/types.ts`) carries an optional `provenanceBreakdown` — a
 blended row (e.g. a teammate with OTel-emitted Claude Code AND structurally
 provider-usage Claude Chat) states the split rather than averaging it away,
-with a native tooltip on the driver label in `DriversTable.vue`. The
-`indicative` `SpendClass` is also de-overloaded via an additive-only
-`DriverRow.indicativeReason` (`'usage-not-yet-billed' | 'no-attributable-usage'`)
-— a REPORTING-DISPLAY-ONLY reason, distinct from `server/reconciliation/
-types.ts`'s frozen `IndicativeReason` (never imported into it); `pooled-usage`
-is unchanged.
+with a native tooltip on the driver label in `DriversTable.vue`. An
+`indicative` `SpendClass` row says why in `DriverRow.indicativeReason`
+(`'usage-not-yet-billed' | 'no-attributable-usage'`) — a REPORTING-DISPLAY-ONLY
+reason, distinct from `server/reconciliation/types.ts`'s frozen
+`IndicativeReason` (never imported into it). `pooled-usage` carries no reason.
 
 **A source that is OTel-only and can never be corroborated is not automatically
 suspicious** — a personal Claude Max subscription is structurally uncorroborable.
 That case is declared via a teammate-level `personal_subscription_declaration`
-row (ADR-0011 D3/D4, migration 0105), which is the only sanctioned exemption
+row ([ADR-0011](Design-Decisions.md#adr-0011--provider-governance-is-data-not-configuration) D3/D4, migration 0105), which is the only sanctioned exemption
 from the rule-2 corroboration requirement (`server/usage/over-emission-detection.ts`'s
 `material_no_bill` carve-out) — scoped precisely to the declared (teammate,
-tool) contract. **[BUILT — Workstream B]** — self-service via
+tool) contract. A teammate declares it themselves via
 `PUT /api/v1/me/personal-subscription` (`app/pages/account.vue`). The
-DETECTION/PROMPTING half (proactively nudging a teammate to declare) is
-**[DESIGNED — not built]**; today declaration is entirely teammate-initiated.
+prompting half is built too: when a declarable Claude tool shows large usage
+with no provider bill on a settled day, the over-emission detector sends the
+teammate a `personal-subscription-prompt` inbox item that links to the
+declaration. Nothing is classified automatically; the teammate declares or not.
 
 ### Axis 2 — Billing status (whose money)
 
 Stored on `provider_org.billing` (Anthropic — the org is its own billing unit,
-ADR-0011 D11) / `provider_enterprise.billing` (GitHub — the enterprise is the
+[ADR-0011](Design-Decisions.md#adr-0011--provider-governance-is-data-not-configuration) D11) / `provider_enterprise.billing` (GitHub — the enterprise is the
 billing unit; `provider_org.billing` is ignored/hidden for GitHub, see below).
-**This field is authoritative** (ADR-0011 D1) — chargeability is never inferred
+**This field is authoritative** ([ADR-0011](Design-Decisions.md#adr-0011--provider-governance-is-data-not-configuration) D1) — chargeability is never inferred
 from an org's name, **once the governance cutover is activated** (§6b).
 
-**[BUILT — Workstream B, gated behind activation]** `provider_org.billing` /
+`provider_org.billing` /
 `provider_enterprise.billing` are constrained to `billed | tracked` (migration
 `0009_provider_org.sql`) — `personal` is never a value here; it is the
-teammate-level declaration above (ADR-0011 D3, amended). Until the governance
-cutover is **activated** (§6b), GitHub money paths still read the legacy name/
-env heuristic (the pre-activation rollback seam); Anthropic paths have always
-been unconditionally chargeable (there was never a live Anthropic heuristic).
-Once activated, every money path reads `billing` and the heuristic is never
-consulted again — see `server/governance/verdict.ts`.
+teammate-level declaration above ([ADR-0011](Design-Decisions.md#adr-0011--provider-governance-is-data-not-configuration) D3, amended). Until the governance
+cutover is **activated** (§6b), GitHub money paths read the legacy name/env
+heuristic (the pre-activation rollback seam); Anthropic paths are
+unconditionally chargeable (there is no Anthropic heuristic). Once activated,
+every money path reads `billing` and the heuristic is not consulted — see
+`server/governance/verdict.ts`.
 
 | Status                        | Whose money                                                                  | §A showback        | §B chargeback |
 | ------------------------------ | ---------------------------------------------------------------------------- | ------------------ | ------------- |
@@ -259,12 +237,10 @@ discriminates before it sums:
 (a developer can assign them to a project — they have sessions). The non-Code
 Claude surfaces and `copilot-agent` have no sessions and are **untaggable**, but
 they are still **genuine consumption and must appear in §A**. Excluding a lane
-from the taggable worklist must never exclude it from showback — that is
-precisely the mistake described in §6.1.
+from the taggable worklist must never exclude it from showback (§6).
 
-**[BUILT — Workstream E, 2026-07-29]** This axis is now a first-class
-**driver axis** too — `surface` — on Across (`ACROSS_DRIVER_AXES`), Regional
-(`REGIONAL_DRIVER_AXES`) and Cost-Centre (`COST_CENTRE_DRILL_AXES`): one row
+This axis is also a first-class **driver axis** — `surface` — on Across (`ACROSS_DRIVER_AXES`), Regional
+(`REGIONAL_DRIVER_AXES`) and Business Unit (`COST_CENTRE_DRILL_AXES`): one row
 per registry lane, in canonical registry order (never magnitude-sorted — a
 composition read, like the provider split), labels via `VENDOR_LABELS`. The
 `teammate` axis also carries a per-surface `surfaceBreakdown` on each row (not
@@ -272,16 +248,16 @@ JSON in `dims`) so a teammate's spend is never discarded into one blended
 total — see `ChartRankedBar`'s optional stacked-segment mode and
 `DriversTable`'s "Surface mix" column.
 
-**A driver row's NAME is now an affordance, and which one depends on the axis.**
+**A driver row's NAME is an affordance, and which one depends on the axis.**
 `DriversTable` takes a `drillable(row)` decision function, supplied by each view
 from `drill-contract.ts` — the Across top-drivers card, the Regional drivers
-table, the cost-centre budgets + people tables, and the finance project and
+table, the Business Unit budgets + people tables, and the finance project and
 teammate overlays. A **teammate** row opens `/reporting/teammate/{id}`, a
 **project** row opens `/projects/{code}`, the **practice** row keeps its in-page
 drill, and every other axis — surface, provenance, model, and any aggregate or
 `__null` row naming no subject — is plain text, because there is nothing to
-open. The card surfaces outside the table (cost-centre over-cap rows, regional
-signals rows, cost-centre project rows) reach the same decision through the same
+open. The card surfaces outside the table (Business Unit over-cap rows, regional
+signals rows, Business Unit project rows) reach the same decision through the same
 module. Whether a name renders as a link or as plain text is decided by grant,
 never by axis alone: see rule 8.
 
@@ -294,7 +270,7 @@ never by axis alone: see rule 8.
 3. **Lane filters come from the registry**, never from a literal list pasted
    into SQL. A new lane must appear automatically.
 4. **Chargeability is read from `billing`**, at chargeback time, in the
-   chargeback run only (ADR-0010 rule 5). Not at ingest, not from config, not
+   chargeback run only ([ADR-0010](Design-Decisions.md#adr-0010--showback-and-chargeback) rule 5). Not at ingest, not from config, not
    from a name.
 5. **The caption must be true.** If a figure omits a vendor, a lane, or a
    settlement state, the on-screen caption says so. "Attributed usage" that
@@ -308,9 +284,8 @@ never by axis alone: see rule 8.
    classifies from its first row, and the Anthropic slice is labelled
    *"Anthropic"* rather than after one of its tools. `other` stays a live
    catch-all (`NOT IN (…) OR IS NULL`) so nothing can vanish from the total.
-   One shared fragment serves every surface that draws the split — two copies
-   are how the region view and the cost-centre drill drifted into the same
-   defect without a diff ever showing it.
+   One shared fragment serves every surface that draws the split, so the
+   region view and the Business Unit drill cannot drift apart.
 7. **Pin the invariant.** New §A/§B pairs get a test asserting §A(metered) ≥
    §B(metered), scoped to the metered lanes only. Never assert the global form
    (see §1) — fixed licence charges have no §A counterpart and will break it on
@@ -351,29 +326,29 @@ never by axis alone: see rule 8.
    between a finding and a defamation.
 
 10. **A ranked card ranks the constituents OF ITS OWN SCOPE, and states its
-    denominator and its lane.** The ladder is company → **regions** → cost
-    centres → **projects**; a cost centre has no child org node, so its
+    denominator and its lane.** The ladder is company → **regions** → Business
+    Units → **projects**; a Business Unit has no child org node, so its
     children are its projects and its people. Two consequences that are easy to
     get wrong:
     - A card that ranks the dimension its page is already ABOUT is a category
-      error, not a captioning bug — the cost-centre page ranking cost centres
-      read as unscoped because it was not about one centre. Ranking cost
-      centres belongs to the Region scope's children table, and it lives there
-      once: two places rendering one fact eventually diverge, with the reader
-      unable to tell which is wrong.
+      error, not a captioning bug: on the Business Unit page, a ranking of Business
+      Units reads as unscoped. Ranking Business Units belongs to the Region
+      scope's children table, and it lives there once: two places rendering
+      one fact eventually diverge, with the reader unable to tell which is
+      wrong.
     - The rows rank on the figure in the page's OWN frame — same axis, lane and
       window as the KPI strip above them. A ranking whose figure cannot foot to
       the number above it is a second answer wearing the first one's heading.
 
-    Where the list is sorted matters as much as what it ranks: the cost-centre
+    Where the list is sorted matters as much as what it ranks: the Business Unit
     endpoint sorts by §A burn only, so a card offering a chargeback lens re-sorts
     on the client. Dropping that sort would leave "ranked by chargeback" showing
     burn order.
 
-11. **The cost-centre page is ALWAYS ONE COST CENTRE.** There is no unscoped
-    state. A reader lands on their own centre (the server resolves it — their
-    owned centre where they hold one, else the first visible), the crumb is the
-    way back up, and the selector is grant-scoped: it offers only the centres
+11. **The Business Unit page is ALWAYS ONE BUSINESS UNIT.** There is no unscoped
+    state. A reader lands on their own BU (the server resolves it — their
+    owned BU where they hold one, else the first visible), the crumb is the
+    way back up, and the selector is grant-scoped: it offers only the BUs
     they hold, and a reader with exactly one gets no selector at all, just the
     name. One option is not a selector, it is a label.
 
@@ -381,50 +356,48 @@ never by axis alone: see rule 8.
     clamp — a view composing its own from the URL can name a scope the server
     did not serve.
 
-    **The owner's two lists, side by side, neither truncated.** A cost-centre
+    **The owner's two lists, side by side, neither truncated.** A BU
     owner owns exactly two axes — what the money went to (**Projects**, called
     *Budgets* in the product's vocabulary) and who spent it (**People**) — and
     wants both on screen at once, so this scope offers no pivot selector. At one
-    centre the list IS the population: a top-N would hide the budget or the
+    BU the list IS the population: a top-N would hide the budget or the
     person the owner opened the page to find.
 
     The two lists have DIFFERENT denominators by construction and each states
     its own. Projects is clamped on the project's own cost-owning unit and adds
     a second, disjoint arm for burn homed here with **no project on it** — the
-    *"Not on a project"* row. People foots to the cost-centre burn. Neither is
+    *"Not on a project"* row. People foots to the BU's burn. Neither is
     footed against the other's number.
 
     Each sum-back therefore **names its own base**, and neither may say
     "headline". `DriversTable` takes a `sumbackLabel` (default `'headline'`,
     correct on every scope whose rows do sum to the figure at the top): Projects
     passes *"these projects' own totals"* because its rows carry each project's
-    total across **every** cost centre, and People passes its own denominator
-    label, *"cost-centre burn"* — which is the headline under the usage lens and
+    total across **every** BU, and People passes its own denominator
+    label, *"business unit burn"* — which is the headline under the usage lens and
     is **not** under chargeback, where the caveat above the tables already says
-    the two do not add up to the charge. Both sums were always arithmetically
-    right; the word above them was borrowed, and pointed at $1,726.20 and
-    $302.82 on one screen whose headline was $302.82.
+    the two do not add up to the charge.
 
     What that row holds is worth stating exactly, because it is narrower than it
     sounds. It is the **ingest-only** arm: provider-reported usage, homed at a
-    cost centre by its dimension snapshot and carrying no project because it is
+    BU by its dimension snapshot and carrying no project because it is
     **untaggable**. It is not the taggable spend somebody simply has not put on a
     project yet — both §A writers derive the cost-owning unit FROM the project
     and leave it NULL when there is none, so that money has no project-derived
-    home at all. Its only home is the **spender's** centre, and it is reported on
-    its own dimension as `member_untagged_usd` (the cost-centre P&L card) and
+    home at all. Its only home is the **spender's** BU, and it is reported on
+    its own dimension as `member_untagged_usd` (the BU P&L card) and
     ranked per person by the over-the-soft-cap card. Folding a teammate-homed
     figure into a project-homed denominator is how two axes become one wrong
     number, so the page keeps them apart and names both.
 
     The lane toggle is **present** on this scope, and it moves a real figure. A
-    cost-centre owner is accountable for a budget, so both halves of the job are
-    on the page: *am I on track* is answered by what the centre is **charged**
+    BU owner is accountable for a budget, so both halves of the job are
+    on the page: *am I on track* is answered by what the BU is **charged**
     (§B), *what is driving it* by what its people **consumed** (§A).
 
     In the usage lane the headline is the §A **burn**, homed by emit-time
     `cost_owning_unit_id`, and it matches the tracker row. In the chargeback lane
-    it is the §B **charge**, the same figure that centre's card carries in the
+    it is the §B **charge**, the same figure that BU's card carries in the
     list — one shared fetcher serves both, so the list and the drill cannot
     disagree. The two are never summed and never shown together (rule 1).
 
@@ -435,13 +408,13 @@ never by axis alone: see rule 8.
     The Copilot pool is billed **monthly**, so on a window that is not
     month-aligned it cannot be sliced and is excluded from the charge. The drill
     states that as a property of the window — it does not know whether a given
-    centre has a pool row at all.
+    BU has a pool row at all.
 
 12. **Report GETs are served through a short-TTL response cache** — except the
    named-individual family, which is `no-store` on the browser layer (rule 8:
    a browser-cache hit never reaches the handler, so it would neither audit nor
    re-check freshness). The region,
-   cost-centre and finance report responses may be up to **60 seconds** stale
+   Business Unit and finance report responses may be up to **60 seconds** stale
    (`server/reporting/report-cache.ts`; browser side, `Cache-Control: private,
    max-age=60` makes back-navigation instant). What this does and does not
    mean:
@@ -539,7 +512,7 @@ consume that answer. **No `new Date()` in any windowing or labelling path**, on
 the server or in the browser, and no `CURRENT_DATE` in a series frontier. That
 is an *ownership* rule rather than a timezone one: two clocks that both do
 correct UTC arithmetic still disagree across a midnight, and the gap between
-them is what used to draw as a dip.
+them draws as a false dip.
 
 *Deferred and disclosed:* provider lag as a **distinct** cause of a shorter edge.
 `settledThrough` is today's last complete UTC day; it does not yet narrow
@@ -569,20 +542,21 @@ different settlement states shown side by side **must carry a marker**;
 An in-progress month is `Estimated`. A closed, fully-reconciled month is not.
 The difference is material to finance and must never be implicit.
 
-**[BUILT — Workstream E, 2026-07-29]** Across, Regional and Cost-Centre
-headers render a `SettlingStateChip` **per vendor** in `meta.providerStates`
-(usage/anthropic/github), not a single consolidated "usage" chip — the hero
-on every one of these scopes shows the §A attributed figure ADJACENT to a §B
-chargeable figure (e.g. "≈ $X will be charged"), so the header must carry
-both clocks, not just usage's. Finance keeps its own deliberate single
-"least-settled-of-the-three" consolidated chip (a different, still-honest
-design — Finance is §B-native end to end).
+The Region tab (both "All regions" and one region) and the Business Units tab
+carry **one** header chip that states the least-settled state across
+`meta.providerStates` (usage/anthropic/github); opening it shows a
+`SettlingStateChip` **per vendor** (`ReportHeaderNotes.vue`,
+`cost-centre/CcHeaderNotes.vue`). The per-vendor detail is there because the hero
+on these tabs shows the §A attributed figure ADJACENT to a §B chargeable figure
+(e.g. "≈ $X will be charged"), so the header must carry both clocks, not just
+usage's. Finance shows one consolidated "least-settled-of-the-three" chip,
+because Finance is §B end to end.
 
 ## 5. Copilot's structural difference
 
 Anthropic bills **per user**, so §B is per-teammate. GitHub Copilot bills a
 **pooled** enterprise allowance per (org, sku) with **no user field**, so §B is
-**per cost-centre** — the org's pooled net, homed via
+**per Business Unit** — the org's pooled net, homed via
 `provider_org.cost_owning_unit_id`.
 
 ### The pooled credit model
@@ -604,17 +578,15 @@ Per-user AIC consumption is still **displayed** — that is the point of
 showback — and users above the per-seat average may be flagged, provided it is
 never rendered as cost. _Showing ≠ charging._
 
-**Rate terms are effective-dated** (ADR-0011 D9) **[BUILT — Workstream C,
-migration 0106]**. The $39/$70 plan is time-bounded; every computation selects
+**Rate terms are effective-dated** ([ADR-0011](Design-Decisions.md#adr-0011--provider-governance-is-data-not-configuration) D9, migration 0106). The $39/$70 plan is time-bounded; every computation selects
 the plan in force **for the period being computed** — `copilot_rate_plan`,
 non-overlapping per enterprise, resolved by `server/governance/copilot-rate-
 plan.ts`'s `resolveCopilotRatePlan(db, { providerEnterpriseId, periodMonth })`
 — so a plan change never re-costs a closed month. The scalar
 `provider_enterprise.flat_seat_price_usd` / `included_allowance_usd` columns
-remain readable/writable for backward compatibility, but no longer drive any
-period-aware computation once a rate-plan row covers the queried period; the
-migration backfills an open-ended plan for every existing enterprise so the two
-agree from day one. Admin API/UI: `GET`/`POST
+are still readable and writable, but do not drive any period-aware computation
+when a rate-plan row covers the queried period; migration 0106 backfilled an
+open-ended plan for every enterprise that existed then. Admin API/UI: `GET`/`POST
 .../enterprises/{id}/copilot-rate-plans`.
 
 ### Allocating pooled overage
@@ -623,12 +595,12 @@ agree from day one. Admin API/UI: `GET`/`POST
 paid nothing extra, however many individuals went over. This is the common case.
 
 When the pool _is_ exhausted, the overage `O` actually billed is distributed to
-Business Units by a configurable per-enterprise policy (ADR-0011 D10). **The
+Business Units by a configurable per-enterprise policy ([ADR-0011](Design-Decisions.md#adr-0011--provider-governance-is-data-not-configuration) D10). **The
 default policy is `consumption-share`**: weight `usage`, normalised so
 `Σ allocations == O` exactly.
 
 The rationale is organisational, not mathematical. It suits an organisation
-whose AI function is a **cost centre, not a profit centre** — when overage is paid, the bill is split
+whose AI function exists to **share cost, not to recover it** — when overage is paid, the bill is split
 across everyone who consumed, in proportion to consumption. Each person's share
 is then almost always _far less than they consumed_, because the pooled
 allowance absorbs most of the total. That is the intended outcome: the pool is a
@@ -644,12 +616,12 @@ This is **not** the rejected per-user overage model: the money is real and taken
 from the bill, and consumption is used only as a weight. When the pool holds,
 the allocation is zero.
 
-**[BUILT — Workstream C, migration 0106/0107].**
+**Where it lives (migrations 0106/0107).**
 `provider_enterprise.overage_allocation_policy` is the per-enterprise switch
 (default `consumption-share`); `copilot_overage_allocation` is the persisted
 grain — `(provider_enterprise_id, month, cost_owning_unit_id)`, recipients are
 the **seat-holder's own cost-owning unit** (not the org's mapped CoU), which is
-the point of the mechanism: a single shared GitHub org's overage can now split
+the point of the mechanism: a single shared GitHub org's overage can split
 across every practice that actually consumed. `server/governance/copilot-
 overage-allocation.ts`'s `persistCopilotOverageAllocation` is idempotent
 delete-and-replace under the same enterprise/month advisory lock the
@@ -660,7 +632,7 @@ and the difference surfaces as a delta against that month's snapshot. `v_finance
 allocation once it exists for an (enterprise, month) — replacing, never
 alongside, the org-homed `overage_net_usd` fallback (structurally mutually
 exclusive; same total either way). The existing informational per-teammate
-Overage-Drivers panel (`fetchOverageDrivers`, §7) is a **separate, still-live**
+Overage-Drivers panel (`fetchOverageDrivers`, §7) is a **separate**
 display — it remains labelled "informational... never a charge" and is not
 this persisted mechanism.
 
@@ -682,7 +654,7 @@ budget where a cost is expected.
 
 ### Three wrong models
 
-Explicitly rejected and never to be reintroduced (ADR-0010 Correction):
+Explicitly rejected; never implement them ([ADR-0010](Design-Decisions.md#adr-0010--showback-and-chargeback) Correction):
 
 1. Per-user Copilot overage (`usage − allowance`) booked as a per-teammate
    charge — the allowance **pools**, so this is not money.
@@ -691,63 +663,45 @@ Explicitly rejected and never to be reintroduced (ADR-0010 Correction):
    is legitimate as a _forecast_ input only.)
 3. "My usage" reflecting only OTel-emitted usage.
 
-## 6. Known divergences
+## 6. Untaggable lanes stay in §A
 
-Recorded so they are not rediscovered as mysteries. Both were the same class:
-**a lane excluded from tagging was also excluded from reporting** — and both
-are now **[BUILT — migration 0101, Workstream A]**.
+A lane excluded from **tagging** must never be excluded from **reporting**.
+Two kinds of lane have no sessions and so cannot be tagged: the seven non-Code
+Claude surfaces, which emit no OTel, and `copilot-agent`, which is
+OTel-invisible. Both are genuine consumption, and §B bills the non-Code Claude
+surfaces from `actual_spend`, so leaving them out of §A would make §B > §A and
+break the invariant (§1) and [ADR-0010](Design-Decisions.md#adr-0010--showback-and-chargeback) rule 3 ("showback shows ALL genuine
+usage… the only thing absent is quarantined telemetry").
 
-### 6.1 Non-Code Claude surfaces missing from §A — RESOLVED (mig 0101)
+### 6.1 How they reach §A
 
-`drizzle/migrations/0084_teammate_usage_daily_exclude_noncode_surfaces.sql`
-excluded the seven non-Code Claude surfaces from `v_teammate_usage_daily`, which
-fed `unaccounted_usage`. Those surfaces also emit no OTel, so they landed in
-**neither** arm of `v_complete_usage` — while `v_finance_bill_chargeback` read
-`actual_spend` directly and **did** include them.
+`v_teammate_usage_daily` is the complete per-(teammate, day, tool) usage truth,
+and `v_complete_usage` carries a third, non-taggable union arm for these lanes
+(`drizzle/migrations/0101_usage_completeness_ingest_only_arm.sql`). The arm
+does not read `actual_spend`, because `actual_spend` cannot cover
+`copilot-agent`, whose usage truth is `reconciliation_record`. The mechanism is
+provider-neutral: `shared/usage/surface.ts`'s `INGEST_ONLY_USAGE_TOOLS` lists
+every surface that is "§A-visible, never taggable" (the non-Code Claude
+surfaces AND `copilot-agent`), and `server/usage/unaccounted-reconciliation.ts`
+is the one place that reads it to keep the needs-tagging worklist clean.
 
-Result: **§B > §A**, breaking the invariant, and a violation of ADR-0010 rule 3
-("showback shows ALL genuine usage… the only thing absent is quarantined
-telemetry"). The exclusion's _intent_ was right — these surfaces must not become
-taggable worklist items — but it was applied at a seam that also governed
-reporting.
-
-**Fix, built:** `drizzle/migrations/0101_usage_completeness_ingest_only_arm.sql`
-reverts 0084's exclusion — `v_teammate_usage_daily` is the complete
-per-(teammate, day, tool) usage truth again — and adds a third, non-taggable
-union arm to `v_complete_usage`. An earlier revision of this page named
-`actual_spend` as that arm's source; the design rejected that, because
-`actual_spend` cannot cover `copilot-agent`, whose usage truth is
-`reconciliation_record` rather than per-request spend. The mechanism is
-provider-neutral instead: `shared/usage/surface.ts`'s
-`INGEST_ONLY_USAGE_TOOLS` generalises "§A-visible, never taggable" to every
-surface that needs it (both non-Code Claude AND `copilot-agent`), and
-`server/usage/unaccounted-reconciliation.ts` is the one place that reads it to
-keep the needs-tagging worklist clean. The
-arm cannot become a worklist item because the worklist reads
+The arm cannot become a worklist item because the worklist reads
 `unaccounted_usage`, not `v_complete_usage` — pinned by
 `tests/integration/reports/complete-usage-view.test.ts` and
 `tests/integration/usage/unaccounted-reconciliation.test.ts`.
 
-### 6.2 `copilot-agent` missing from §A — RESOLVED (mig 0101)
+### 6.2 Models on these rows
 
-The same shape, already documented in the header of
-`server/usage/unaccounted-reconciliation.ts` and knowingly accepted at the time:
-the coding-agent lane is OTel-invisible, so excluding it from the taggable feed
-also removed it from `v_complete_usage`. It read **0** in every §A rollup while
-remaining visible in `v_teammate_usage_daily` readers (e.g. the Finance
-Overage-Drivers weight).
+These rows carry real model names wherever the provider reported one: the arm
+fans out against `provider_usage_fact` for the same (teammate, day, tool) key
+(mig 0124). What remains is a reason-typed NULL-model remainder
+(`provider-day-grain` for `copilot-agent` money, `surface-remainder` otherwise —
+§2 Axis 1) rendered as the Top-models coverage footer, never as an
+"Unattributed" row.
 
-The same third union arm (§6.1) closes both. These rows now carry real model
-names wherever the provider reported one: the arm fans out against
-`provider_usage_fact` for the same (teammate, day, tool) key (mig 0124), and
-what remains is a reason-typed NULL-model remainder (`provider-day-grain` for
-`copilot-agent` money, `surface-remainder` otherwise — §2 Axis 1) rendered as
-the Top-models coverage footer, never as an "Unattributed" row.
+## 6a. Coverage — the completeness we did not collect
 
-## 6a. Coverage — the completeness we did not collect — **[BUILT — Workstream D, 2026-07-29]**
-
-Every divergence in §6 is about usage we _collected_ and then dropped. This one
-is about usage that never arrived, which is more dangerous because it is
+§6 is about usage we _collect_. Coverage is about usage that never arrived, which is more dangerous because it is
 invisible by construction: an org whose telemetry we cannot see looks exactly
 like an org that spent nothing.
 
@@ -756,34 +710,31 @@ least-covered org. Each enterprise carries a **coverage set** classifying every
 org (`server/reconciliation/coverage.ts` + `github-coverage.ts` +
 `coverage-store.ts`).
 
-The five-state form (`connected`, `not-installed`, `suspended`, `not-onboarded`,
-`stale`) that ADR-0011 D13 introduced is **superseded**: those states are not
-mutually exclusive (a suspended installation on an unhomed org satisfies two of
-them) and some real configurations match none (a `provider_org` row pointing at
-a different enterprise, an installation of a different App, a failed capability
-probe). The classification is a **precedence-ordered truth table** of seven
-states, adding `mislinked` and `coverage-unknown`, evaluated against a specific
-target enterprise and the reconciliation App's own id.
+The classification is a **precedence-ordered truth table** of seven states —
+`connected`, `not-installed`, `suspended`, `not-onboarded`, `stale`,
+`mislinked` and `coverage-unknown` — evaluated against a specific target
+enterprise and the reconciliation App's own id. Precedence matters because the
+conditions overlap (a suspended installation on an unhomed org satisfies two of
+them), and `mislinked` / `coverage-unknown` catch configurations the others
+miss (a `provider_org` row pointing at a different enterprise, an installation
+of a different App, a failed capability probe).
 
 **The reporting obligation:** any enterprise-scoped total must be presented with
 its coverage denominator — _"covers 12 of 15 orgs"_ — and must not be described
 as complete while any org is unconnected. A figure that silently omits three
 orgs is not a smaller number; it is a **wrong** one, and the reader has no way
-to tell. This is ADR-0010 rule 3 applied one stage earlier: rule 3 obliges us to
+to tell. This is [ADR-0010](Design-Decisions.md#adr-0010--showback-and-chargeback) rule 3 applied one stage earlier: rule 3 obliges us to
 show all genuine usage, and where we could not acquire it, to say so. The
-`across`/`regional`/`cost-centre`/`finance` report routes now carry a
+`across`/`regional`/`cost-centre`/`finance` report routes carry a
 `meta.coverage` marker (`applicable`/`denominator`/`connected`/`nonConnected`/
 `stale`) built the same way: the denominator is `null` whenever **any** relevant
 GitHub enterprise's own census is unavailable/capped/stale — the weakest link
 governs the aggregate claim, exactly like a single enterprise's own denominator
 (never a partial "N of M" that quietly excludes the enterprise it could not
-classify). **[BUILT — Workstream E, 2026-07-29]** `CoverageMarker.vue` now
-renders this marker on all four scope headers — an honest "covers N of M
-GitHub orgs" when the denominator is known, an explicit amber "coverage
-unknown"/"coverage stale" marker (never a fabricated ratio) otherwise. The
-rest of Workstream E (vendor splits on Top drivers, the `indicative` badge
-de-overload, settlement-state placement, Copilot billing UI copy) is also now
-**[BUILT]** — see §7.
+classify). `CoverageMarker.vue` renders this marker on all four scope
+headers — an honest "covers N of M GitHub orgs" when the denominator is known,
+an explicit amber "coverage unknown"/"coverage stale" marker (never a
+fabricated ratio) otherwise.
 
 Coverage gaps are an **operator defect, not a reporting nuance** — they raise a
 run warning (`run-warnings.ts`'s `nonConnectedOrgs`/`censusUnknownEnterprises`
@@ -800,25 +751,24 @@ force an immediate live recheck per enterprise
 (`POST /api/v1/admin/reconciliation/github/coverage-recheck`) rather than wait
 for the next scheduled sweep.
 
-## 6b. Governance cutover and reporting snapshots (Workstream B) — [BUILT]
+## 6b. Governance cutover and reporting snapshots
 
-Two mechanisms close the "governance settings are decorative" defect (design
-§1.2) and the arithmetic-safety gap in freezing a chargeback month.
+Two mechanisms: the cutover makes the `billing` setting the read authority for
+money, and snapshots record what a month read when it was reported.
 
 **Governance cutover** (`governance_cutover_state`, singleton row) is a
 one-way-until-rolled-back state machine: `not_started → preflight_verified →
 activated (→ rolled_back)`. Before `preflight` runs, GitHub money paths read the
 legacy name/env heuristic (`server/reconciliation/legacy-chargeback-heuristic.ts`
-— quarantined there specifically as the pre-activation rollback seam; Anthropic
-never had a live heuristic, so its "before" state is simply unconditionally
-chargeable). `preflight` computes that legacy verdict for every registered
+— kept there as the pre-activation rollback seam; Anthropic has no heuristic and
+is unconditionally chargeable in every state). `preflight` computes that legacy verdict for every registered
 unit, detects **mixed GitHub enterprises** (orgs that disagree — a hard abort,
 a human decision required, nothing written), writes **both sides explicitly**
 (`billed`/`tracked` on every unit, never left at the implicit default), and
 verifies the freshly-written data reproduces the exact same verdict before
 recording success. `activate` re-verifies against current data (catching drift
 since preflight) and then — and only then — every money path switches to
-reading `billing` authoritatively; the heuristic is never consulted again
+reading `billing` authoritatively; the heuristic is not consulted
 (`server/governance/verdict.ts`). `rollback` is allowed only before any recorded
 month has used the new regime. Admin surface:
 `/admin/policies/provider-governance` (platform-admin only); API:
@@ -830,8 +780,7 @@ recorded) write down what a month READ when it was reported, and by whom:
 the actor. Recording a month is refused a second time — silently replacing what
 was reported the first time is the one thing a snapshot exists to prevent.
 
-**A snapshot is not a lock, and this is deliberate** (mig 0128, replacing
-`finance_period`). It writes nothing to `actual_spend`, holds no trigger and
+**A snapshot is not a lock, and this is deliberate** (mig 0128). It writes nothing to `actual_spend`, holds no trigger and
 refuses no later write. TokenScope is not the billing system of record: we
 record a month at +2 days, the provider corrects its rows at +6, the invoice
 lands at +10. A product that refuses the bill because of a state it set itself
@@ -856,7 +805,7 @@ half-captured. `chargeback_exempt`'s provenance stays explicit on the row via
 
 ## 7. Where the numbers live
 
-One page, three tabs: **Region · Cost centres · Finance**. The Region tab owns
+One page, three tabs: **Region · Business Units · Finance**. The Region tab owns
 both widths behind its own region selector — "All regions" is the whole-company
 answer, one region is the regional answer — so no view is reachable from two
 tabs.
@@ -865,7 +814,7 @@ tabs.
 | ------------------------------------ | -------------------- | ------------------------------ |
 | `/reporting` → Region, "All regions" | whole company        | both, via the lane toggle      |
 | `/reporting` → Region, one region    | one region           | both                           |
-| `/reporting` → Cost centres          | one cost-owning unit | both                           |
+| `/reporting` → Business Units        | one Business Unit    | both                           |
 | `/reporting` → Finance               | finance              | §B, with `copilot.mode` gating |
 | `/reporting/teammate/{id}`           | the entry `?src=` frame | §A — contribution against budgets only |
 | `/projects/{code}` (reports depth)   | the viewer's project grant | §A — two figures + named rows + ONE remainder |
@@ -891,10 +840,11 @@ The reported unit is a **Business Unit (BU)**. "Cost centre" is a different
 object in this product — an optional finance code tag carried on a BU, set in
 admin config and unused today — so the two words are never interchangeable.
 
-The user-facing term is per-region (`region.unit_term`: APAC and North America
-"Business Unit", EMEA "Area of Expertise", Global IT "Team"). Until that column
-has a reader, every surface renders `BU_LABEL` from
-`shared/reports/vocabulary.ts`, which defaults to "Business Unit". Wire keys,
+The org's own term differs per region (`unitTerm` in
+`drizzle/seed-org-structure.ts`: APAC and North America "Business Unit", EMEA
+"Area of Expertise", Global IT "Team"). It is not a database column and nothing
+reads it, so every surface renders `BU_LABEL` from
+`shared/reports/vocabulary.ts`, "Business Unit". Wire keys,
 routes, columns and `data-testid`s still say `costCentre` / `cost-centre` and
 are unaffected.
 

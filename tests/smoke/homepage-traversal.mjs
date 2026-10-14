@@ -37,7 +37,8 @@ try {
   for (const [sel, label] of [
     ['[data-testid="hero-summary"]', 'hero'],
     ['[data-testid="hero-status"]', 'health badge'],
-    ['[data-testid="connect-claude"]', 'connect claude'],
+    ['[data-testid="connect-desktop"]', 'connect claude desktop'],
+    ['[data-testid="connect-claude"]', 'connect claude code cli'],
     ['[data-testid="connect-copilot"]', 'connect copilot'],
     ['[data-testid="project-bucket-list"]', 'project spend list'],
     ['[data-testid="spill-card"]', 'tagged spend card'],
@@ -60,6 +61,10 @@ try {
     const m = await page.$('[data-testid="connect-client-modal"]')
     if (await m.isVisible()) throw new Error('[connect-dialog] modal still visible after Escape')
   }
+  await page.click('[data-testid="connect-desktop"]')
+  await must('[data-testid="connect-claude-desktop"]', 'claude desktop guide in dialog')
+  await page.click('[data-testid="connect-close"]')
+  await page.waitForTimeout(150)
   await page.click('[data-testid="connect-copilot"]')
   await must('[data-testid="connect-copilot-cli"]', 'copilot guide in dialog')
   await page.click('[data-testid="connect-close"]')

@@ -57,8 +57,10 @@ Each batch carries resource attributes `tokenscope.instance_id`,
 `tokenscope.emitter=extension`, and, when resolved, `project.code_hash` and
 `github.org`.
 
-**Windows.** Copilot CLI and the Copilot App on Windows are supported (#408;
-proven under `pwsh` on Linux, first real-Windows run is the pilot's). Nothing
+**Windows.** Copilot CLI and the Copilot App on Windows are supported. CI runs
+the plugin unit suite on `windows-latest` under Windows PowerShell 5.1,
+including the PowerShell helper conformance and the usage-extension Windows
+tests; a few files not yet Windows-ready are excluded by name. Nothing
 extra is installed: setup (`copilot-redeem.mjs`) and the extension run in
 Copilot's own Node, and the bearer mint runs the PowerShell twin of the helper
 under the Windows PowerShell 5.1 that ships with Windows, as
@@ -85,7 +87,7 @@ refused; loopback is exempt only where a caller explicitly opts in.
 
 | What | Where it comes from | Why |
 |---|---|---|
-| `instance_id` (teammate binding) | `~/.tokenscope/config.copilot-cli.json` (minted by `provision_emit`), read at send time | Unspoofable — written by the local redeem helper, never taken from an event or the spool |
+| `instance_id` (teammate binding) | `~/.tokenscope/config.copilot-cli.json` (minted by `provision_emit`), read at send time | Written by the local redeem helper, never taken from an event or the spool. On the wire it is a claim the server resolves against the authenticated enrolment |
 | session (grouping) | Copilot's `session.id` | Copilot's own session id |
 | `project.code_hash` (project claim) | Per session, from the `.tokenscope` of the session's working directory, via the shared `resolveRepoProjectCode` + `computeCodeHash` | The SAME resolver Claude Code uses, so both hash an identical repo to the same value. No `.tokenscope` → untagged |
 | `github.org` (+ mirrored `github.repository`) | The project's git remote (`remote.origin.url`) | For org→enterprise keying. Lowercased org; omitted when unknown. Not an identity factor |
@@ -122,7 +124,7 @@ provision_emit { tool: 'copilot-cli' }   (MCP tool, OAuth-scoped)
          ├─ write ~/.tokenscope/config.copilot-cli.json  (durable emit credential + endpoints)
          ├─ enable enabledFeatureFlags.EXTENSIONS + extensions.mode load_only in Copilot's
          │  settings.json (merged into plain JSON; otherwise the user is told what to change)
-         └─ remove the legacy shell-rc block written by older versions
+         └─ remove the forwarder's per-project files and any shell-rc block an earlier setup wrote
 ```
 
 After setup, **start a new `copilot` session** so the extension loads, then run
@@ -155,7 +157,7 @@ helper, in the shared `argv-guard.mjs` vendored from `plugin/scripts/`:
   the path is fixed at `/api/v1/setup/redeem` on the resolved base.
 - **`--shell-rc` is confined** to the user's own home — compared on real,
   symlink-resolved paths — and to the shell init filenames the no-flag default
-  already considers. Setup only removes its legacy block from that file, but it
+  already considers. Setup only removes its own old block from that file, but it
   still rewrites a file every future shell executes.
 
 The skill needs this host's existing `instance_id` so a re-run rotates the
@@ -190,7 +192,7 @@ copilot-plugin/
   plugin.json                     manifest (version)
   .mcp.json                       MCP server → <host>/api/v1/mcp (a literal URL)
   extensions/tokenscope-usage/extension.mjs   the usage extension (wiring only)
-  hooks/hooks.json                SessionStart (enrol + legacy forwarder) + Stop (legacy flush)
+  hooks/hooks.json                SessionStart (enrol + file forwarder) + Stop (forwarder flush)
   hooks/forwarder-lifecycle.mjs   hook driver
   scripts/copilot-usage.mjs       usage-extension core (event → record, spool, heartbeat, drift)
   scripts/copilot-emit.mjs        credential store, bearer mint, guarded POST
@@ -204,7 +206,7 @@ copilot-plugin/
   scripts/managed-telemetry.mjs   enterprise-managed telemetry-setting detector
   scripts/argv-guard.mjs          redeem-argv validator
   scripts/endpoint-guard.mjs      https-only endpoint validator
-  scripts/copilot-forwarder.mjs   legacy file forwarder (see below)
+  scripts/copilot-forwarder.mjs   file forwarder (see below)
   scripts/...                     shared helpers (mcp-origin, real-home, trusted-git, …)
   skills/tokenscope-setup/SKILL.md   connect + provision
   skills/project/SKILL.md            bind this repo to a project (.tokenscope)
@@ -325,18 +327,18 @@ because a cloned repository can set it. Either:
 
 ---
 
-## Legacy lane (removed next release)
+## File forwarder (due to be removed)
 
-Before the usage extension, the plugin shipped a per-project **file forwarder**
+The plugin also carries a per-project **file forwarder**
 (`copilot-plugin/scripts/copilot-forwarder.mjs`, started by the SessionStart hook): Copilot CLI
-wrote spans to a file named by `COPILOT_OTEL_FILE_EXPORTER_PATH`, and the
-forwarder transcoded `chat` spans into the same `api_request` records and sent
-them. It remains in the plugin for one release, for devices not yet migrated.
+writes spans to a file named by `COPILOT_OTEL_FILE_EXPORTER_PATH`, and the
+forwarder transcodes `chat` spans into the same `api_request` records and sends
+them.
 
 **Which lane sends a session** is decided by whether Copilot's `EXTENSIONS`
 feature is on (read from Copilot's `settings.json`). On: the extension sends
-every session and the forwarder idles; setup removed the forwarder's files once,
-at migration. Off: no extension loads in the CLI and the forwarder runs for
+every session and the forwarder idles; setup removes the forwarder's per-project
+files when it turns the feature on. Off: no extension loads in the CLI and the forwarder runs for
 sessions from a terminal that still exports the span variable. If a session
 still has that variable while extensions are off, the extension records only
 what it *would* send (shadow mode). A call is never sent by both lanes.

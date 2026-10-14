@@ -13,6 +13,7 @@
  * ownership + ended-budget + membership gates, then the update + audit, atomically.
  * At least one field must be present.
  */
+import { ACTIVITY_LABEL_MAX, displayText } from '../../../../../../shared/schemas/display-text'
 import { defineEventHandler, getRouterParam, createError } from 'h3'
 import { z } from 'zod'
 import { requireAuth } from '../../../../../auth/rbac'
@@ -24,7 +25,7 @@ import { tagUnaccountedTx } from '../../../../../utils/tag-unaccounted'
 const Body = z
   .object({
     project_id: z.string().uuid().nullable().optional(),
-    activity: z.union([z.string().trim().min(1).max(64), z.null()]).optional(),
+    activity: z.union([displayText(ACTIVITY_LABEL_MAX, { trim: true }), z.null()]).optional(),
   })
   .refine((b) => b.project_id !== undefined || b.activity !== undefined, {
     message: 'Provide project_id and/or activity (or null to clear).',

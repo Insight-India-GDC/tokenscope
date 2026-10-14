@@ -15,9 +15,10 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { installStatusLine, removeStatusLine } from './env-builder.mjs'
 import { casWriteFile, resolveScriptsDir } from './plugin-runtime.mjs'
+import { claudeSettingsPath } from './claude-config-dir.mjs'
 
 const arg = (process.argv[2] || '').trim().toLowerCase()
-const settingsPath = join(homedir(), '.claude', 'settings.json')
+const settingsPath = claudeSettingsPath({ home: homedir() })
 // CONFINED (MDASH follow-up): this path is WRITTEN INTO ~/.claude/settings.json
 // as a statusLine command, which Claude Code then executes on every render — so
 // an unconfined CLAUDE_PLUGIN_ROOT here persists repo-chosen code, outliving the

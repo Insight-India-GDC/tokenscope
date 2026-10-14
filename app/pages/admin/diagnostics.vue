@@ -111,7 +111,11 @@ interface DiagCostingResp {
       driftUsd: string
       pricedBy: string
     } | null
-  }
+  } | null
+  // Present only for a region admin: v_cost_drift has no region, so the server
+  // withholds the drift section and says why (costDrift is null, reads has no
+  // costDrift entry).
+  costDriftScopedOut?: { reason: 'platform-admin-only'; detail: string }
   // Which rung of the costing ladder priced real spend
   // (docs/design/provider-cost-precedence.md). A healthy fleet is ENTIRELY
   // provider-priced — `rateCard > 0` is an ALERT, not a statistic.
@@ -401,7 +405,9 @@ function fmtWorkerRun(durationMs: number | null, ageMinutes: number | null): str
 // SLICE (the card decides how a span total is divided, never how big it is) and
 // the forecasting/validation uses of the card. Amber/red therefore means "the
 // card needs a rate line", not "the bill is wrong".
+const driftScopedOut = computed(() => costingData.value?.costDriftScopedOut ?? null)
 const driftBadge = computed(() => {
+  if (driftScopedOut.value) return { kind: 'neutral' as const, label: 'scoped out' }
   if (driftUnavailable.value) return { kind: 'rag-amber' as const, label: 'unavailable' }
   const d = costingData.value?.costDrift
   if (!d || d.spansCompared === 0) return { kind: 'neutral' as const, label: 'no data' }
@@ -1787,7 +1793,11 @@ function pretty(obj: unknown): string {
           <UiEyebrow>Cost drift (rate card vs provider)</UiEyebrow>
           <UiBadge :kind="driftBadge.kind" data-testid="admin-diag-drift-badge">{{ driftBadge.label }}</UiBadge>
         </div>
-        <template v-if="driftUnavailable">
+        <p v-if="driftScopedOut" class="text-sm text-carbon-3" data-testid="admin-diag-drift-scoped">
+          Scoped out — cost drift is estate-wide (it has no region), so only platform-admin can
+          read it. Nothing is wrong; the costing-rung card above still covers your region.
+        </p>
+        <template v-else-if="driftUnavailable">
           <h2 class="text-lg font-bold text-carbon-2">Drift could not be read</h2>
           <p class="mt-2 text-xs text-brand-hunger font-mono" data-testid="admin-diag-drift-unavailable">
             {{ driftUnavailable }}
@@ -1797,7 +1807,7 @@ function pretty(obj: unknown): string {
             else here is a genuine failure. Either way this is not "no comparable spans".
           </p>
         </template>
-        <template v-else-if="costingData.costDrift?.spansCompared > 0">
+        <template v-else-if="costingData.costDrift && costingData.costDrift.spansCompared > 0">
           <h2 class="text-lg font-bold text-carbon">
             {{ costingData.costDrift.meanAbsDriftPct ?? 0 }}% mean drift
             <span class="text-sm font-medium text-carbon-3">across {{ costingData.costDrift.spansCompared.toLocaleString() }} spans (7d)</span>

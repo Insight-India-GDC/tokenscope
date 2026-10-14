@@ -23,6 +23,7 @@ import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { DISPATCH_LOCK_POOL_MAX } from '../../../server/workers/dispatch-lock'
+import { PUBLIC_SNAPSHOT } from '../helpers/public-snapshot'
 
 const ROOT = resolve(__dirname, '../../..')
 const read = (p: string) => readFileSync(resolve(ROOT, p), 'utf8')
@@ -56,6 +57,8 @@ function bicepparamValue(src: string, name: string): string | null {
 }
 
 const PARAM_FILES = readdirSync(resolve(ROOT, 'infra/parameters')).filter((f) => f.endsWith('.bicepparam'))
+// dev.bicepparam is internal-only: the Dev cases skip in the public snapshot.
+const HAS_DEV = !PUBLIC_SNAPSHOT
 
 describe('postgres connection budget', () => {
   it('main.bicep defaults to unmanaged and forwards the value to the PG module', () => {
@@ -72,7 +75,7 @@ describe('postgres connection budget', () => {
     )
   })
 
-  it('at least one parameter file manages it (Dev)', () => {
+  it.skipIf(!HAS_DEV)('at least one parameter file manages it (Dev)', () => {
     const managing = PARAM_FILES.filter((f) => bicepparamValue(read(`infra/parameters/${f}`), 'postgresMaxConnections') !== null)
     expect(managing).toContain('dev.bicepparam')
   })
@@ -92,7 +95,7 @@ describe('postgres connection budget', () => {
     expect(needed, `${file}: ${maxReplicasFor(env!)} × ${perReplica} + ${RESERVED}`).toBeLessThanOrEqual(maxConnections)
   })
 
-  it('Dev today: 3 × (10 + 10 + 24) + 15 = 147 ≤ 200', () => {
+  it.skipIf(!HAS_DEV)('Dev today: 3 × (10 + 10 + 24) + 15 = 147 ≤ 200', () => {
     // The numbers the plan states, so a drift in any one is named here too.
     expect([maxReplicasFor('dev'), requestPoolMax(), workerPoolMax(), DISPATCH_LOCK_POOL_MAX]).toEqual([3, 10, 10, 24])
     expect(Number(bicepparamValue(read('infra/parameters/dev.bicepparam'), 'postgresMaxConnections'))).toBe(200)

@@ -110,6 +110,24 @@ jobs:
         # Fails if the MCP prompt source .md changed without regenerating.
         # Run `npm run sync:skill-prompts` to regenerate.
         run: npm run check:skill-prompts-sync
+      - name: Detect backlinks onto other owners' issues (PR title, body, commits)
+        # GitHub turns `owner/repo#N` and issue / PR URLs in a commit message or
+        # PR text into a "mentioned this" entry on THAT issue, naming this repo
+        # and PR (it happened on an upstream Claude Code issue, 2026-10-08), and
+        # editing afterwards does not remove it. By the time CI runs the entry
+        # already exists, so this is DETECTION, so it gets cleaned up and noticed;
+        # prevention is the PreToolUse gate in .claude/settings.json.
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            node scripts/check-no-upstream-backlinks.mjs --github-event --commits "origin/${BASE_REF}..HEAD"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            node scripts/check-no-upstream-backlinks.mjs --commits "${BEFORE}..${AFTER}"
+          fi
       - name: Check plugin version bumped when plugin code changed (S12)
         # Claude Code / Copilot CLI only auto-reinstall a plugin when its
         # marketplace-entry version INCREASES. tests/unit/plugin/version-sync.test.ts
@@ -254,8 +272,9 @@ jobs:
     # The plugins run on users' machines, not ours. Until #411 every job was
     # ubuntu-latest, which is how a POSIX-only emission helper shipped to
     # Windows users and sent nothing (#408). macOS runs the whole plugin unit
-    # suite; Windows runs the helper conformance suite against real Windows
-    # PowerShell 5.1 — the interpreter pilot users have — not pwsh 7.
+    # suite. Windows runs it too, against real Windows PowerShell 5.1 (the
+    # interpreter pilot users have, not pwsh 7), except the files #430 lists
+    # as not yet Windows-ready, each excluded by name below.
     name: Plugin (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -288,6 +307,8 @@ jobs:
         # claude-redeem-ps1 compares the two setup redeems; on Windows its
         # fixtures live under the runner's real profile, which it allows only
         # when CI and GITHUB_ACTIONS are both 'true' (the runner is ephemeral).
+        # Its own step: these spawn Windows PowerShell per case and time out
+        # when the rest of the suite runs beside them on the runner.
         run: >-
           npx vitest run
           tests/unit/plugin/claude-redeem-ps1.test.ts
@@ -297,18 +318,77 @@ jobs:
           tests/unit/plugin/copilot-usage-windows.test.ts
           tests/unit/plugin/hooks-command.test.ts
           tests/unit/plugin/is-main.test.ts
+      - name: Plugin unit suite, rest (Windows)
+        if: runner.os == 'Windows'
+        env:
+          TOKENSCOPE_PWSH: powershell.exe
+          TOKENSCOPE_SKIP_SH: '1'
+        # Everything else in tests/unit/plugin. Not yet Windows-ready: #430
+        # lists each excluded file, why, and the decision it needs. Remove a
+        # line when its file passes or skips itself on win32.
+        run: >-
+          npx vitest run tests/unit/plugin
+          --exclude tests/unit/plugin/claude-redeem-ps1.test.ts
+          --exclude tests/unit/plugin/otel-helper-conformance.test.ts
+          --exclude tests/unit/plugin/otel-helper-error-body.test.ts
+          --exclude tests/unit/plugin/status-ps1.test.ts
+          --exclude tests/unit/plugin/copilot-usage-windows.test.ts
+          --exclude tests/unit/plugin/hooks-command.test.ts
+          --exclude tests/unit/plugin/is-main.test.ts
+          --exclude tests/unit/plugin/otel-helper-exhaustive-property.test.ts
+          --exclude tests/unit/plugin/otel-helper-source-resolution.test.ts
+          --exclude tests/unit/plugin/otel-helper-client-version.test.ts
+          --exclude tests/unit/plugin/otel-helper-cached-bearer.test.ts
+          --exclude tests/unit/plugin/otel-helper-per-tool-store.test.ts
+          --exclude tests/unit/plugin/otel-helper-retry.test.ts
+          --exclude tests/unit/plugin/otel-helper-state-dir-argv.test.ts
+          --exclude tests/unit/plugin/otel-helper-endpoint-provenance.test.ts
+          --exclude tests/unit/plugin/otel-helper-token-argv.test.ts
+          --exclude tests/unit/plugin/device-store.test.ts
+          --exclude tests/unit/plugin/cas-write-file.test.ts
+          --exclude tests/unit/plugin/copilot-redeem.test.ts
+          --exclude tests/unit/plugin/copilot-usage.test.ts
+          --exclude tests/unit/plugin/claude-redeem.test.ts
+          --exclude tests/unit/plugin/desktop-env.test.ts
+          --exclude tests/unit/plugin/plugin-runtime.test.ts
+          --exclude tests/unit/plugin/tag-repo-selfheal.test.ts
+          --exclude tests/unit/plugin/session-start-selfheal.test.ts
+          --exclude tests/unit/plugin/env-builder.test.ts
+          --exclude tests/unit/plugin/trusted-git.test.ts
+          --exclude tests/unit/plugin/claude-config-dir.test.ts
+          --exclude tests/unit/plugin/redeem-argv-guard.test.ts
+          --exclude tests/unit/plugin/session-start-repo-state-dir.test.ts
+          --exclude tests/unit/plugin/trusted-global-settings.test.ts
+          --exclude tests/unit/plugin/statusline-toggle.test.ts
+          --exclude tests/unit/plugin/backfill.test.ts
+          --exclude tests/unit/plugin/copilot-state-dir.test.ts
+          --exclude tests/unit/plugin/copilot-forwarder.test.ts
+          --exclude tests/unit/plugin/emit-helper-spawn.test.ts
 
-  integration:
-    name: Integration (testcontainers Postgres)
+  integration-shard:
+    name: Integration shard ${{ matrix.shard }}/3
     runs-on: ubuntu-latest
-    # 241 files, each starting its own testcontainers Postgres. This ran 19.2
-    # and 19.6 min green on 2026-08-06/07 and then crossed 20, so the job began
-    # being CANCELLED at the ceiling with zero failing tests — on `main` too,
-    # not just on a branch. A cancelled job reads exactly like a broken one,
-    # which is the worst failure mode a gate can have. 35 gives real headroom
-    # rather than moving the cliff by a minute; the standing fix is to shard or
-    # trim the suite, which is its own change.
-    timeout-minutes: 35
+    # Each shard shares one Postgres service; the first suite migrates a
+    # template database and every suite copies it (tests/integration/helpers/db.ts).
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -319,14 +399,60 @@ jobs:
           cache: 'npm'
       - name: Install
         run: npm ci --no-audit --no-fund
+      - name: Tune the throwaway server for tests
+        # A test server that is discarded with the runner needs no durability.
+        # All three settings take effect on reload.
+        run: |
+          psql "$TEST_PG_URL" -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "SELECT pg_reload_conf()"
       - name: Integration
-        # GitHub-hosted runners have a working docker daemon; no Ryuk
-        # gymnastics needed there. The helper sets the flag defensively.
+        run: npx vitest run tests/integration --shard=${{ matrix.shard }}/3
+
+  integration-pristine:
+    name: Integration (pristine cluster)
+    runs-on: ubuntu-latest
+    # The suites that need a cluster nobody else has touched (tokenscope_app is
+    # a cluster-global role) skip under TEST_PG_URL. They run here, each on its
+    # own testcontainers Postgres, as every suite used to.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Integration (pristine cluster)
         env:
           # On standard docker-in-docker the cw network override doesn't
           # apply — the helper checks CW_NETWORK and falls back to bridge.
           CW_NETWORK: bridge
-        run: npm run test:integration
+        run: >-
+          npx vitest run
+          tests/integration/admin/rls-posture-route.test.ts
+          tests/integration/db/provision-app-role.test.ts
+
+  integration:
+    # This exact name is a required status check on `main`: keep it.
+    name: Integration (testcontainers Postgres)
+    runs-on: ubuntu-latest
+    needs: [integration-shard, integration-pristine]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: All integration jobs passed
+        env:
+          SHARDS: ${{ needs.integration-shard.result }}
+          PRISTINE: ${{ needs.integration-pristine.result }}
+        run: |
+          echo "shards=$SHARDS pristine=$PRISTINE"
+          [ "$SHARDS" = success ] && [ "$PRISTINE" = success ]
 
   local-stack:
     name: Local stack (RUN-LOCALLY end to end)

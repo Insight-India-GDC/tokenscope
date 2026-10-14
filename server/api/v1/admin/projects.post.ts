@@ -19,10 +19,11 @@ import { withRequestRls } from '../../../db/request-rls'
 import { recordAuditEvent } from '../../../db/audit'
 import { assertOrgUnitInRegion } from '../../../db/org-units'
 import { project } from '../../../../drizzle/schema'
+import { displayText, PROJECT_NAME_MAX } from '#shared/schemas/display-text'
 
 const Body = z.object({
   code: z.string().min(2).max(120).regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/, 'invalid project code'),
-  display_name: z.string().min(1).max(200),
+  display_name: displayText(PROJECT_NAME_MAX),
   type: z.enum(['billable', 'pursuit', 'internal']),
   region_id: z.string().uuid(),
   cost_owning_unit_id: z.string().uuid(),

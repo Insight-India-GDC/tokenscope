@@ -35,6 +35,9 @@ export async function withRequestRls<T>(
       // platform-admin → global-finops at the RLS layer; see rlsRoleFor.
       userRole: rlsRoleFor(session.role),
       userTeammateId: session.teammateId,
+      // Persona override: the session above is the PERSONA; this names the real
+      // admin so recordAuditEvent can record it (mig 0154). Undefined otherwise.
+      impersonatorOid: session.impersonatorOid ?? null,
     },
     fn,
     opts,

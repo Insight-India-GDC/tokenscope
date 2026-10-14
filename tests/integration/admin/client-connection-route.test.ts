@@ -154,6 +154,7 @@ describe('no row ⇒ defaults', () => {
       mcpUrl: 'https://tokenscope.acme.example/api/v1/mcp',
       claudeBundledOrigin: CLAUDE_PLUGIN_DEFAULT_ORIGIN,
       copilotBundledOrigin: COPILOT_PLUGIN_BUNDLED_ORIGIN,
+      claudeMarketplaceUrl: 'https://tokenscope.acme.example/api/v1/plugin/marketplace.json',
     })
   })
 
@@ -161,6 +162,7 @@ describe('no row ⇒ defaults', () => {
     const r = await configGet(ev({ method: 'GET', session: dev(), host: 'ca-internal.azurecontainerapps.io' }))
     expect(r.origin).toBeNull()
     expect(r.mcpUrl).toBeNull()
+    expect(r.claudeMarketplaceUrl).toBeNull()
     expect(r.originMissingReason).toContain('appPublicOrigin')
   })
 

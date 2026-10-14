@@ -42,6 +42,7 @@ interface Row extends Record<string, unknown> {
   actor_teammate_id: string | null
   actor_email: string | null
   actor_system: string | null
+  impersonator_oid: string | null
   subject_kind: string | null
   subject_id: string | null
   payload: unknown
@@ -102,6 +103,7 @@ export default defineEventHandler(async (event) => {
              ae.actor_teammate_id::text AS actor_teammate_id,
              ta.email AS actor_email,
              ae.actor_system,
+             ae.impersonator_oid,
              ae.subject_kind,
              ae.subject_id::text AS subject_id,
              ae.payload,
@@ -142,6 +144,9 @@ export default defineEventHandler(async (event) => {
       actorTeammateId: r.actor_teammate_id,
       actorEmail: r.actor_email,
       actorSystem: r.actor_system,
+      // The admin acting through persona override when this row was written
+      // (mig 0154); the actor fields then name the persona. null otherwise.
+      impersonatorOid: r.impersonator_oid,
       subjectKind: r.subject_kind,
       subjectId: r.subject_id,
       payload: r.payload,

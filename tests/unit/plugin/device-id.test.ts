@@ -7,9 +7,10 @@
  * credential. Everything else it does exists to keep the setup flow correct once
  * the prompts stopped reading those files directly.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { realHome } from '../../../plugin/scripts/real-home.mjs'
 import { join } from 'node:path'
 import {
   attrValue,
@@ -183,6 +184,59 @@ describe('device-id end-to-end against real files', () => {
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
+  })
+
+  // Two installs on one host (Claude Desktop with its own config folder, the CLI
+  // in ~/.claude) share ONE claude-code enrolment in ~/.tokenscope. A desktop
+  // folder that was never set up must report that instance, or setup mints a
+  // second one and strands the CLI's labels on a superseded id.
+  describe('a custom config folder that is not set up yet', () => {
+    afterEach(() => vi.unstubAllEnvs())
+    const store = (instance = INSTANCE) => ({
+      version: 2,
+      tool: 'claude-code',
+      instance_id: instance,
+      oauth_refresh_token: SECRET,
+      bearer_endpoint: `https://ts.example.com/api/v1/instances/${instance}/bearer`,
+    })
+
+    it('reports the host’s shared claude-code enrolment', () => {
+      const home = mkdtempSync(join(realHome(), '.ts-device-id-cfg-'))
+      try {
+        vi.stubEnv('CLAUDE_CONFIG_DIR', join(home, '.claude-desktop'))
+        mkdirSync(join(home, '.tokenscope'), { recursive: true })
+        writeFileSync(join(home, '.tokenscope', 'config.claude-code.json'), JSON.stringify(store()))
+        const out = deviceIdentity('claude-code', home)
+        expect(out).toMatchObject({ enrolled: true, tool: 'claude-code', instance_id: INSTANCE, bearer_host: 'ts.example.com' })
+        expect(JSON.stringify(out)).not.toContain(SECRET)
+        // A damaged settings file in that folder is NOT "not set up": setup will
+        // refuse to write it, so the shared instance must not be offered for rotation.
+        mkdirSync(join(home, '.claude-desktop'), { recursive: true })
+        writeFileSync(join(home, '.claude-desktop', 'settings.json'), '{ not json')
+        expect(deviceIdentity('claude-code', home)).toMatchObject({ enrolled: false, reason: 'no-enrolment' })
+      } finally {
+        rmSync(home, { recursive: true, force: true })
+      }
+    })
+
+    it('its own enrolment wins once it has one; the default folder never falls back', () => {
+      const home = mkdtempSync(join(realHome(), '.ts-device-id-cfg-'))
+      try {
+        mkdirSync(join(home, '.tokenscope'), { recursive: true })
+        writeFileSync(
+          join(home, '.tokenscope', 'config.claude-code.json'),
+          JSON.stringify(store('9a1e0000-0000-4000-8000-0000000000ff')),
+        )
+        // Default folder (~/.claude) with no settings: not enrolled, as before.
+        expect(deviceIdentity('claude-code', home)).toMatchObject({ enrolled: false, reason: 'no-enrolment' })
+        vi.stubEnv('CLAUDE_CONFIG_DIR', join(home, '.claude-desktop'))
+        mkdirSync(join(home, '.claude-desktop'), { recursive: true })
+        writeFileSync(join(home, '.claude-desktop', 'settings.json'), JSON.stringify(claudeSettings()))
+        expect(deviceIdentity('claude-code', home)).toMatchObject({ enrolled: true, instance_id: INSTANCE })
+      } finally {
+        rmSync(home, { recursive: true, force: true })
+      }
+    })
   })
 
   it('a malformed store is "not enrolled", never a throw', () => {

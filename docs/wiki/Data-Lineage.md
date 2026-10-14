@@ -8,8 +8,8 @@ why; and every invariant classified by *how* it is enforced.
 Read [Data Flow](Data-Flow.md) first — it holds the shape and the one principle.
 This page assumes it.
 
-> **Status.** Written 2026-08-02 from a full code trace at `7ad1e83`. Every row
-> carries a `file:line`. Unclosed claims are marked `[VERIFY]`.
+> **How to read it.** Rows carry a `file:line`. Unclosed claims are marked
+> `[VERIFY]`.
 
 ---
 
@@ -27,7 +27,7 @@ twice.
 | `copilot_pool_bill` | enterprise · org · month | `(…_month_org_uidx)` + a residual index for `provider_org_id IS NULL` | **the Copilot §B charge** | anything per-teammate — the view carries no user column, by test |
 | `unaccounted_usage` | teammate · day · tool | `(teammate_id, day, tool)` | **the §A residual** and the tagging worklist — the key also serves a model breakdown: stored `unaccounted_usage_model` children plus the by-key `provider_usage_fact` detail read (`/me/unaccounted/{id}`) | a session breakdown — the API has no session ids |
 | `unaccounted_usage_model` | parent fill row · model | PK `(unaccounted_usage_id, model)`, FK CASCADE — mig 0123 | **the stored §A residual model split** — `cap(API_m − OTel_m)` per model, `Σ children ≤ parent` | tagging — the parent carries the one decision; children have no tag columns |
-| `provider_usage_fact` | source · teammate/actor · date · tool · model · cost_type · context_window | NULL-safe expression uidx (0118, replaced by 0127 to admit the newest member) — `(source, COALESCE(teammate_id::text, 'actor:' \|\| lower(actor_ref)), date, tool, COALESCE(model,''), COALESCE(cost_type,''), COALESCE(context_window,''))` | **the provider's own per-model/per-cost_type facts** — billed cost (anthropic) / gross consumption (github), per provider | the §B charge (`actual_spend` / `copilot_pool_bill` own that); any cross-provider blind `SUM(cost_usd)` |
+| `provider_usage_fact` | source · teammate/actor · date · tool · model · cost_type · context_window | NULL-safe expression uidx (mig 0127) — `(source, COALESCE(teammate_id::text, 'actor:' \|\| lower(actor_ref)), date, tool, COALESCE(model,''), COALESCE(cost_type,''), COALESCE(context_window,''))` | **the provider's own per-model/per-cost_type facts** — billed cost (anthropic) / gross consumption (github), per provider | the §B charge (`actual_spend` / `copilot_pool_bill` own that); any cross-provider blind `SUM(cost_usd)` |
 | `over_emission` | teammate · day · tool | `(teammate_id, day, tool)` | **an integrity signal** | spend — it is never summed into any total |
 | `copilot_overage_allocation` | enterprise · month · cost centre | two partial uniques (allocated + unallocated) | **the distribution** of pooled overage | its magnitude — that comes from the bill |
 | `raw_provider_batch` / `_page` | batch · page | batch owns completion; page has an XOR check on body/duplicate | **the untransformed provider response** | anything read by reporting — nothing reads it yet |
@@ -37,8 +37,8 @@ twice.
 | `reporting_snapshot` | month | `period_month` (first-of-month CHECK) | **what a month read when it was reported**, and by whom | any live figure — it is a record, not the source |
 
 **A snapshot is not a lock.** Recording a month writes down what it read; it
-never refuses a later write (mig 0128 dropped both close-guard triggers). The
-bill lands at +10 days and a month recorded at +2 must accept it — the delta
+never refuses a later write, and no table carries a close guard. The bill
+lands at +10 days and a month recorded at +2 must accept it — the delta
 against the snapshot is what gets reported, and it refuses to subtract across a
 basis change rather than present a confident wrong number.
 
@@ -54,7 +54,7 @@ basis change rather than present a confident wrong number.
 
 `v_complete_usage` is read by **20+ modules** and is the single §A lane for
 project spend at every grain (`server/usage/complete-spend.ts:254`). The
-reports-depth reads added for the drill surfaces sit on it too — the per-teammate
+reports-depth reads for the drill surfaces sit on it too — the per-teammate
 contribution view (`server/reporting/teammate.ts`) and the project reports depth
 (`server/reporting/project-depth.ts`), both inside the lane-firewall scan roots,
 so neither can reach `attribution_record`, raw `actual_spend` or
@@ -75,10 +75,6 @@ never enters them.
 
 ## 2. Writers
 
-The count matters: it is why the finance-close guard is a **table trigger**
-rather than per-statement `CASE` guards. Two of the writers are `DELETE`s, which
-no `ON CONFLICT` clause can reach (`0116:16-22`).
-
 ### `actual_spend` — eight writers
 
 | # | writer | op | cite |
@@ -90,16 +86,21 @@ no `ON CONFLICT` clause can reach (`0116:16-22`).
 | 5 | `placement-store.ts` owed-bill replay | INSERT … ON CONFLICT DO UPDATE | `:377` |
 | 6 | `governance-key-backfill.ts` | 3 × UPDATE | `:75`, `:92`, `:188` |
 | 7 | `governance/recompute.ts` | UPDATE (verdict) | `:190` |
+| 8 | `governance/rehome-placement.ts` | UPDATE (admin placement correction; `dimension_source = 'admin-correction'`) | `:238` |
 
-### `attribution_record` — three writers
+### `attribution_record` — six writers
 
 | writer | op | cite |
 |---|---|---|
 | `azure-monitor-reader.ts` (the joiner) | INSERT … ON CONFLICT DO NOTHING | `:1554`, `:1561` |
+| `azure-monitor-reader.ts` (the joiner, replay) | UPDATE `emitting_email`/`emitting_org_id`/`billing_lane` when still unset — bumps `ts_recorded` | `:682-687` |
+| `governance/rehome-placement.ts` | UPDATE `org_unit_id` (admin placement correction) — bumps `ts_recorded` | `:191-196` |
+| `governance/rehome-spend.ts` | UPDATE `cost_owning_unit_id` (admin spend re-home) — bumps `ts_recorded` | `:325-328` |
 | `tag-session.ts` | UPDATE `project_id`/`cost_owning_unit_id`, `activity` — bumps `ts_recorded` | `:188`, `:200` |
-| `confirm-instance.ts` | UPDATE identity + dimensions — **does not bump `ts_recorded`** | `:277-290` |
+| `confirm-instance.ts` | UPDATE identity + dimensions — bumps `ts_recorded` | `:289-303` |
 
-That last omission is gap #6 in [Data Flow](Data-Flow.md#8-known-gaps).
+Every mutation bumps `ts_recorded` because the usage rollup keys its recompute
+set on it.
 
 ---
 
@@ -136,7 +137,7 @@ Two reports per UTC day, fetched **serially** (a shared 60-RPM org-wide cap,
 | `raw_payload` | `{day, usage[], cost[]}` | `:618` |
 | `region_id`, `org_unit_id`, `cost_owning_unit_id`, `dimension_source` | teammate's placement **at insert time**; never refreshed | `:222`, `dimension-snapshot.ts:69-78` |
 | `provider_org_id`, `provider_enterprise_id`, `governance_key_status` | resolved once per call | `:223-224` |
-| `chargeback_exempt`, `governance_verdict_source` | `resolveAnthropicVerdict(...)`, unconditionally — mig 0128 dropped the freeze | `:225`, `:236-239` |
+| `chargeback_exempt`, `governance_verdict_source` | `resolveAnthropicVerdict(...)`, recomputed on every write | `:225`, `:236-239` |
 
 **Not on the `actual_spend` row, read by the transform instead.** These fields
 survive into `raw_payload` and are read there by `provider-transform.ts`, which
@@ -148,7 +149,7 @@ lands them on `provider_usage_fact` (migs 0118/0122):
 | `cache_creation.ephemeral_5m/1h`, `cache_read_input_tokens` | the `cache_creation_tokens` / `cache_read_tokens` lanes on the token row |
 | `requests` (usage report) | `provider_usage_fact.requests` on the token row |
 | `server_tool_use.web_search_requests` | `provider_usage_fact.web_search_requests` (mig 0122) |
-| `cost_type` | `provider_usage_fact.cost_type` on the cost row (pre-#226 payloads stamped `tokens`) |
+| `cost_type` | `provider_usage_fact.cost_type` on the cost row; a captured cost row without `cost_type` is stored as `tokens` |
 | `context_window` (both reports) | `provider_usage_fact.context_window` on both rows (mig 0127) |
 | `currency` (cost report) | `provider_usage_fact.currency` on the cost row (`provider-transform.ts:480`); `actual_spend` assumes USD and never checks it |
 
@@ -173,10 +174,11 @@ The **envelope** is a non-passthrough `z.object` — undeclared envelope keys ar
 stripped entirely (`enterprise-client.ts:67`, `:103`).
 
 > **`.default(0)` does not catch `null`.** It substitutes only for *absent*.
-> The provider returns a null `requests` when `cost_type` is grouped; the fix is
-> `.nullish().transform(v => v ?? 0)`. Getting this wrong throws inside the
-> per-org catch and the org writes **no rows on any cycle** — a deterministic,
-> silent outage.
+> The provider returns a null `requests` when `cost_type` is grouped, so the
+> schema reads it with `.nullish().transform(v => v ?? 0)`
+> (`enterprise-client.ts:157`). A `.default(0)` there would throw inside the
+> per-org catch and the org would write **no rows on any cycle** — a
+> deterministic, silent outage.
 
 ### 3.2 OTel → `attribution_record`
 
@@ -186,7 +188,7 @@ enrolment id — **not** Claude's `session.id`, which is stored alongside as
 
 | column | origin | source |
 |---|---|---|
-| `instance_id`, `teammate_id`, `region_id`, `org_unit_id`, `tool`, `identity_state` | **DB lookup** on `instance_attestation` | unspoofable |
+| `instance_id`, `teammate_id`, `region_id`, `org_unit_id`, `tool`, `identity_state` | **DB lookup** on `instance_attestation` | the authenticated enrolment row, selected by the event's claimed `instance_id` |
 | `claude_session_id`, `model`, `tokens`, `ts_event`, `source_run_id`, `query_source` | **wire** | the event |
 | `token_type` | **KQL** `mv-expand` into 4 lanes | `reader.ts:483` |
 | `cost_usd` | **computed** — §4.1 | `span-costing.ts` |
@@ -222,13 +224,13 @@ enrolment id — **not** Claude's `session.id`, which is stored alongside as
 | `copilot_pool_bill` (§B) | either | `{organizationName, month, items[]}` |
 | `actual_spend` (showback) | either | `{kind:'flat-seat', login, licenseOrg, month, priceUsd, showbackOnly:true}` |
 
-**App mode receives ~20 fields; the schema now declares most of them.**
+**App mode receives ~20 fields; the schema declares most of them.**
 Declared: `user_login`, `user_id`, `day`, `ai_credits_used`,
 `totals_by_model_feature`, `totals_by_cli.token_usage`, the four `loc_*_sum`
 counters, the three activity counts (`code_generation_activity_count`,
 `code_acceptance_activity_count`, `user_initiated_interaction_count`), and both
 language arrays (`totals_by_language_model`, `totals_by_language_feature`).
-Still undeclared but present, captured live 2026-08-01: `totals_by_feature`,
+Present on the wire but undeclared: `totals_by_feature`,
 `totals_by_ide`, `ai_adoption_phase`, `enterprise_id`, and six `used_*`
 booleans.
 
@@ -238,7 +240,7 @@ declaration changes is the *typed* surface, not the persisted JSONB.
 `totals_by_cli.token_usage` carries real prompt/output token sums, so Copilot is
 richer than "credits only".
 
-Two consumers read the raw record today, both by key and neither copying it
+Two consumers read the raw record, both by key and neither copying it
 into a second store: the billed lane's GitHub arm
 (`provider-transform-github.ts` → `provider_usage_fact`) and the My-usage
 engagement card (`server/usage/copilot-engagement.ts`, over the engagement
@@ -316,11 +318,13 @@ branches stay complementary.
 4. the OTel sum excludes quarantined sessions
 
 A separate **no-bill lane** (`api_usd = 0`, `over_usd > $250`, no unrevoked
-personal-subscription declaration) never writes to `over_emission` — the table
-has no `reason` column — and instead dispatches a non-accusatory inbox prompt.
+personal-subscription declaration) is written to `over_emission` under
+`reason = 'no-bill-to-corroborate'` (mig 0132). Every developer-facing reader
+filters it out, so it is never offered as a review item. Declarable Claude
+tools in this lane also get a non-accusatory inbox prompt.
 
 See [Data Flow §4](Data-Flow.md#4-how-money-is-valued--and-the-rate-cards-real-job)
-for why threshold 2 is mis-calibrated.
+for why threshold 2 stays at 2× although its stated rationale does not hold.
 
 ### 4.4 The stale-row prune
 
@@ -332,8 +336,10 @@ DELETE FROM actual_spend
    AND pulled_at < <runStarted>
 ```
 
-Nine guards, and the reasoning behind two of them is subtle enough to be worth
-stating:
+The delete runs only when every day in the window pulled and wrote (a failed
+day aborts the run first), and only while at most half of the identity-eligible
+rows failed to bind a teammate (`PRUNE_MAX_SKIP_RATIO = 0.5`,
+`analytics-poller.ts:635`). Three details matter:
 
 - `runStarted` comes from the **DB clock**, not `Date.now()`, so app/DB skew
   cannot widen the deletion window.
@@ -343,7 +349,6 @@ stating:
   1-of-3 and let a broken run prune.
 - A genuinely quiet window (zero eligible rows) yields ratio 0 and **does**
   prune, which is correct.
-- The finance-close trigger is a hard DB-level stop on this DELETE.
 
 ---
 
@@ -357,11 +362,8 @@ The distinction matters: an invariant "enforced" by a comment is a wish.
 |---|---|
 | one row per `(teammate, date, tool, source)` / `(teammate, day, tool)` ×2 | unique indexes |
 | one `attribution_record` per event · token type · model | expression unique index, mig 0055 |
-| a closed month's **`actual_spend`** money cannot move — INSERT-new, DELETE, amount-UPDATE, or re-date **in either direction** | BEFORE ROW trigger, mig 0116 |
-| **`actual_spend`** cannot be TRUNCATEd while any period is closed | BEFORE TRUNCATE statement trigger |
-
 | an `unaccounted_usage` row cannot be both tagged and dismissed | CHECK, mig 0094/0095 |
-| one `provider_usage_fact` row per (source, identity, date, tool, model, cost_type, context_window) — NULL-safe | expression unique index (every nullable member COALESCEd; identity = teammate uuid or `actor:`+lower(actor_ref)), mig 0118, replaced by mig 0127 for the `context_window` member |
+| one `provider_usage_fact` row per (source, identity, date, tool, model, cost_type, context_window) — NULL-safe | expression unique index (every nullable member COALESCEd; identity = teammate uuid or `actor:`+lower(actor_ref)), mig 0127 |
 | every `provider_usage_fact` row carries a usable identity | CHECK `provider_usage_fact_identity_chk`, mig 0118 |
 | a fact row is a cost row or a token row, never both | CHECK `provider_usage_fact_measure_chk`, mig 0118 |
 | no blank fact dimensions, no negative measures | CHECKs `provider_usage_fact_shape_chk` (0118) + `_web_search_chk` (0122) + `_context_window_shape_chk` (0127 — shape only; the band vocabulary is the provider's, so no value CHECK) |
@@ -371,16 +373,10 @@ The distinction matters: an invariant "enforced" by a comment is a wish.
 | `reporting_snapshot.period_month` is first-of-month | CHECK |
 | attribution rows scoped by region + org-unit ltree path | RLS policy |
 
-> **THERE ARE NO CLOSE-GUARD TRIGGERS ANY MORE** (mig 0128 dropped both, and
-> `actual_spend.governance_verdict_locked_at` with them). They only ever
-> protected `actual_spend`, so the freeze was asymmetric from the start —
-> `unaccounted_usage`, `over_emission`, `reconciliation_record`,
-> `copilot_pool_bill` and `attribution_record` never carried one. What ended
-> them was the timeline, not the asymmetry: we recorded a month at +2 days, the
-> provider corrected its rows at +6, the bill arrived at +10, and the product
-> rejected the authoritative source because of a state we had set ourselves.
-> This is not the billing system of record. The bill is right; refusing it never
-> made the month right, it made the month permanently wrong.
+> **No table carries a close guard.** Recording a reporting snapshot blocks no
+> write anywhere. TokenScope is not the billing system of record, so a provider
+> correction or a late bill always lands, and shows as a delta against the
+> snapshot.
 
 ### Enforced by code
 
@@ -390,16 +386,12 @@ The distinction matters: an invariant "enforced" by a comment is a wish.
 | money binds only a non-provisional teammate | `AND NOT provisional` |
 | the prune never fires on a partial pull or broken identity | control flow + ratio guard |
 | a month is never recorded twice | `closeReportingSnapshot` refuses a second close — the one thing a snapshot exists to preserve is what it said the first time |
-| close/reopen/restate serialise | one advisory lock, taken first in all three |
+| a snapshot never records a half-recomputed month | the `reportingSnapshot` advisory lock plus a row `FOR UPDATE`, against a concurrent recompute of the same month; ingestion is never blocked (`server/governance/reporting-snapshot.ts`) |
 | capture can never break ingestion | best-effort writes, hook throws swallowed at the client boundary |
 | an App private key can never be sent as a PAT bearer | `withPat` runs `decodePem` and refuses |
 | an App-opted enterprise never silently falls back to PAT | `MissingGithubAppKeyError` |
 | Σ allocated == overage to the cent | read-back assertion, throws → rolls back the month |
 | exempt orgs are not written at all | no pool leak, no allocation |
-
-`reopen` deliberately updates **rows before state** — step 4 survives the guard
-only because it touches none of the three amount columns. Widening the guard
-would break reopen, and the fix would be to reorder that file (`0116:30-40`).
 
 ### Enforced by test
 
@@ -421,10 +413,10 @@ would break reopen, and the fix would be to reorder that file (`0116:30-40`).
   card-priced: `tests/integration/azure/joiner-provider-cost.test.ts:230`,
   `:360`, `:440`
 
-> **The arm-disjointness pin reads mig 0101, not the live mig 0124 copy**
-> (`tests/unit/usage/surface.test.ts:222-223`). 0113 and 0124 copy 0101's tool
-> lists forward verbatim, so it holds today — but the pin does not protect the
-> definition actually in use. `[VERIFY]` / worth fixing.
+> **The arm-disjointness pin reads mig 0101, not the live mig 0135 definition**
+> (`tests/unit/usage/surface.test.ts:222-223`). 0113, 0124, 0125 and 0135 copy
+> 0101's tool lists forward verbatim, so it holds today, but the pin does not
+> protect the definition in use.
 
 ### Asserted only — comment or doc, nothing enforcing it
 
@@ -436,7 +428,6 @@ would break reopen, and the fix would be to reorder that file (`0116:30-40`).
 | 1 GitHub AI credit = $0.01 | comment, "VERIFIED 2026-06-01"; no test pins it to a provider fact |
 | currency is USD | never checked, either provider |
 | the Copilot bill-report wire shape, and its App-mode reachability | both marked `[ASSUMPTION]`, not live-verified |
-| §A residuals are unfrozen by finance close | no guard, no comment, no test — an *observed absence* |
 
 ---
 
@@ -453,18 +444,17 @@ would break reopen, and the fix would be to reorder that file (`0116:30-40`).
 | Seat lane | idempotent upsert + a convergence prune scoped to the enterprise's whole org set |
 
 **A dimension key must be made NULL-safe before it can be a conflict target.**
-`model`, `cost_type`, `token_type` and `speed` are routinely NULL, and
-`context_window` — a requested, populated grain member since mig 0127 — is
-still NULL on pre-collection history (raw stores only what `group_by` asked,
-so days older than the trailing poll window never heal) and on every github
-row (no such dimension on that wire). Postgres treats every NULL as distinct —
-a plain conflict target over them dedupes nothing. The shipped breakdown table
-solves this the way `provider_usage_fact_grain_uidx` shows: **COALESCE every
-nullable member into the expression index and upsert on that** (the 0127
-replacement adds `COALESCE(context_window, '')` as the newest member), keeping
-the guarded prune for revised-away rows (0118:104-131; rationale in
-`target-state-data-architecture.md` §6 — delete-and-replace was rejected
-because a full replacement re-homes every row to current placement).
+`model`, `cost_type`, `token_type` and `speed` are routinely NULL.
+`context_window` is a requested grain member (mig 0127) but is NULL on days
+collected before it was requested (raw stores only what `group_by` asked, so
+days older than the trailing poll window never heal) and on every github row
+(no such dimension on that wire). Postgres treats every NULL as distinct — a
+plain conflict target over them dedupes nothing. `provider_usage_fact_grain_uidx`
+shows the pattern: **COALESCE every nullable member into the expression index
+and upsert on that** (mig 0127 includes `COALESCE(context_window, '')`), and
+keep the guarded prune for revised-away rows (0118:104-131; rationale in
+`target-state-data-architecture.md` §6 — delete-and-replace would re-home every
+row to current placement).
 Delete-and-insert remains correct only where the set is owned wholesale under
 one lock and point-in-time homing is not carried on the row —
 `copilot_pool_bill`, and the `unaccounted_usage_model` children above (whose
@@ -476,10 +466,8 @@ dimensions all come from the parent).
 `copilotOverageAllocation(6)` → `personalSubscription(7)` → `directoryRule(8)` →
 `providerTransform(9)` — and every path acquires ascending. On the finance path:
 `reportingSnapshot(4)` → `governanceCutover(5)` → `copilotOverageAllocation(6)`.
-**Ordinal 4 is deliberately unchanged across the rename** — the lock id derives
-from the ordinal, not the property name, so old and new replicas contend on the
-same lock space during a rolling deploy. The
-provider transform's lock (9) is acquired last and alone, keyed on its
+The lock id derives from the ordinal, not the property name, so renaming a
+property never moves a lock. The provider transform's lock (9) is acquired last and alone, keyed on its
 `(provider_org, surface)` ownership domain.
 
 **Late-arriving telemetry** older than the 5-minute overlap is recovered only by
@@ -520,28 +508,23 @@ tables plus the live `teammate` row.
 |---|---|---|
 | `teammate` | Entra / placement rules | **live** — always current |
 | `actual_spend` | teammate at INSERT | **no** — omitted from every `ON CONFLICT SET` |
-| `attribution_record` | `instance_attestation` at join (a device row is re-placed onto the teammate's placement by identity confirmation and by the admin region move, live devices only, #414) | no (except identity confirmation) |
+| `attribution_record` | `instance_attestation` at join. A teammate's live devices follow their placement: every path that changes it (region move, Business Unit move, bulk placement, admin adoption, the placement workers) re-homes them in the same transaction under the teammate row lock (`followPlacement`), and provisioning and identity confirmation read the placement under that lock. New records follow from the joiner's next session selection | no (except identity confirmation) |
 | `reconciliation_record` | teammate at insert | no |
-| `unaccounted_usage` | teammate at first write | **no** — placement omitted from the `ON CONFLICT SET` list (issue #44 closed) |
-| `over_emission` | teammate at first write | **no** — placement was never in its `SET` list |
+| `unaccounted_usage` | teammate at first write | **no** — placement omitted from the `ON CONFLICT SET` list |
+| `over_emission` | teammate at first write | **no** — placement is not in its `SET` list |
 | `spend_rollup_daily` | copied from `attribution_record` | no — the durable point-in-time record |
 | `copilot_pool_bill` | `provider_org.cost_owning_unit_id` | rewritten with the month |
 
-> ### The freeze is symmetric — issue #44 closed
+> ### Placement is frozen at first write
 >
-> `actual_spend` has always frozen placement at insert. `unaccounted_usage` and
-> `over_emission` used to refresh it from the teammate's CURRENT placement on
-> every recompute, over the trailing 35-day window — so a residual row followed
-> the person for 35 days and then froze wherever it happened to be. The same
-> teammate-day could sit in two org units depending on when the report ran.
+> `actual_spend`, `unaccounted_usage` and `over_emission` stamp placement on
+> first write and leave it alone. Money still refreshes; only the dimensions
+> are fixed. Asserted in `tests/integration/usage/placement-freeze.test.ts`,
+> mutation-proven.
 >
-> Both now stamp placement on first write and leave it alone. Money still
-> refreshes; only the dimensions are fixed. Asserted in
-> `tests/integration/usage/placement-freeze.test.ts`, mutation-proven.
->
-> **Rows written before the fix keep whatever placement their last recompute
-> gave them.** That is not repairable and is not claimed to be — an admin
-> placement correction is the way to move them deliberately.
+> **Older `unaccounted_usage` and `over_emission` rows can carry the placement
+> of their last recompute instead.** Nothing repairs them automatically; an
+> admin placement correction moves them deliberately.
 
 **Which copy wins.** `v_teammate_usage_daily` resolves a (teammate, day, tool)
 that spans more than one source by taking
@@ -572,7 +555,7 @@ point-in-time evidence exists for them and none can be reconstructed.
 > exists "so `v_complete_usage`'s ingest-only arm homes AS AT THE USAGE DATE".
 >
 > Arm 2's NULL holds **even after a developer tags the record to a project**. A
-> cost-centre consumer must not fill that gap by joining back to `actual_spend`:
+> consumer of the cost-owning unit must not fill that gap by joining back to `actual_spend`:
 > arm 3 already does exactly that join, so doing it for arm 2 as well would
 > double-count the same snapshot into a lane that deliberately has none.
 
@@ -607,18 +590,16 @@ Cron expressions are the ones `infra/modules/worker-jobs.bicep` schedules (UTC).
 
 *Arrows are data dependencies, not execution order: each worker reads whatever its upstream tables hold when its own cron fires.*
 
-Dotted arrows are **data** dependencies, not execution order. Two consequences
-that have caused real incidents:
+Two consequences:
 
 1. **`usage-reconciliation` is meaningfully ordered after placement.** Spend for
    an unbindable email queues to `pending_placement`; until `placement-sync`
    replays it into `actual_spend`, the API side of the residual is missing that
    money. Re-run `usage-reconciliation` **after** a placement change or the
-   rollups stay at $0 — this exact stacking produced the Copilot
-   aggregate-visibility incident.
+   rollups stay at $0.
 2. **A worker with no cron never runs, and fails silently when it happens.**
-   The registry entry looks healthy; there is no error and no alert. This is
-   better guarded than it used to be: `tests/unit/workers/worker-schedule-lockstep.test.ts`
+   The registry entry looks healthy; there is no error and no alert. The
+   registry/bicep pair is guarded: `tests/unit/workers/worker-schedule-lockstep.test.ts`
    **fails** any registered worker with no bicep job unless it is deliberately
    recorded in `KNOWN_UNSCHEDULED` (`:93-101`), forbids that list from growing
    once a worker is scheduled (`:103-112`), rejects ghost entries (`:114-118`),

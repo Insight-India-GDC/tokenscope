@@ -40,6 +40,7 @@ import { describe, expect, it } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { SCOPE_ROOTS, scopeTree } from './component-graph'
+import { PUBLIC_SNAPSHOT } from '../helpers/public-snapshot'
 
 const DESIGN = resolve(process.cwd(), 'docs/design/reporting-consolidation')
 
@@ -74,14 +75,13 @@ type Entry = Built | { missing: string } | { waived: { reason: string; decision:
  * are deliberately dropped — and a module-scope read then failed the whole FILE
  * (0 tests) on every public release.
  *
- * Skip only when BOTH are absent, which means "this tree does not carry the
- * prototype". Some-but-not-all is a genuine inconsistency and still throws right
- * here, loudly, because the JSON.parse below runs unguarded once either exists.
- * Internally both are tracked, so the gate keeps every tooth it had.
+ * Skip only in the public snapshot, and there only when BOTH are absent.
+ * Internally, or with some-but-not-all, the JSON.parse below runs unguarded and
+ * a missing file throws right here, loudly.
  */
 const INVENTORY_JSON = resolve(DESIGN, 'inventory.json')
 const PARITY_MAP_JSON = resolve(DESIGN, 'parity-map.json')
-const CARRIES_PROTOTYPE = existsSync(INVENTORY_JSON) || existsSync(PARITY_MAP_JSON)
+const CARRIES_PROTOTYPE = !PUBLIC_SNAPSHOT || existsSync(INVENTORY_JSON) || existsSync(PARITY_MAP_JSON)
 
 const inventory: Inventory = CARRIES_PROTOTYPE
   ? JSON.parse(readFileSync(INVENTORY_JSON, 'utf8'))

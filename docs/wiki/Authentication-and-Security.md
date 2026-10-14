@@ -14,8 +14,8 @@ Four caller classes, four authentication mechanisms — each carries a different
 
 | Caller | Mechanism | Notes |
 |---|---|---|
-| **Browser users** (developer / manager / region admin / global finance / platform admin) | Entra OIDC cookie (`nuxt-oidc-auth`) + per-request DB enrichment | Only path that can read "my projects"/consumption or change attribution |
-| **MCP / CLI clients** (Claude Code) | **OAuth 2.1** (PKCE) — `tokenscope.read`+`tag` for the MCP tools; `tokenscope.emit` for ingest | One browser consent grants read+tag; device emit is provisioned via a secret-isolating handoff (`provision_emit` → `/setup/redeem`). Replaced the retired setup-token enrolment (PR #38). |
+| **Browser users** (developer / manager / region admin / platform admin) | Entra OIDC cookie (`nuxt-oidc-auth`) + per-request DB enrichment | Only path that can read "my projects"/consumption or change attribution |
+| **MCP / CLI clients** (Claude Code) | **OAuth 2.1** (PKCE) — `tokenscope.read`+`tag` for the MCP tools; `tokenscope.emit` for ingest | One browser consent grants read+tag; device emit is provisioned via a secret-isolating handoff (`provision_emit` → `/setup/redeem`). |
 | **Internal schedulers / workers** | **HMAC-SHA256** request signature | Key separate from the user-session HMAC key |
 | **Telemetry → Azure** | App-level **Managed Identity** bearer, `monitor.azure.com/.default` | Write-only, narrow-scope, same token every session — Azure never sees a TokenScope token |
 
@@ -56,7 +56,7 @@ resolved by `requireReportScope`.
 - Configured in `nuxt.config.ts` under the `entra` provider; OIDC enabled unless `NUXT_OIDC_AUTH_DEV_MODE === 'true'`.
 - Secrets (`clientId`, `clientSecret`, URLs) are build-time placeholders, overridden at boot by `NUXT_OIDC_PROVIDERS_ENTRA_*` env vars — `nuxt.config.ts` is evaluated at build with no secrets present, so reading `process.env` in provider config is deliberately avoided.
 - `userNameClaim = preferred_username`; the optional claims copied into the session are `oid`, `email`, `name`, `preferred_username` and `upn`. The last two carry the sign-in UPN, which is the axis the directory-exclusion policy matches on, and this list is their only source — `user.claims` is populated from it alone, and no `userInfoUrl` is configured. `userNameClaim` is not a substitute: it is read from the access token, which does not reliably carry `preferred_username`.
-- **Session resolution — Option C**: identity resolved **per request** from OIDC cookie + DB enrichment; the earlier dual-cookie `ts_session` bridge was retired.
+- **Session resolution**: identity is resolved **per request** from the OIDC cookie + DB enrichment. There is no second session cookie.
   - `tryAuth(event)` → resolved `Session` or `null` (unauthenticated / enrichment fails).
   - `requireAuth(event)` → strict gate; `401` problem-details on no session.
   - Enriched `Session` = `teammateId, email, displayName, role, regionId, orgPath, issuedAt`; **frozen + cached per request** on `event.context.__tokenscope_session` so middleware → `withRequestRls` → route share one DB lookup.
@@ -74,7 +74,7 @@ credential for that teammate, existing or newly minted, because there is no
 "after" to be on the right side of. Both tests fail closed — a missing teammate
 row, or an `is_active` that is not exactly `true`, denies.
 
-**Devices answer to a separate anchor, `emit_revoked_at`** (mig 0152, #414).
+**Devices answer to a separate anchor, `emit_revoked_at`** (mig 0152).
 A role change or region move bumps `revoked_at` only: cookie sessions and
 read/tag credentials are re-validated, but a device keeps emitting, because its
 emit credential carries no read scope and the RLS context of each emit request
@@ -129,9 +129,7 @@ keep refreshing a fresh access token indefinitely.
 - **Allowlist floor first** (`server/auth/persona-override.ts` →
   `evaluatePersonaGate`): if the env is not demo-capable (`demoCapable=false`,
   i.e. not `local`/`sandbox`), the gate returns `404` first, whatever the flags
-  or the caller's role. This replaced an older production-only denylist that only
-  refused the literal string `'production'` and left `dev`/`staging`/`''`
-  failing OPEN.
+  or the caller's role. An env that is unset or unrecognised is refused too.
 - HMAC-signed sidecar cookie `ts_persona_override` (`server/utils/persona-override-cookie.ts`), separate from the OIDC cookie; minted only when the gate is on (i.e. only in a demo-capable env). Wire format `base64url(payload).hex(HMAC-SHA256(payload))`, signed with `NUXT_SESSION_SECRET`; `httpOnly`, `sameSite=lax`, path `/`, `secure` on every deployed env.
 - Behind the floor the gate keys on `NUXT_OIDC_AUTH_DEV_MODE` (true → sidecar is *primary* identity, no Entra) and `NUXT_ALLOW_PERSONA_OVERRIDE` (true + Entra `admin`/`platform-admin`). The env classification keys on `NUXT_DEPLOY_ENV` (falling back to `NODE_ENV` only to fail closed), **not `NODE_ENV`** alone (which is always `'production'` on deployed containers).
 - Two hardening guards: override honoured only when its `impersonatorOid` matches the live OIDC identity (stale cookie can't elevate another user), and target must be a `DEMO_PERSONAS` member (leaked HMAC secret still can't impersonate an arbitrary teammate). Cleared by `POST /api/v1/auth/stop-impersonating` and logout.
@@ -143,22 +141,22 @@ keep refreshing a fresh access token indefinitely.
 | `developer` | Developer | Own data |
 | `manager` | Manager | Own org subtree (allocations within the org path) |
 | `admin` | **Region admin** | A single home region (region-scoped) |
-| `finance` | **Finance (retired)** | **Retired / unassignable** — kept in the `ROLES` enum only for exhaustiveness / historical rows; **excluded from `SELECTABLE_ROLES`**, never offered in role dropdowns and assigned to no one. Region-scoped finance is served by `admin`; org-wide finance by `platform-admin`. |
-| `global-finops` | **Global finance (retired)** | **Retired 2026-09-05 / unassignable.** It read as a finance-reporting role but carried the org-wide ADMIN surface — 122 routes, 66 of them writes, including changing a teammate's role and granting report access. Company-wide report access is now a per-teammate `report_access_grant` (mig 0129) needing no role, so the reporting half was redundant and the admin half was never meant to be handed out. In **no** capability set; kept in the enum for historical rows only. |
+| `finance` | **Finance (retired)** | **Unassignable** — in the `ROLES` enum only for exhaustiveness and old rows; **excluded from `SELECTABLE_ROLES`**, never offered in role dropdowns and assigned to no one. Region-scoped finance is served by `admin`; org-wide finance by `platform-admin`. |
+| `global-finops` | **Global finance (retired)** | **Unassignable.** In **no** capability set; in the enum for old rows only. Company-wide report access is a per-teammate `report_access_grant` (mig 0129) and needs no role. |
 | `platform-admin` | Platform admin | Cross-region super-admin — satisfies every gate. The **only** org-wide role. |
 
 > **Two vocabularies, one spelling.** The string `global-finops` also appears as
 > the value of the `app.user_role` GUC (`server/db/rls.ts`, `worker-db.ts`, and
 > the scope predicates below). That is a **scope value**, not this role:
 > `platform-admin` maps *onto* it (`rlsRoleFor`) and the worker lane runs *as*
-> it. Retiring the role did not touch it, and removing it would break
-> platform-admin's own data scope and every worker.
+> it. Removing that value would break platform-admin's own data scope and
+> every worker.
 
 Canonical human-facing labels come from `ROLE_LABELS` (`shared/auth/roles.ts`) —
 `admin` = "Region admin" and `platform-admin` = "Platform admin". Both retired
 members label themselves as such — `finance` = "Finance (retired)",
-`global-finops` = "Global finance (retired)" — so a historical row never reads
-as a live role.
+`global-finops` = "Global finance (retired)" — so an old row never reads as a
+live role.
 
 - `requireRole(event, ...allowed)` — variadic; permits if role ∈ `allowed`. `platform-admin` short-circuits every check. `403` RFC-9457 on denial.
 - `requireRegionScope(event, regionId)` — binds an `admin` to their home region; `platform-admin` are region-unbounded.
@@ -183,9 +181,9 @@ teammate homed on a region's **root** org unit sits at a bare label whose subtre
 is *every unit in the region*, so the `<@` test is true for all of them and the
 clamp degenerates into "the whole region".
 
-Two halves close that:
+Two halves prevent that:
 
-- **Default placement no longer homes on the region root.** Every no-signal
+- **Default placement is the holding node, not the region root.** Every no-signal
   placement path — first-SSO JIT, directory provisioning, emit-on-install
   enrolment, and the admin region reassign — homes the teammate on the region's
   **`__UNPLACED__` holding node** (`server/auth/placement-home.ts`,
@@ -203,15 +201,14 @@ Two halves close that:
   it is named, and `code <> 'default'` alone fails open the moment a region's root
   is not literally called `default`, which is the case for any region created at
   runtime. The naming test is kept as defence-in-depth and made a real invariant
-  from the other side: `regions.post.ts` now plants a region's root org unit in the
+  from the other side: `regions.post.ts` plants a region's root org unit in the
   same transaction as the region, and `org-units.post.ts` reserves the `default`
   code.
 
-> **Product-visible.** A developer or manager who is *currently* placed on a region
-> root sees their Regional and Cost-Centre views collapse from region-wide to their
-> own placement. That is the intended least-privilege outcome and the pilot cohort
-> will notice it. `admin` (region-bounded), `platform-admin` and `platform-admin` are
-> unaffected. Separately, the teammate-axis driver CSV export is capped at 100 rows
+> **Product-visible.** A developer or manager placed on a region root sees their
+> Regional and Business Unit views limited to their own placement, not the whole
+> region. That is the intended least-privilege outcome. `admin` (region-bounded)
+> and `platform-admin` are unaffected. Separately, the teammate-axis driver CSV export is capped at 100 rows
 > plus an explicit `(all other)` remainder row, so the totals still reconcile but a
 > finance user exporting for every name will not get every name.
 
@@ -219,7 +216,7 @@ Two halves close that:
 
 The full RBAC above decides *what a role can ever see*, and the admin roles see
 reports **by their role**: a region `admin` sees their own region, and
-`platform-admin` see the whole company (all regions, all
+`platform-admin` sees the whole company (all regions, all
 Business Units, the finance pack). On top of that, an admin can **widen** a named
 teammate whose baseline lacks that scope — a region admin included — to
 company-wide reporting, or **revoke** a person's report
@@ -227,7 +224,7 @@ access entirely — per-teammate, revocable, optionally-expiring rows
 (`report_access_grant`, migs 0129 + 0130), without touching anyone's platform
 role.
 
-**To grant report access** (requires Global finance or Platform admin — the
+**To grant report access** (requires Platform admin — the
 roster is org-wide only): **Admin → Policies → Report access** → search the
 teammate by name or email → pick the action (*Operational reporting*, *Finance
 reporting*, or *Revoke — no report access*, table below) → optionally set an
@@ -247,7 +244,7 @@ positive grants and revokes are the per-person overrides on top.
   |---|---|
   | `operational` | Widen to the whole-company reporting surface: cross-region access, every region, every Business Unit — including their billed-spend figures. |
   | `finance` | Widen to the whole-company finance pack (`/reporting?scope=finance`) alone. Names the PACK, not the retired `finance` role. |
-  | `revoke-all` | **Deny.** Remove ALL report access for the teammate — below their role default and below any positive grant (deny-wins). The "administer, no data access" case. Lifting a revoke needs a *different* admin. |
+  | `revoke-all` | **Deny.** Remove ALL report access for the teammate — below their role default and below any positive grant (deny-wins). The "administer, no data access" case. It also withholds the admin-routed inbox notices that carry report data (`REPORT_DATA_INBOX_CATEGORIES`: over-emission escalations and the Copilot bill notices): they are not sent, delivered ones are hidden while the deny is active, and they cannot be forwarded by or to the teammate (they are forwarded only to a platform admin or an admin of the notice's region). A notice skipped during a deny is not re-sent when it is lifted, and project-role notices such as over-budget are not covered. Lifting a revoke needs a *different* admin. |
 
   The two positive grants are independent — a caller can hold either, both, or
   neither, and a grant never implies its counterpart. None of the three changes
@@ -255,15 +252,15 @@ positive grants and revokes are the per-person overrides on top.
 - **Baseline + grant − deny.** `effectiveReportGrants(role, ownsCostCentre,
   permissions, revoked)` is a role-shaped **baseline**
   (`developer`/`finance` own-region only, Business Unit tab via ownership;
-  `manager`/`admin` own-region + subtree Business Units; `platform-admin` /
-  `platform-admin` the WHOLE COMPANY — all regions, all Business Units, finance)
+  `manager`/`admin` own-region + subtree Business Units; `platform-admin` the
+  WHOLE COMPANY — all regions, all Business Units, finance)
   widened **field-wise** by whichever positive permissions the caller's active
   grants buy, then **zeroed entirely** if an active `revoke-all` is present
   (**deny-wins**, checked before anything is unioned). A static **WHO-SEES-WHAT
   matrix** export (baseline and fully-elevated, per persona) drives both the
   admin-pane preview and the tests, so the preview can never drift from the gate.
 - **Admins see reports by role; a revoke is the only way off.** `platform-admin`
-  and `platform-admin` see the whole company by role — no grant needed — and a
+  sees the whole company by role — no grant needed — and a
   region `admin` sees their own region by role. There is no cross-region widening
   for a region admin (the anti-IDOR clamp stays): "all reports" is delivered to
   the ORG-WIDE roles. The org-wide baseline uses `costCentre: 'all'`, which the
@@ -300,12 +297,12 @@ positive grants and revokes are the per-person overrides on top.
   seam: the `?ou=` drill, the Business Unit list and drill, and project
   reports-depth all resolve through `orgSubtreeScopePredicate`, which scopes a
   real org subtree correctly (plus the `regional: 'own-region'` clamp in
-  `resolveRegionalScope`). The three `ownerOnly` / own-region SEALS #251 added
-  fire only for an org-wide role holding no grant — `costCentreScopeOpts` is
-  explicit that "manager / admin / developer callers: always `false`" — and that
-  class no longer exists now the org-wide baseline is `costCentre: 'all'` and
-  `regional: 'all-regions'`. The seals are therefore unreachable today; retiring
-  them is a tracked follow-up. See the design doc's superseded banner.
+  `resolveRegionalScope`). Three `ownerOnly` / own-region seals in
+  `costCentreScopeOpts` fire only for an org-wide role holding no grant
+  ("manager / admin / developer callers: always `false`"). No such caller
+  exists, because the org-wide baseline is `costCentre: 'all'` and
+  `regional: 'all-regions'`, so the seals are unreachable; removing them is a
+  tracked follow-up.
 - **Read-only blast radius.** On the server the grant module is imported
   **only** by the reporting query layer, `/api/v1/reports/**` (+ `meta` and a
   read-only admin diagnostics preview), and the grant CRUD under
@@ -313,7 +310,7 @@ positive grants and revokes are the per-person overrides on top.
   by the 200/403 integration suite rather than by an import scan. It never
   touches write endpoints, `rollups` mutation paths, `me/*`, or provisioning.
   Every deny on an unclamped scope (the whole-company region width +
-  `/reports/finance`) is audited (`report-scope-denied`, payload now carrying
+  `/reports/finance`) is audited (`report-scope-denied`, payload carrying
   `permissions`) — those have no in-query backstop, so the audit *is* the
   record. Opening a NAMED individual's reports-depth page is audited on every
   request (`report-teammate-viewed`; its CSV export writes the distinct
@@ -358,12 +355,10 @@ positive grants and revokes are the per-person overrides on top.
   /api/v1/admin/report-access` + `DELETE .../{id}` — every one is
   `requireRole('platform-admin')` (`platform-admin` passes any `requireRole`
   gate) with **no region-admin read access at all**: a per-teammate grant
-  roster is company-wide PII, a narrower surface than the retired org-wide
-  dial (whose GET a region admin could read). POST is CSRF-protected, requires
+  roster is company-wide PII. POST is CSRF-protected, requires
   an active non-provisional target, and 409s on a live duplicate; DELETE is a
   soft revoke (history preserved). Editable at Admin → Policies → Report
-  access; the retired `/admin/policies/report-visibility` path redirects
-  there. A role demotion does **not** retract an already-active grant
+  access; `/admin/policies/report-visibility` redirects there. A role demotion does **not** retract an already-active grant
   (designed persistence — a grant is keyed on teammate id alone); the roster
   shows each holder's current role so a stale grant is visible, and
   revocation is one click.
@@ -374,14 +369,19 @@ Every authenticated request does its DB work inside a transaction opened by
 `withRequestRls(event, fn)`. It resolves the session via `requireAuth` and
 `SET LOCAL`s four session variables — `app.user_region_id`, `app.user_org_path`,
 `app.user_role`, `app.user_teammate_id` — mapping `platform-admin` onto the
-unbounded `platform-admin` value. `SET LOCAL` is what makes this safe on a pooled
+unbounded `global-finops` scope value (`rlsRoleFor`). `SET LOCAL` is what makes this safe on a pooled
 connection: the settings vanish when the transaction returns, so the next
-checkout cannot inherit the previous caller's identity. Workers use
-`withMachineRls` on their own pool.
+checkout cannot inherit the previous caller's identity. Device-credential
+routes use the machine lane: `withMachineRls` on `/bearer`, `/health`, `/end`
+and `/project-resolve`, `withDeferredMachineRls` on `/setup/redeem`. Workers run on their own pool (`server/db/worker-db.ts`), whose
+every connection carries `app.user_role=global-finops` as a startup parameter.
 
 `scripts/check-handler-rls-context.mjs` enforces it in CI — every `server/api/**`
-handler carries a lane, with 14 explicitly-reasoned exceptions (auth-bootstrap
-paths that resolve an identity and so cannot already have one).
+handler carries a lane, with 16 explicitly-reasoned exceptions: the anonymous
+health probe, the auth-bootstrap paths that resolve an identity and so cannot
+already have one, two cross-identity paths over a shadow teammate's rows, the
+estate-wide attribution-stall signal, and two GitHub probes that interleave
+reads with HTTP.
 
 The schema also carries row-level-security policies that read these variables.
 They do not execute: the app connects as the table owner, and owners bypass RLS.
@@ -417,19 +417,19 @@ Authorization is the app gate described above.
 
 - The MCP client runs a client-initiated PKCE (S256) authorization-code flow against `/api/v1/oauth/{authorize,token,register,revoke}`. The **GET `/oauth/authorize`** gates the Entra session and validates `client_id`/`redirect_uri`, then 302s to the consent page (`app/pages/oauth/authorize.vue`); **POST `/oauth/authorize`** is the grant — the one cookie-bearing OAuth endpoint, so it **requires `assertSameOrigin`** (the cookieless token/register/revoke endpoints deliberately skip CSRF). It reuses `issueAuthCode` (teammate-bound, PKCE-carried).
 - **Callback delivery.** The POST returns the callback URL as data. On Approve with a loopback `http:` callback (RFC 8252 native apps — e.g. the GitHub Copilot App) the page opens a tab in the click handler and navigates it to the callback (a navigation, which Chrome's Local Network Access does not block); the consent page itself never navigates away. It then polls `POST /api/v1/oauth/code-status` (session + same-origin; reads the caller's own `oauth_auth_code.token_issued_at` — set only when `/oauth/token` issues a token, unlike `consumed_at`, which a failed exchange also sets) — redeemed → "Connected"; not confirmed within 8 s (the loopback is unreachable, e.g. a containerized client, or the tab was blocked or closed) → the page leads with the **Copy URL** paste-back, still flipping to Connected if the pasted code is later exchanged. Polling is ~35 requests over 2 min in the per-IP limiter the whole app shares; a failed poll (429, error, timeout) waits the slow 5 s interval. The grant request itself times out after 15 s and is cancelled if the page is left, and Approve/Deny are offered again. The tab is not auto-closed: under COOP `same-origin` the page loses its handle once the tab goes cross-origin, and relaxing COOP would let the loopback page navigate the consent tab. A loopback Deny / error callback is handed to the client the same way (so it stops waiting), without polling. Nothing can confirm a client received a deny/error (there is no code to poll), so the page always keeps **Copy URL** for it, plus **Open in a new tab** when it could not be sent (popup blocked, tab closed, or an `https:` callback, which is never auto-delivered). Nothing failing the `https:`/loopback scheme guard (`shared/oauth-callback.ts`) is ever opened.
-- Tokens are stored as HMAC hashes only (`oauth_token`); the raw value is returned once. Refresh is **non-rotating** — revoke (not rotation) is the control (ADR-0005). `requireOAuthBearer` joins `teammate.revoked_at` (`emit_revoked_at` for a device-bound emit token) for the E2 revocation cascade and `teammate.is_active` for deactivation ([Revocation and deactivation](#revocation-and-deactivation)).
+- Tokens are stored as HMAC hashes only (`oauth_token`); the raw value is returned once. Refresh is **non-rotating** — revoke (not rotation) is the control ([ADR-0005](Design-Decisions.md#adr-0005--durable-emission-credentials-and-revocation)). `requireOAuthBearer` joins `teammate.revoked_at` (`emit_revoked_at` for a device-bound emit token) for the E2 revocation cascade and `teammate.is_active` for deactivation ([Revocation and deactivation](#revocation-and-deactivation)).
 - The granted scopes are `tokenscope.read` + `tokenscope.tag` (MCP tools). The separate `tokenscope.emit` credential is provisioned via the handoff below, never granted directly to the consent.
 - **Consent is refused on an assumed identity.** `POST /oauth/authorize` returns a JSON `403 access_denied` when the session carries a persona override, before the client/`redirect_uri` lookup, so the refusal cannot become a redirect and no code is issued. An OAuth consent mints a teammate-bound code that becomes a durable access/refresh token; granting one while acting as someone else would leave a credential outliving the impersonation and carrying the impersonated teammate's identity. (Persona override is confined to the demo-capable envs `local` and `sandbox` — see [Persona override](#persona-override-non-production-demo-impersonation--sidecar-path) — so no environment that authenticates against Entra reaches this refusal; it is what holds the property if impersonation is ever enabled on one that does.)
 
 ### Device emit provisioning (secret-isolating handoff)
 
-The everyday self-service connect path (sequence above). The read-scoped `provision_emit` MCP tool locates-or-creates the device's `instance_attestation` and mints a **short-TTL (~5 min) one-time handoff code** in `emit_handoff` — it does **not** return the durable emit credential, so the broadly-readable secret never enters the LLM's context. A local helper redeems the handoff at **`POST /api/v1/setup/redeem`** (handoff-is-auth, no cookie/CSRF, like `/bearer`), single-use enforced atomically via `consumeEmitHandoff`'s conditional `UPDATE … RETURNING`. Redeem mints the durable `tokenscope.emit` credential (scope never widened) bound to the instance — rotating out any prior live emit credential for that device — and returns the OTel bundle. This read→emit crossing is the single audited exception to the read/emit wall (ADR-0005 E1).
+The everyday self-service connect path (sequence above). The read-scoped `provision_emit` MCP tool locates-or-creates the device's `instance_attestation` and mints a **short-TTL (~5 min) one-time handoff code** in `emit_handoff` — it does **not** return the durable emit credential, so the broadly-readable secret never enters the LLM's context. A local helper redeems the handoff at **`POST /api/v1/setup/redeem`** (handoff-is-auth, no cookie/CSRF, like `/bearer`), single-use enforced atomically via `consumeEmitHandoff`'s conditional `UPDATE … RETURNING`. Redeem mints the durable `tokenscope.emit` credential (scope never widened) bound to the instance — rotating out any prior live emit credential for that device — and returns the OTel bundle. This read→emit crossing is the single audited exception to the read/emit wall ([ADR-0005](Design-Decisions.md#adr-0005--durable-emission-credentials-and-revocation) E1).
 
 ### Azure Monitor ingest bearer
 
 - `GET /api/v1/instances/[instanceId]/bearer` (`server/auth/obo.ts`) returns an Azure Entra token scoped to `https://monitor.azure.com/.default`. Despite the filename this is **not** a per-developer On-Behalf-Of flow — it is an **app-level Managed Identity token** (same token every session), from the container app's user-assigned MI holding *Monitoring Metrics Publisher* on the Data Collection Rule.
 - Gates issuance on the OAuth `tokenscope.emit` access token (the bound teammate must own the instance), then returns the MI-minted token; refreshed within Claude's ~29-min headers-helper window. Each mint doubles as an authenticated heartbeat for the heartbeat-coverage check. Cached app-wide with a 5-min refresh skew + single-flight guard (racing `/bearer` requests collapse onto one `getToken`).
-- **The emit credential is bound to its device at USE, not only at mint.** `oauth_token.instance_id` is written when the credential is minted, but the four instance-scoped routes (`/bearer`, `/health`, `/end`, `/project-resolve`) never *read* it — so any of a teammate's own emit credentials could drive any of that teammate's other instances. `requireOAuthBearer` now takes the target instance and rejects a **mismatched** binding with a `401 invalid_token`. A **NULL** binding stays permissive and logs: read/tag grants are never instance-bound, and legacy emit credentials predate the binding. This is what makes ADR-0008 §2's anti-spoof claim — *"a cross-instance spoofer cannot mint a bearer for a victim's instance"* — true; before the at-use check it was an assertion the code did not enforce.
+- **The emit credential is bound to its device at USE, not only at mint.** `oauth_token.instance_id` is written when the credential is minted, and on the four instance-scoped routes (`/bearer`, `/health`, `/end`, `/project-resolve`) `requireOAuthBearer` takes the target instance and rejects a **mismatched** binding with a `401 invalid_token`, so one of a teammate's emit credentials cannot drive another of that teammate's instances. A **NULL** binding stays permissive and logs: read/tag grants are never instance-bound, and legacy emit credentials predate the binding. This check is what makes [ADR-0008](Design-Decisions.md#adr-0008--emission-spoof-detection-by-heartbeat-coverage) §2's anti-spoof claim — *"a cross-instance spoofer cannot mint a bearer for a victim's instance"* — true.
 - **Ending a device revokes its credentials.** A trigger on `instance_attestation` (mig 0141) revokes every `oauth_token` bound to a device the moment it is ended (`ts_actual_end`), purged (`ts_purged`) or deleted (before the FK de-binds it), whichever code path does it, and invalidates its outstanding provisioning handoffs. A token minted before the end is refused everywhere from then on, and a live credential can only be bound to a live device of the same teammate: `/setup/redeem` and `/setup/enroll` check it under the device row lock, and a trigger on `oauth_token` (mig 0143) refuses any other bind at the database. Every path that touches them takes the locks in one order (device, then `emit_handoff`, then `oauth_token`), so a concurrent end, redeem, re-provision or grant revoke resolves in one order or the other, never a deadlock. `/bearer` still tells the owner why (`401 Session ended`); any other caller gets the uniform 401.
 - **A device lives while it is used.** Its `instance_attestation.ts_expected_end` is an idle window of 90 days, renewed by every `/bearer` mint and by re-provisioning; `session-gc` ends a device only once both that window and its last mint + 90 days have passed. A credential bound to a device (`oauth_token.instance_id`) has its `refresh_expires_at` renewed on every refresh, and refreshes **only while that device is live, unpurged and owned by the same teammate** (`invalid_grant` otherwise). Unbound credentials (read/tag) keep a fixed 90-day lifetime. `/bearer` and re-provisioning hold the device row lock from the lifecycle check through the renewal, so a concurrent close either lands first or re-checks the renewed window.
 - Rationale (inline STRIDE note): token is **write-only, narrow-scope** — ingests to one DCR only, so leakage caps at ingest noise, not exfiltration; per-developer Azure RBAC is unnecessary for telemetry.
@@ -450,8 +450,8 @@ hand-write **spoofed** `attribution_record` rows claiming a victim's
 We **deliberately do not** defend this by trusting the wire or signing per record
 — emitted telemetry is transitionary, reconciled data, not budget truth, and a
 signing collector / proof-of-possession was rejected as over-engineering
-(ADR-0005,
-ADR-0008). The
+([ADR-0005](Design-Decisions.md#adr-0005--durable-emission-credentials-and-revocation),
+[ADR-0008](Design-Decisions.md#adr-0008--emission-spoof-detection-by-heartbeat-coverage)). The
 defense is **revoke + detect + reconcile**, behind strict **emit-credential
 isolation**.
 
@@ -472,7 +472,8 @@ not a bearer, so an emit bearer **cannot authenticate a user** either.
 - **No privileged surface derives authority from any emitted field.** Budget,
   membership, identity, and authz come from the **authenticated** paths (session /
   read+tag user token, ownership-checked `tag_session`, the consent flow) and the
-  **unspoofable instance attestation** — never from a `project` / `email` /
+  **authenticated instance attestation** (the stored binding; the instance id
+  on an event is a claim, see R7 in [Security Overview](Security-Overview.md)) — never from a `project` / `email` /
   `activity` value that arrived over OTel.
 
 A leaked emit token can therefore **spoof telemetry** (handled below) but can
@@ -481,8 +482,8 @@ A leaked emit token can therefore **spoof telemetry** (handled below) but can
 ### Detection — authenticated-heartbeat coverage + quarantine
 
 Each successful `/bearer` mint stamps `instance_attestation.last_bearer_at` — an
-**authenticated heartbeat**: unspoofable proof that the instance's **true owner**
-held a valid emit credential at time T. The mint requires the owner's OAuth
+**authenticated heartbeat**: evidence that a valid emit credential for that
+instance was presented at time T (the owner's, unless it was stolen). The mint requires the owner's OAuth
 `tokenscope.emit` token *bound to that instance* — checked at use, not merely
 recorded at mint (see the bearer section above) — so a **cross-instance spoofer
 cannot mint a bearer for a victim's instance.**
@@ -503,20 +504,25 @@ RLS + an explicit `teammate_id` filter) and to the reconciliation reviewer.
 - **Does NOT catch:** full emit-credential **theft** — if the attacker steals the
   victim's emit credential, *their* `/bearer` mints stamp a heartbeat **as the
   victim**, so the spend looks covered. That residual stays on **revoke** (revoke
-  the leaked grant) **+ reconcile** (theft-inflated spend that doesn't match real
-  API usage is wiped).
+  the leaked grant) **+ reconcile** (theft-inflated spend far above real API
+  usage is flagged for the owner's review; it never changes a billed total,
+  though it can shift the project split of the victim's own billed cost; see
+  [Attributed and Billed](Attributed-and-Billed.md)).
 - **Quarantine is INFORMATIONAL ONLY** — it **never** auto-revokes or
   auto-deletes; it is early-warning + an audit trail (a `spend-quarantined` audit
-  event on first detection, explicitly tagged non-enforcement). **Reconciliation
-  against Anthropic actuals is the only thing that wipes spend.** A historical-data
+  event on first detection, explicitly tagged non-enforcement). Nothing deletes
+  attributed spend automatically: an owner's quarantine is what removes a session
+  from attributed figures. A historical-data
   guard (`last_bearer_at IS NULL`) excludes instances that never minted a heartbeat
-  so pre-rollout spend is never quarantined retroactively.
+  so spend from an instance with no heartbeat history is never quarantined.
 
 ### Reconcile + revoke
 
-**Reconcile** against the Anthropic Analytics API actuals is the **truth /
-backstop** — spend that does not reconcile to real recorded usage is **wiped**;
-the wire is never the source of truth. **Revoke** ends an emit grant
+**Reconcile** against the provider's per-person figures is the **truth /
+backstop**: billed figures come from the provider alone, so the wire never
+reaches what is charged, and attributed telemetry far above the provider figure
+is flagged for review. It is not deleted. See
+[Attributed and Billed](Attributed-and-Billed.md). **Revoke** ends an emit grant
 (user self-service or admin); revoking it ends the instance's emission via the
 revoke ↔ instance cascade (sets `ts_actual_end`). Detection (quarantine /
 went-silent) **feeds** the revoke decision — it never performs it.

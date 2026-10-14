@@ -9,9 +9,24 @@ export const INBOX_CATEGORIES = [
   'structural-conflict',
   'connector-health',
   'personal-subscription-prompt',
+  'over-emission-escalated',
 ] as const
 
 export const INBOX_SEVERITIES = ['info', 'attention', 'urgent'] as const
+
+/**
+ * ADMIN-ROUTED categories whose items carry report data (a named teammate's
+ * spend, an org's billed dollars). An admin with an active report-access deny
+ * ('revoke-all', mig 0130) is not sent them, does not see delivered ones while
+ * the deny is active, and cannot forward or be forwarded one. Not covered:
+ * over-budget, which goes to project managers and BU owners by project role;
+ * and a notice skipped during a deny is not re-sent when it is lifted.
+ */
+export const REPORT_DATA_INBOX_CATEGORIES: readonly string[] = [
+  'over-emission-escalated',
+  'copilot-bill-unsettled',
+  'copilot-bill-unclassified',
+]
 
 export const INBOX_ACK_STATES = ['unread', 'read', 'acknowledged', 'dismissed', 'resolved'] as const
 

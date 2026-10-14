@@ -1,6 +1,6 @@
 /*
  * GET /api/v1/admin/reconciliation/backfill — recent backfill requests + status, for the admin
- * Reconciliation UI to poll. Newest first, capped. RBAC: requireRole('admin').
+ * Reconciliation UI to poll. Newest first, capped. RBAC: requireRole('platform-admin').
  */
 import { defineEventHandler } from 'h3'
 import { sql } from 'drizzle-orm'
@@ -23,7 +23,8 @@ interface RequestRow extends Record<string, unknown> {
 }
 
 export default defineEventHandler(async (event) => {
-  await requireRole(event, 'admin')
+  // Provider configuration is estate config (owner ruling 2026-10-08): backfill requests target orgs/enterprises of every region (no region term), so platform-admin is the only clamp.
+  await requireRole(event, 'platform-admin')
   const rows = await withRequestRls(event, (tx) =>
     tx.execute<RequestRow>(sql`
       SELECT id::text AS id, provider, target_kind, external_ref, display_name,

@@ -605,6 +605,20 @@ describe('GET /api/v1/admin/audit', () => {
     await t.db.execute(sql`TRUNCATE TABLE audit_event RESTART IDENTITY CASCADE`)
   })
 
+  it('returns impersonatorOid: the admin behind a persona-override row, null otherwise', async () => {
+    const REAL_ADMIN_OID = '9a1e0000-0000-4000-8000-0000000000aa'
+    await t.db.execute(sql`
+      INSERT INTO audit_event (event_type, actor_teammate_id, actor_system, subject_kind, subject_id, payload, impersonator_oid)
+      VALUES ('teammate-role-changed', ${devAId}::uuid, 'admin-ui', 'teammate', ${devAId}::uuid, '{}'::jsonb, ${REAL_ADMIN_OID}),
+             ('teammate-role-changed', ${devAId}::uuid, 'admin-ui', 'teammate', ${devAId}::uuid, '{}'::jsonb, NULL)
+    `)
+    const handler = await loadHandler()
+    const res = (await handler(makeEvent({ path: '/api/v1/admin/audit?limit=200', initialSession: orgWideSession() }) as never)) as {
+      events: { impersonatorOid: string | null }[]
+    }
+    expect(res.events.map((e) => e.impersonatorOid).sort()).toEqual([REAL_ADMIN_OID, null].sort())
+  })
+
   it('admin sees their region`s audit footprint; platform-admin sees all', async () => {
     // Generate two role-change events: one in region A (admin A2 demoting dev A)
     // and one in region B (finops demoting admin B → manager — region B has

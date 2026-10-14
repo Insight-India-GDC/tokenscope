@@ -15,8 +15,8 @@
  *   - color        : green | amber | red badge.
  *
  * SAFETY: never throws (the probe is caught + classified), never leaks the key or
- * raw provider error text. RBAC: requireRole(admin) — same guard as
- * the records reader.
+ * raw provider error text. RBAC: requireRole(platform-admin) — it lists and
+ * live-probes every region's anthropic provider_org (no region term).
  *
  * LANES (docs/design/rls-enforcement.md §2): the config READ runs in the request
  * lane (withRequestRls), even though `provider_org` carries no RLS policy — the
@@ -46,7 +46,8 @@ interface Row extends Record<string, unknown> {
 }
 
 export default defineEventHandler(async (event) => {
-  await requireRole(event, 'admin')
+  // Reads and probes provider_org of every region, so platform-admin is the only clamp.
+  await requireRole(event, 'platform-admin')
   // safeParse → a proper 400 on bad ?org (never an unhandled 500; never echo the input).
   const query = await getValidatedQuery(event, (data) => {
     const parsed = Query.safeParse(data)

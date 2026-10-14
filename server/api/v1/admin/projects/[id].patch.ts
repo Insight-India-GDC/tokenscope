@@ -24,6 +24,7 @@ import { assertOrgUnitInRegion } from '../../../../db/org-units'
 import { applyRehome, RehomePlanStale, type RehomeRange } from '../../../../governance/rehome-spend'
 import { resetReportCache } from '../../../../reporting/report-cache'
 import { isRealUtcDay } from '#shared/schemas/activity'
+import { displayText, PROJECT_NAME_MAX } from '#shared/schemas/display-text'
 
 /**
  * The fields that actually WRITE to `project`. Named because the body also
@@ -41,8 +42,8 @@ const MUTABLE_FIELDS = [
 
 const Body = z
   .object({
-    display_name: z.string().min(1).max(200).optional(),
-    client_facing_name: z.string().min(1).max(200).optional(),
+    display_name: displayText(PROJECT_NAME_MAX).optional(),
+    client_facing_name: displayText(PROJECT_NAME_MAX).optional(),
     type: z.enum(['billable', 'pursuit', 'internal']).optional(),
     cost_owning_unit_id: z.string().uuid().optional(),
     /*

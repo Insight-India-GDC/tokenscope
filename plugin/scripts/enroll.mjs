@@ -46,6 +46,7 @@ import { trustedGitPath } from './trusted-git.mjs'
 import { configuredServerUrl, resolveApiBase } from './api-base.mjs'
 import { discoverMcpOrigin } from './mcp-origin.mjs'
 import { httpsPostJson, resolveScriptsDir } from './plugin-runtime.mjs'
+import { claudeSettingsPath } from './claude-config-dir.mjs'
 // Reuse the redeem flow's validation + env-builder + atomic 0600 writer VERBATIM
 // (the enroll response shape mirrors /setup/redeem), so the OTel/emit env +
 // otelHeadersHelper land exactly like a redeem — one writer, one contract.
@@ -175,7 +176,7 @@ export function computeDeviceBinding({ home = homedir() } = {}) {
  */
 export async function enrollIfNeeded({
   env = {},
-  settingsPath = join(homedir(), '.claude', 'settings.json'),
+  settingsPath = claudeSettingsPath({ home: homedir() }),
   apiBase = null,
   enrollmentSecret = resolveEnrollmentSecret(),
   claimedEmail = undefined,

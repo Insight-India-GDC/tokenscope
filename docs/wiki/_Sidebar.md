@@ -8,6 +8,8 @@
   - [Terminology](Architecture.md#terminology)
 - [Data Flow](Data-Flow.md) — where a dollar comes from
 - [Data Lineage](Data-Lineage.md) — tables, columns, invariants
+- [Attributed and Billed](Attributed-and-Billed.md) — the trust model
+- [Design Decisions](Design-Decisions.md) — the decision records, as they stand
 - [Data Model](Data-Model.md)
 - [Reporting](Reporting.md)
 - [API Reference](API-Reference.md)

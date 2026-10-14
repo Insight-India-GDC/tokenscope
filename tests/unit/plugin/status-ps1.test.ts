@@ -179,11 +179,11 @@ describe.skipIf(SKIP)('status.ps1 end to end (real otel-headers-helper.ps1, stub
 
   // ASYNC spawn: the stub server lives in this process, and spawnSync would
   // block the event loop that has to answer the helper.
-  async function runStatus(home: string) {
+  async function runStatus(home: string, extraEnv: Record<string, string> = {}) {
     pwshOrThrow()
     const r = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
       const c = spawn(PWSH, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', STATUS_PS1], {
-        env: childEnv({ HOME: home, PATH: process.env.PATH ?? '' }),
+        env: childEnv({ HOME: home, PATH: process.env.PATH ?? '', ...extraEnv }),
       })
       let stdout = ''
       let stderr = ''
@@ -218,6 +218,18 @@ describe.skipIf(SKIP)('status.ps1 end to end (real otel-headers-helper.ps1, stub
     expect(out.probe.message).toMatch(/^NOT SENDING: .* \(HTTP 401\)\. Usage is being dropped\. Run \/tokenscope:setup/)
     expect(out.last_failure.http_status).toBe(401)
     expect(out.mcp_authed).toBe(false)
+  })
+
+  // Off Windows, .NET has no user environment store, so the app's login value
+  // reads as missing: this pins the gate and the shape, not the registry read.
+  it.skipIf(WIN)('desktop_env appears only in a Claude app session', async () => {
+    bearerMode = 'ok'
+    const home = profile({ mcpKey: 'plugin:tokenscope:tokenscope|abc123' })
+    expect((await runStatus(home)).desktop_env).toBeUndefined()
+    expect((await runStatus(home, { CLAUDE_CODE_ENTRYPOINT: 'cli' })).desktop_env).toBeUndefined()
+    const out = await runStatus(home, { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' })
+    expect(out.desktop_env.verdict).toBe('missing')
+    expect(out.desktop_env.fix).toContain('/tokenscope:setup')
   })
 
   it.skipIf(WIN)('not configured: no store, no settings credential -> setup, and no request is made', async () => {

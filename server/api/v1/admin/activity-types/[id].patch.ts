@@ -25,10 +25,11 @@ import { requireActivityScope } from '../../../../auth/activity-scope'
 import { withRequestRls } from '../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../db/audit'
 import { pgErrorCode } from '../../../../db/pg-error'
+import { displayText, ACTIVITY_LABEL_MAX } from '#shared/schemas/display-text'
 
 const Body = z
   .object({
-    label: z.string().trim().min(1).max(64).optional(),
+    label: displayText(ACTIVITY_LABEL_MAX, { trim: true }).optional(),
     sort_order: z.coerce.number().int().min(0).max(100000).optional(),
     is_active: z.boolean().optional(),
   })

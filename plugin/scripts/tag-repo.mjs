@@ -32,6 +32,7 @@ import {
   helperScriptName,
 } from './env-builder.mjs'
 import { withinOwnInstall, readHelperRecord, trustedStateDir } from './plugin-runtime.mjs'
+import { claudeSettingsPath } from './claude-config-dir.mjs'
 // The single .gitignore-hygiene helper, shared with the Copilot forwarder.
 // Import is side-effect-free (that module main()-guards) and tag-repo.mjs is not
 // vendored into the standalone Copilot distribution — see ensureRepoTagGitignored.
@@ -103,9 +104,9 @@ export function writeTokenscopeFile(cwd, code) {
   return path
 }
 
-/** Abs path to the GLOBAL ~/.claude/settings.json. */
+/** Abs path to the GLOBAL settings.json of this install's config folder (claude-config-dir.mjs). */
 export function globalSettingsPath() {
-  return join(homedir(), '.claude', 'settings.json')
+  return claudeSettingsPath({ home: homedir() })
 }
 
 /**

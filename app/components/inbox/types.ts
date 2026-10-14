@@ -30,6 +30,7 @@ export type DrawerBodyVariant =
   | 'sync-conflict'
   | 'untagged'
   | 'personal-subscription'
+  | 'over-emission'
   | 'generic'
 
 export function variantForCategory(category: string): DrawerBodyVariant {
@@ -45,6 +46,8 @@ export function variantForCategory(category: string): DrawerBodyVariant {
       return 'untagged'
     case 'personal-subscription-prompt':
       return 'personal-subscription'
+    case 'over-emission-escalated':
+      return 'over-emission'
     default:
       return 'generic'
   }

@@ -230,6 +230,28 @@ export async function locateOrCreateInstance(
   // ascending order (instance, then principal, then globalCap).
   await tx.execute(advisoryXactLock('instance', instanceId ?? tm.teammateId))
 
+  // THE PLACEMENT A DEVICE IS WRITTEN WITH (#417). `tm` was read before this
+  // transaction (mcp.ts), so a placement move committing in between would leave
+  // a new device on the old one. Lock the teammate row and re-read it here,
+  // before any device lock or insert: FOR NO KEY UPDATE conflicts with the lock
+  // every placement move holds, so a move and a provision serialise. Move first:
+  // this read sees the new placement. Provision first: the move's
+  // followPlacement re-homes the device this commits.
+  //
+  // ORDER: instance key, then this row, then the principal and global-cap keys
+  // (create branch below), then devices. Identity confirmation takes the
+  // teammate, then principal and global cap, the same way round. The global
+  // cap comes after the teammate so that waiting on a busy teammate (a bulk
+  // placement) never holds the one key every provision shares.
+  const placedRows = await tx.execute<{ region_id: string; org_unit_id: string }>(sql`
+    SELECT region_id::text AS region_id, org_unit_id::text AS org_unit_id
+      FROM teammate WHERE id = ${tm.teammateId}::uuid
+       FOR NO KEY UPDATE
+  `)
+  const placed = [...placedRows][0]
+  const regionId = placed?.region_id ?? tm.regionId
+  const orgUnitId = placed?.org_unit_id ?? tm.orgUnitId
+
   if (instanceId) {
     const existing = await tx.execute<{
       instance_id: string
@@ -316,9 +338,13 @@ export async function locateOrCreateInstance(
       // window with it, or a device first enrolled 90 days ago is closed by
       // session-gc under its brand-new credential. The SELECT's row lock keeps
       // session-gc from ending the row between that check and this renewal.
+      // The placement goes with the renewal: a re-provisioned device carries the
+      // teammate's placement as read under the lock above.
       await tx.execute(sql`
         UPDATE instance_attestation
-           SET ts_expected_end = GREATEST(ts_expected_end, ${deviceIdleWindowEnd()})
+           SET ts_expected_end = GREATEST(ts_expected_end, ${deviceIdleWindowEnd()}),
+               region_id = ${regionId}::uuid,
+               org_unit_id = ${orgUnitId}::uuid
          WHERE instance_id = ${row.instance_id}::uuid
       `)
       return { instanceId: row.instance_id, reused: true }
@@ -390,7 +416,7 @@ export async function locateOrCreateInstance(
       (instance_id, principal_oid, principal_email, teammate_id, tool,
        ts_expected_end, region_id, org_unit_id, attestation_state, deployment_env)
     VALUES (${newId}::uuid, ${tm.principalOid}, ${tm.email}, ${tm.teammateId}::uuid, ${tool},
-            ${deviceIdleWindowEnd()}, ${tm.regionId}::uuid, ${tm.orgUnitId}::uuid,
+            ${deviceIdleWindowEnd()}, ${regionId}::uuid, ${orgUnitId}::uuid,
             'unassigned', ${currentEnv})
   `)
   return { instanceId: newId, reused: false }

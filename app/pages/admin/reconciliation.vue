@@ -373,7 +373,8 @@ interface EnterpriseCoverage {
 }
 const { data: coverageData, error: coverageError, refresh: refreshCoverage } = useLazyFetch<{ coverage: EnterpriseCoverage[] } | null>(
   () => '/api/v1/admin/reconciliation/github/coverage',
-  { server: false, default: () => null, immediate: isAdmin.value },
+  // Platform-admin only server-side (provider-enterprise data is estate config).
+  { server: false, default: () => null, immediate: isPlatformAdmin.value },
 )
 const coverageByEnterprise = computed(() => new Map(coverageData.value?.coverage.map((c) => [c.enterpriseId, c]) ?? []))
 /** This org's coverage observation, found by external_org_id across every enterprise's
@@ -436,6 +437,7 @@ const coverageBanner = computed(() => {
 })
 const recheckingCoverage = ref<Set<string>>(new Set())
 async function recheckCoverage(e: EnterpriseRow) {
+  if (!isPlatformAdmin.value) return
   const next = new Set(recheckingCoverage.value)
   next.add(e.id)
   recheckingCoverage.value = next
@@ -482,7 +484,8 @@ const {
   refresh: refreshAnthHealth,
 } = useLazyFetch<{ orgs: OrgHealth[]; total: number; endpointConfigured: boolean } | null>(
   () => '/api/v1/admin/reconciliation/anthropic/health',
-  { server: false, default: () => null, immediate: isAdmin.value },
+  // Platform-admin only server-side (it lists and probes every region's orgs).
+  { server: false, default: () => null, immediate: isPlatformAdmin.value },
 )
 const anthHealthByOrg = computed(
   () => new Map((anthHealth.value?.orgs ?? []).map((h) => [h.externalOrgId, h])),
@@ -540,8 +543,10 @@ const enterpriseOptions = computed<EnterpriseOption[]>(() =>
 function refreshProviders() {
   refreshOrgs()
   refreshEnterprises()
-  refreshCoverage()
-  refreshAnthHealth()
+  if (isPlatformAdmin.value) {
+    refreshCoverage()
+    refreshAnthHealth()
+  }
 }
 
 // First paint (D2): the active tab's primary read has neither landed nor
@@ -828,6 +833,7 @@ function stageHint(hint: string | undefined): string {
   return hint ? (STAGE_HINT_LABEL[hint] ?? '') : ''
 }
 async function verifyEnterprise(e: EnterpriseRow) {
+  if (!isPlatformAdmin.value) return
   const next = new Set(verifying.value)
   next.add(e.id)
   verifying.value = next
@@ -895,6 +901,7 @@ const mapBusyLogins = ref<Set<string>>(new Set())
 const isMapBusy = (login: string) => mapBusyLogins.value.has(login)
 
 async function loadUnresolved(e: EnterpriseRow) {
+  if (!isPlatformAdmin.value) return
   const next = new Set(loadingUnresolved.value)
   next.add(e.id)
   loadingUnresolved.value = next
@@ -1087,7 +1094,8 @@ interface BackfillRequest {
 }
 const { data: backfills, error: backfillsError, refresh: refreshBackfills } = useLazyFetch<{ requests: BackfillRequest[] } | null>(
   () => '/api/v1/admin/reconciliation/backfill',
-  { server: false, default: () => null, immediate: isAdmin.value },
+  // Platform-admin only server-side (backfill targets span every region).
+  { server: false, default: () => null, immediate: isPlatformAdmin.value },
 )
 const hasInflightBackfill = computed(() =>
   (backfills.value?.requests ?? []).some((r) => r.status === 'pending' || r.status === 'running'),
@@ -1109,7 +1117,7 @@ function stopBackfillPoll() {
 }
 watch(hasInflightBackfill, (inflight) => {
   if (!import.meta.client) return
-  if (inflight && !backfillPoll) {
+  if (inflight && !backfillPoll && isPlatformAdmin.value) {
     backfillPoll = setInterval(() => refreshBackfills(), 5000)
   } else if (!inflight) {
     stopBackfillPoll()
@@ -1139,7 +1147,7 @@ function openBackfillEnterprise(e: EnterpriseRow) {
 function onBackfillSaved() {
   backfillTarget.value = null
   flashToast('ok', 'Backfill enqueued.')
-  refreshBackfills()
+  if (isPlatformAdmin.value) refreshBackfills()
 }
 </script>
 
@@ -1421,13 +1429,13 @@ function onBackfillSaved() {
         </span>
       </p>
 
-      <UiFetchErrorBanner :error="coverageError" label="GitHub org coverage" @retry="refreshCoverage()" />
+      <UiFetchErrorBanner v-if="isPlatformAdmin" :error="coverageError" label="GitHub org coverage" @retry="refreshCoverage()" />
       <!-- ---------- COVERAGE BANNER (Workstream D) ---------- -->
       <!-- Persisted-only (no live network call on page load) — an org whose coverage was
            never observed contributes to neither count, so a fresh/never-swept enterprise
            never renders "0 of 0 — complete" (R1-M5). -->
       <div
-        v-if="coverageBanner.hasAnyGithubEnterprise && (coverageBanner.nonConnected > 0 || coverageBanner.unknownEnterprises > 0)"
+        v-if="isPlatformAdmin && coverageBanner.hasAnyGithubEnterprise && (coverageBanner.nonConnected > 0 || coverageBanner.unknownEnterprises > 0)"
         class="mb-4 rounded-md border px-4 py-3 text-sm"
         :class="coverageBanner.nonConnected > 0 ? 'border-brand-hunger bg-brand-hunger/5' : 'border-carbon-6 bg-carbon-8'"
         data-testid="admin-recon-coverage-banner"
@@ -1453,6 +1461,9 @@ function onBackfillSaved() {
         <p class="mt-1.5 text-xs text-carbon-3">See the Coverage column below for per-enterprise detail and a Recheck action; each org row's remediation uses the existing Edit / Discover / Delete actions.</p>
       </div>
 
+      <!-- Region admins get only picker fields from this read (the org form's
+           Enterprise select), so the table itself is platform-admin only. -->
+      <template v-if="isPlatformAdmin">
       <!-- ---------- ENTERPRISES ---------- -->
       <div class="flex items-baseline justify-between mb-2">
         <h2 class="text-sm font-bold text-carbon">Enterprises</h2>
@@ -1472,7 +1483,7 @@ function onBackfillSaved() {
                 <th class="py-2 pr-3 font-bold">Mode</th>
                 <th class="py-2 pr-3 font-bold">Key</th>
                 <th class="py-2 pr-3 font-bold">Orgs</th>
-                <th class="py-2 pr-3 font-bold">Coverage</th>
+                <th v-if="isPlatformAdmin" class="py-2 pr-3 font-bold">Coverage</th>
                 <th class="py-2 pr-3 font-bold text-right">Actions</th>
               </tr>
             </thead>
@@ -1502,7 +1513,7 @@ function onBackfillSaved() {
                   <UiBadge :kind="e.keyPresent ? 'rag-green' : 'rag-red'">{{ e.keyPresent ? '✓' : '✗' }}</UiBadge>
                 </td>
                 <td class="py-2 pr-3 font-mono text-xs">{{ e.orgCount }}</td>
-                <td class="py-2 pr-3" :data-testid="`admin-recon-ent-coverage-${e.id}`">
+                <td v-if="isPlatformAdmin" class="py-2 pr-3" :data-testid="`admin-recon-ent-coverage-${e.id}`">
                   <span v-if="e.provider !== 'github'" class="text-carbon-3 italic text-xs" title="Coverage detection is GitHub-only (org installations are a GitHub App concept).">n/a</span>
                   <template v-else>
                     <div class="flex items-center gap-1.5">
@@ -1539,7 +1550,7 @@ function onBackfillSaved() {
                     Edit
                   </UiButton>
                   <UiButton
-                    v-if="e.provider === 'github'"
+                    v-if="e.provider === 'github' && isPlatformAdmin"
                     kind="ghost"
                     size="sm"
                     :disabled="discoveringOrgs.has(e.id)"
@@ -1550,7 +1561,7 @@ function onBackfillSaved() {
                     {{ discoveringOrgs.has(e.id) ? 'Discovering…' : 'Discover Copilot orgs' }}
                   </UiButton>
                   <UiButton
-                    v-if="e.provider === 'github'"
+                    v-if="isPlatformAdmin && e.provider === 'github'"
                     kind="ghost"
                     size="sm"
                     :disabled="verifying.has(e.id)"
@@ -1561,7 +1572,7 @@ function onBackfillSaved() {
                     {{ verifying.has(e.id) ? 'Verifying…' : 'Verify' }}
                   </UiButton>
                   <UiButton
-                    v-if="e.provider === 'github' && e.reconciliationMode === 'reconciled'"
+                    v-if="isPlatformAdmin && e.provider === 'github' && e.reconciliationMode === 'reconciled'"
                     kind="ghost"
                     size="sm"
                     :disabled="loadingUnresolved.has(e.id)"
@@ -1572,7 +1583,7 @@ function onBackfillSaved() {
                     {{ loadingUnresolved.has(e.id) ? 'Loading…' : 'Unresolved users' }}
                   </UiButton>
                   <UiButton
-                    v-if="e.provider === 'github' && e.reconciliationMode === 'reconciled'"
+                    v-if="isPlatformAdmin && e.provider === 'github' && e.reconciliationMode === 'reconciled'"
                     kind="ghost"
                     size="sm"
                     :data-testid="`backfill-btn-${e.id}`"
@@ -1607,11 +1618,12 @@ function onBackfillSaved() {
         <div v-else-if="!entError" class="py-6 text-center" data-testid="admin-recon-ent-empty">
           <div class="text-sm font-bold text-carbon">No enterprises registered</div>
           <p class="text-xs text-carbon-2 mt-1">Register a GitHub or Anthropic enterprise to hold its billing credential.</p>
-          <UiButton kind="secondary" size="sm" class="mt-3" data-testid="admin-recon-ent-empty-add" @click="openCreateEnterprise">
+          <UiButton v-if="isPlatformAdmin" kind="secondary" size="sm" class="mt-3" data-testid="admin-recon-ent-empty-add" @click="openCreateEnterprise">
             + Add enterprise
           </UiButton>
         </div>
       </UiCard>
+      </template>
 
       <!-- ---------- ORGS ---------- -->
       <div class="flex items-baseline justify-between mb-2">
@@ -1635,7 +1647,7 @@ function onBackfillSaved() {
                 <th class="py-2 pr-3 font-bold">Mode</th>
                 <th class="py-2 pr-3 font-bold">Key</th>
                 <th class="py-2 pr-3 font-bold">Health</th>
-                <th class="py-2 pr-3 font-bold">Coverage</th>
+                <th v-if="isPlatformAdmin" class="py-2 pr-3 font-bold">Coverage</th>
                 <th class="py-2 pr-3 font-bold text-right">Actions</th>
               </tr>
             </thead>
@@ -1690,7 +1702,7 @@ function onBackfillSaved() {
                     {{ reasonLabel(orgHealth(o)!.reason) }}
                   </UiBadge>
                   <span
-                    v-else-if="anthHealth == null && !anthHealthError"
+                    v-else-if="isPlatformAdmin && anthHealth == null && !anthHealthError"
                     class="inline-block h-5 w-16 rounded-full bg-calm-2 animate-pulse align-middle"
                     role="status"
                     aria-busy="true"
@@ -1699,7 +1711,7 @@ function onBackfillSaved() {
                   <span v-else-if="anthHealthError" class="text-brand-hunger italic text-xs" title="The health read failed — Retry above.">unavailable</span>
                   <span v-else class="text-carbon-3 italic text-xs">—</span>
                 </td>
-                <td class="py-2 pr-3" :data-testid="`admin-recon-org-coverage-${o.id}`">
+                <td v-if="isPlatformAdmin" class="py-2 pr-3" :data-testid="`admin-recon-org-coverage-${o.id}`">
                   <span v-if="o.provider !== 'github'" class="text-carbon-3 italic text-xs" title="Coverage detection is GitHub-only.">n/a</span>
                   <template v-else-if="orgCoverage(o)">
                     <UiBadge :kind="COVERAGE_STATE_BADGE[orgCoverage(o)!.state]" :title="COVERAGE_REMEDIATION_HINT[orgCoverage(o)!.state]">
@@ -1722,7 +1734,7 @@ function onBackfillSaved() {
                     Edit
                   </UiButton>
                   <UiButton
-                    v-if="o.provider === 'anthropic' && o.reconciliationMode === 'reconciled'"
+                    v-if="isPlatformAdmin && o.provider === 'anthropic' && o.reconciliationMode === 'reconciled'"
                     kind="ghost"
                     size="sm"
                     :data-testid="`backfill-btn-${o.id}`"
@@ -1757,44 +1769,46 @@ function onBackfillSaved() {
         </div>
       </UiCard>
 
-      <!-- ---------- RECENT BACKFILLS ---------- -->
-      <div class="flex items-baseline justify-between mb-2 mt-6">
-        <h2 class="text-sm font-bold text-carbon">Recent backfills</h2>
-        <span class="text-[11px] text-carbon-3">on-demand historical pulls · last 25 · auto-refreshes while in flight</span>
-      </div>
-      <UiFetchErrorBanner :error="backfillsError" label="recent backfills" @retry="refreshBackfills()" />
-      <UiCard>
-        <AdminPageSkeleton v-if="!backfillsError && backfills == null" :rows="2" :toolbar="false" />
-        <ul
-          v-else-if="backfills?.requests.length"
-          class="divide-y divide-carbon-6"
-          data-testid="backfill-requests"
-        >
-          <li
-            v-for="b in backfills.requests"
-            :key="b.id"
-            class="flex items-center justify-between py-3 gap-4"
-            :data-testid="`backfill-request-${b.id}`"
+      <!-- ---------- RECENT BACKFILLS (platform-admin only, like its read) ---------- -->
+      <template v-if="isPlatformAdmin">
+        <div class="flex items-baseline justify-between mb-2 mt-6">
+          <h2 class="text-sm font-bold text-carbon">Recent backfills</h2>
+          <span class="text-[11px] text-carbon-3">on-demand historical pulls · last 25 · auto-refreshes while in flight</span>
+        </div>
+        <UiFetchErrorBanner :error="backfillsError" label="recent backfills" @retry="refreshBackfills()" />
+        <UiCard>
+          <AdminPageSkeleton v-if="!backfillsError && backfills == null" :rows="2" :toolbar="false" />
+          <ul
+            v-else-if="backfills?.requests.length"
+            class="divide-y divide-carbon-6"
+            data-testid="backfill-requests"
           >
-            <div class="flex items-center gap-3 min-w-0">
-              <UiBadge :kind="backfillStatusBadge(b.status).kind">{{ backfillStatusBadge(b.status).label }}</UiBadge>
-              <UiBadge kind="neutral">{{ b.provider }}</UiBadge>
-              <div class="min-w-0">
-                <span class="font-bold text-carbon text-sm">{{ b.displayName || b.externalRef }}</span>
-                <span class="font-mono text-[11px] text-carbon-3 ml-2 truncate">{{ b.startDate }} → {{ b.endDate }}</span>
+            <li
+              v-for="b in backfills.requests"
+              :key="b.id"
+              class="flex items-center justify-between py-3 gap-4"
+              :data-testid="`backfill-request-${b.id}`"
+            >
+              <div class="flex items-center gap-3 min-w-0">
+                <UiBadge :kind="backfillStatusBadge(b.status).kind">{{ backfillStatusBadge(b.status).label }}</UiBadge>
+                <UiBadge kind="neutral">{{ b.provider }}</UiBadge>
+                <div class="min-w-0">
+                  <span class="font-bold text-carbon text-sm">{{ b.displayName || b.externalRef }}</span>
+                  <span class="font-mono text-[11px] text-carbon-3 ml-2 truncate">{{ b.startDate }} → {{ b.endDate }}</span>
+                </div>
               </div>
-            </div>
-            <div class="text-right text-xs shrink-0">
-              <span v-if="b.status === 'succeeded'" class="text-brand-harmony font-mono">{{ b.rowsWritten }} row{{ b.rowsWritten === 1 ? '' : 's' }}</span>
-              <span v-else-if="b.status === 'failed' && b.error" class="text-brand-hunger font-mono break-all max-w-[280px] inline-block">{{ b.error }}</span>
-              <span v-else class="text-carbon-3">{{ fmtTs(b.requestedAt) }}</span>
-            </div>
-          </li>
-        </ul>
-        <p v-else-if="!backfillsError" class="text-sm text-carbon-3 italic">
-          No backfills requested yet. Use the Backfill action on a reconciled scope above to pull older provider usage.
-        </p>
-      </UiCard>
+              <div class="text-right text-xs shrink-0">
+                <span v-if="b.status === 'succeeded'" class="text-brand-harmony font-mono">{{ b.rowsWritten }} row{{ b.rowsWritten === 1 ? '' : 's' }}</span>
+                <span v-else-if="b.status === 'failed' && b.error" class="text-brand-hunger font-mono break-all max-w-[280px] inline-block">{{ b.error }}</span>
+                <span v-else class="text-carbon-3">{{ fmtTs(b.requestedAt) }}</span>
+              </div>
+            </li>
+          </ul>
+          <p v-else-if="!backfillsError" class="text-sm text-carbon-3 italic">
+            No backfills requested yet. Use the Backfill action on a reconciled scope above to pull older provider usage.
+          </p>
+        </UiCard>
+      </template>
     </div>
     </template>
 
@@ -1813,6 +1827,8 @@ function onBackfillSaved() {
       :regions-error="regionsError"
       :regions-loading="!regionsError && regionsData == null"
       :governance-activated="governanceActivated"
+      :can-discover-org="isPlatformAdmin"
+      :can-create-anthropic-org="isPlatformAdmin"
       @close="orgDialogOpen = false"
       @saved="onOrgSaved"
       @retry-regions="refreshRegions"

@@ -8,7 +8,12 @@
  * (readSecret(provider, credential_secret_name) != null). The KEY IS NEVER
  * returned — only the presence boolean.
  *
- * RBAC: requireRole(admin). `provider_enterprise` is a config
+ * RBAC: requireRole(admin), but only a platform admin gets the full record.
+ * Provider configuration is estate config (owner-decisions.md §1, ruled
+ * 2026-10-08), so a region admin gets just the four fields the org-onboarding
+ * form's Enterprise picker needs (id, provider, externalId, displayName): no
+ * credential names, key presence, billing, rates, notes or org counts.
+ * `provider_enterprise` is a config
  * table with no RLS policy, but the read still runs in the request lane
  * (docs/design/rls-enforcement.md §2): the lane is decided by who is asking,
  * not by which table the query names. `readSecret` / `readGithubAppKey` are
@@ -38,7 +43,8 @@ interface Row extends Record<string, unknown> {
 }
 
 export default defineEventHandler(async (event) => {
-  await requireRole(event, 'admin')
+  const session = await requireRole(event, 'admin')
+  const full = session.role === 'platform-admin'
 
   const rows = await withRequestRls(event, (tx) =>
     tx.execute<Row>(sql`
@@ -60,6 +66,16 @@ export default defineEventHandler(async (event) => {
     ORDER BY pe.provider, pe.display_name
   `),
   )
+
+  if (!full) {
+    const picker = [...rows].map((r) => ({
+      id: r.id,
+      provider: r.provider,
+      externalId: r.external_id,
+      displayName: r.display_name,
+    }))
+    return { enterprises: picker, total: picker.length, scope: 'picker' as const }
+  }
 
   const enterprises = [...rows].map((r) => {
     // App mode INTENDED iff a github_app_id is set (github only). 'github-app' here is a
@@ -93,5 +109,5 @@ export default defineEventHandler(async (event) => {
     }
   })
 
-  return { enterprises, total: enterprises.length }
+  return { enterprises, total: enterprises.length, scope: 'full' as const }
 })

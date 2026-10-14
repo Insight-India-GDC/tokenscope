@@ -52,6 +52,8 @@ COPY --from=build --chown=tokenscope:tokenscope /app/.output ./.output
 COPY --from=build --chown=tokenscope:tokenscope /app/drizzle ./drizzle
 COPY --from=build --chown=tokenscope:tokenscope /app/scripts ./scripts
 COPY --from=build --chown=tokenscope:tokenscope /app/entrypoint.sh ./entrypoint.sh
+# The Claude Code plugin, served zipped by /api/v1/plugin (docs/design/self-served-marketplace.md).
+COPY --from=build --chown=tokenscope:tokenscope /app/plugin ./plugin
 
 ENV NODE_ENV=production
 ENV NITRO_PORT=3000

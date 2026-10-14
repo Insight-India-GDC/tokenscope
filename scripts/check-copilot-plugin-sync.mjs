@@ -71,6 +71,10 @@ const FILES = [
   // ~/.tokenscope/config.json. Gated so the copy that reads a credential store
   // can never drift from the reviewed source.
   'device-id.mjs',
+  // claude-config-dir.mjs — device-id.mjs's resolver for the Claude Code config
+  // folder; gated with it so the two clients agree on which settings file is
+  // the Claude Code enrolment.
+  'claude-config-dir.mjs',
   // device-store.mjs — the ONE definition of where each lane's enrolment lives
   // (config.<tool>.json / oauth-access.<tool>.json). Gated because a drifted
   // copy means the two lanes disagree about a FILENAME, and each then reads the

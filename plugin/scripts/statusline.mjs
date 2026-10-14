@@ -21,8 +21,9 @@
  *      emit-failure sentinel (the SAME signal /tokenscope:status uses). Cheap
  *      local file read.
  *   3. "Can I QUERY TokenScope (my_usage / tag_session)?" → MCP-auth state, read
- *      from Claude Code's own credential store (~/.claude/.credentials.json →
- *      `.mcpOAuth` has a key for the TokenScope MCP server). Cheap local read.
+ *      from Claude Code's own credential store (the macOS Keychain, else
+ *      <config folder>/.credentials.json → `.mcpOAuth` has a key for the TokenScope MCP
+ *      server). A file read; on macOS a cached answer, refreshed in the background.
  *   4. "Which dashboard row is THIS session?" → the session id Claude passes on
  *      stdin (TokenScope's "Conversation" id). Match the prefix.
  *
@@ -61,11 +62,18 @@
  * without the render ever blocking on the network (see maybeSpawnLandedRefresh).
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from './is-main.mjs'
 import { spawn } from 'node:child_process'
+import {
+  MCP_AUTH_STAMP,
+  mcpAuthRefreshDue,
+  mcpAuthRefreshSpawn,
+  probeMcpAuth,
+  readMcpAuthCache,
+  readMcpAuthStamp,
+} from './claude-credentials.mjs'
 import { readEmitDegraded, readEmitSentinel, trustedGlobalSettingsEnv, trustedStateDir } from './plugin-runtime.mjs'
 
 const C = {
@@ -349,27 +357,37 @@ function isConfigured(env) {
 
 /**
  * MCP authed = Claude's credential store has an `.mcpOAuth` entry for the
- * TokenScope plugin MCP server (key `plugin:tokenscope:tokenscope` or
- * `plugin:tokenscope:tokenscope|<url>`). Cheap local read; fail-defensive → false.
- *
- * homedir(), NOT realHome(), and deliberately so — the one read in this file
- * that is not on the trusted store. This mirrors a file CLAUDE CODE itself
- * reads, and Claude Code resolves it through the same HOME; following realHome
- * here would answer about a different file than the one actually in use. See
- * real-home.mjs, which documents this as the case that belongs on homedir().
+ * TokenScope plugin MCP server (claude-credentials.mjs). Off macOS that store is
+ * a file, so it is read directly. On macOS it is the Keychain, which costs a
+ * process and can stall on a prompt: this render reads the cached answer and,
+ * when it is stale, starts a throttled, detached refresh for the next render.
+ * Fail-defensive → false.
  */
 function isMcpAuthed() {
-  let creds
+  if (process.platform !== 'darwin') return probeMcpAuth()
+  const dir = trustedStateDir()
+  const cache = readMcpAuthCache(dir)
+  maybeSpawnMcpAuthRefresh(dir, cache)
+  return cache?.authed === true
+}
+
+function maybeSpawnMcpAuthRefresh(dir, cache) {
   try {
-    creds = JSON.parse(readFileSync(join(homedir(), '.claude', '.credentials.json'), 'utf8'))
+    if (!mcpAuthRefreshDue(cache, readMcpAuthStamp(dir))) return
+    try {
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, MCP_AUTH_STAMP), `${JSON.stringify({ at: new Date().toISOString() })}\n`, { mode: 0o600 })
+    } catch {
+      /* stamp is best-effort; a failed write just means the throttle can't engage */
+    }
+    const script = join(dirname(fileURLToPath(import.meta.url)), 'claude-credentials.mjs')
+    const { file, args, options } = mcpAuthRefreshSpawn(script)
+    const child = spawn(file, args, options)
+    child.on('error', () => {})
+    child.unref()
   } catch {
-    return false
+    /* never let a refresh attempt break the render */
   }
-  const mcp = creds && typeof creds === 'object' ? creds.mcpOAuth : null
-  if (!mcp || typeof mcp !== 'object') return false
-  return Object.keys(mcp).some(
-    (k) => k === 'plugin:tokenscope:tokenscope' || k.startsWith('plugin:tokenscope:tokenscope|'),
-  )
 }
 
 /** The currently-configured instance id, from the emit resource attrs (or null). */

@@ -846,6 +846,60 @@ describe('main() against a mock redeem server', () => {
     expect(index.entries).toContainEqual({ file: realpathSync(path), stateDir: state })
   })
 
+  // No --settings-path: the default destination is the config folder of the
+  // install running setup. On 2026-10-10 a Claude Desktop with its own folder
+  // (CLAUDE_CONFIG_DIR=~/.claude-desktop) had its credential written into the
+  // CLI's ~/.claude/settings.json and sent nothing.
+  const runDefault = (code: string, extraEnv: Record<string, string>) =>
+    new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+      const fake = fakeHomeNode(preload, homeDir)
+      const child = spawn(
+        'node',
+        [...fake.args, HELPER, '--handoff-code', code, '--api-base', baseUrl, '--state-dir', join(homeDir, 'state-default')],
+        { encoding: 'utf8', env: { ...process.env, ...fake.env, ...extraEnv } } as never,
+      )
+      let stdout = ''
+      let stderr = ''
+      child.stdout.on('data', (c) => (stdout += c))
+      child.stderr.on('data', (c) => (stderr += c))
+      child.on('close', (status) => resolve({ status, stdout, stderr }))
+    })
+
+  it('with CLAUDE_CONFIG_DIR set to a folder of the user’s, writes THAT folder’s settings.json, not ~/.claude’s', async () => {
+    const cfg = join(homeDir, '.claude-desktop')
+    const cli = join(homeDir, '.claude', 'settings.json')
+    const r = await runDefault('GOOD', { CLAUDE_CONFIG_DIR: cfg })
+    expect(r.status).toBe(0)
+    const written = JSON.parse(readFileSync(join(cfg, 'settings.json'), 'utf8'))
+    expect(written.env.OTEL_RESOURCE_ATTRIBUTES).toContain('tokenscope.instance_id=f825e796')
+    expect(written.otelHeadersHelper).toContain('otel-headers-helper.sh')
+    expect(existsSync(cli)).toBe(false)
+    expect(r.stdout).toContain(`Saved to ${join(realpathSync(cfg), 'settings.json')}`)
+  })
+
+  // Linux only: on macOS the Desktop step would run the real launchctl. Under the
+  // fake home its environment.d file lands inside homeDir.
+  it.skipIf(platform() !== 'linux')('in the Claude app on Linux, setup gives ONE next step: log out, not restart', async () => {
+    const r = await runDefault('GOOD', { CLAUDE_CONFIG_DIR: join(homeDir, '.claude-desktop-linux'), CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('Next: Log out of your computer and back in, then open the Claude app.')
+    expect(r.stdout).not.toContain('Next: restart Claude Code')
+    expect(existsSync(join(homeDir, '.config', 'environment.d', '90-tokenscope.conf'))).toBe(true)
+  })
+
+  it('a CLAUDE_CONFIG_DIR outside the home is not used: ~/.claude, with a warning', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'ts-redeem-cfg-out-'))
+    try {
+      const r = await runDefault('GOOD', { CLAUDE_CONFIG_DIR: outside })
+      expect(r.status).toBe(0)
+      expect(existsSync(join(outside, 'settings.json'))).toBe(false)
+      expect(existsSync(join(homeDir, '.claude', 'settings.json'))).toBe(true)
+      expect(r.stderr).toContain('CLAUDE_CONFIG_DIR is set but was not used (outside-home)')
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
   it('401 from server: exits 1 and writes NOTHING', async () => {
     const path = settingsIn('unauthorized')
     const r = await run('WRONGCODE', path)

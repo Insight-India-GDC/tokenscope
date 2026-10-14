@@ -25,5 +25,9 @@ export const auditEvent = pgTable('audit_event', {
   payload: jsonb('payload').notNull(),
   ipAddress: inet('ip_address'),
   userAgent: text('user_agent'),
+  // mig 0154 — Entra OID of the admin acting through persona override (actor_*
+  // then names the persona). Stamped by recordAuditEvent from the tx-local GUC
+  // app.impersonator_oid that withRequestRls sets; never passed by a caller.
+  impersonatorOid: text('impersonator_oid'),
   tsRecorded: timestamp('ts_recorded', { withTimezone: true }).notNull().defaultNow(),
 })

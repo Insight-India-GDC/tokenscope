@@ -1,9 +1,9 @@
 # Data Model
 
 This page is the as-built data model of the running TokenScope system, written
-for developers and maintainers. TokenScope is a Nuxt 3 application backed by
-Drizzle ORM and PostgreSQL 16. Its job is to attribute Claude Code (and, in
-future, Copilot CLI) token spend to the right project, person, and
+for developers and maintainers. TokenScope is a Nuxt 4 application backed by
+Drizzle ORM and PostgreSQL 16. Its job is to attribute Claude and GitHub
+Copilot token spend to the right project, person, and
 cost-owning unit — and to govern that spend with budgets, allocations, and an
 audit trail you can defend to finance.
 
@@ -37,12 +37,13 @@ keystroke to a finance-grade ledger row. Read it as a pipeline:
    telemetry back to this row to decide who spent what on which project.
    Device emit is provisioned via the MCP `provision_emit` tool: it mints a
    one-time `emit_handoff`, redeemed at `/api/v1/setup/redeem` for the durable
-   emit credential. (The legacy `setup_token` enrolment was retired and the
-   table dropped in migration 0034 — see [emit_handoff](#emit_handoff).)
+   emit credential (see [emit_handoff](#emit_handoff)).
 
 3. **Attribution.** Telemetry is reconciled into the `attribution_record`
-   ledger — one immutable, frozen row per cost event, pinned to the exact rate
-   card that priced it. A `provider_org` registry decides *how* each upstream
+   ledger — one row per cost event. A row's cost is set on write; tagging and
+   admin placement corrections update its project, activity and Business Unit
+   columns. A row priced by a rate card pins that card; a provider-priced row
+   carries no card pin. A `provider_org` registry decides *how* each upstream
    org's spend is treated (authoritatively reconciled vs indicatively
    tracked). `actual_spend` holds a parallel truth source pulled from the
    Anthropic Analytics API.
@@ -65,8 +66,9 @@ read any table:
   never silently clobbers a human's edit. See
   [Sync-vs-manual provenance](#sync-vs-manual-provenance).
 - **Region / org scoping.** Multi-tenant tables carry `region_id` and an
-  `org_unit_id` (or `cost_owning_unit_id`) and are protected by row-level
-  security so a manager in one region can't read another's data. See
+  `org_unit_id` (or `cost_owning_unit_id`). Region and org access is enforced
+  by application scope predicates; the schema's row-level-security policies
+  exist but do not execute under the table-owner connection. See
   [Row-level security](#row-level-security).
 
 > **As-built note.** The design doc describes `burst_request`,
@@ -82,7 +84,7 @@ read any table:
 
 Each card lists the table's foreign keys as `column → table`, from the migrations. `cou` is `cost_owning_unit_id`, which references `org_unit`.
 
-1. `instance_attestation.teammate_id → teammate`: the device enrolment belongs to one teammate (migration 0001, as `session_attestation`; renamed in 0019).
+1. `instance_attestation.teammate_id → teammate`: the device enrolment belongs to one teammate (migrations 0001 and 0019).
 2. `attribution_record.instance_id → instance_attestation`: every OTel ledger row names the instance that emitted it (migration 0055).
 3. `attribution_record.project_id → project`: the project is a separate key on the row, set by the membership-gated claim or a later tag, never derived through the instance.
 4. `attribution_record.rate_card_id` has no foreign key. The joiner stamps it with `rate_card_version` when it prices a row with the card; it is a pinned reference, not a constraint.
@@ -159,8 +161,8 @@ carries a durable role.
 | `ended_at` | TIMESTAMPTZ | soft-delete; attribution history is preserved |
 | `metadata` | JSONB | |
 | `source` / `is_pinned` / `last_sync_at` | provenance triple | |
-| `revoked_at` | TIMESTAMPTZ | active-session / emit-cascade revocation anchor (mig 0006, ADR-0005 §E2) — any session issued at or before this instant is treated as cleared by the validate-session middleware; written by role-change, region-change, and explicit revoke endpoints. **Overloaded: NOT an eligibility/offboarding flag.** Because benign role/region changes bump it too, assignability (project-member / CoU-owner add) gates on **`is_active` only**, never `revoked_at` (PR #120); a revoked-but-active teammate stays assignable as an inert billing row while `isRevoked()` + the E2 emit cascade still block live access. Device emission is judged against `emit_revoked_at` instead, so a role or region change does not stop a device. |
-| `emit_revoked_at` | TIMESTAMPTZ | device-emission revocation anchor (mig 0152, #414). Device-bound emit credentials and instances enrolled before it are refused (refresh, the `/instances/{id}/*` routes, the joiner). Written only by explicit revoke-sessions and shadow-teammate retirement, never by a role or region change. |
+| `revoked_at` | TIMESTAMPTZ | active-session / emit-cascade revocation anchor (mig 0006, [ADR-0005](Design-Decisions.md#adr-0005--durable-emission-credentials-and-revocation) §E2) — any session issued at or before this instant is treated as cleared by the validate-session middleware; written by role-change, region-change, and explicit revoke endpoints. **Overloaded: NOT an eligibility/offboarding flag.** Because benign role/region changes bump it too, assignability (project-member / CoU-owner add) gates on **`is_active` only**, never `revoked_at`; a revoked-but-active teammate stays assignable as an inert billing row while `isRevoked()` + the E2 emit cascade still block live access. Device emission is judged against `emit_revoked_at` instead, so a role or region change does not stop a device. |
+| `emit_revoked_at` | TIMESTAMPTZ | device-emission revocation anchor (mig 0152). Device-bound emit credentials and instances enrolled before it are refused (refresh, the `/instances/{id}/*` routes, the joiner). Written only by explicit revoke-sessions and shadow-teammate retirement, never by a role or region change. |
 
 Email uniqueness is **not** a plain `UNIQUE` — two indexes enforce it together:
 a **partial** unique `UNIQUE (email) WHERE NOT provisional` (mig 0057), which
@@ -195,8 +197,7 @@ arrives under any known identifier resolve to a single teammate.
 
 Constraint: the authoritative uniqueness key is
 **`UNIQUE (system, COALESCE(enterprise_slug, ''), lower(identifier))`** (mig 0038) —
-case-insensitive (per the mig 0012 lowercasing that replaced the case-sensitive
-mig 0010 index) and enterprise-qualified so the same login under two enterprises
+case-insensitive and enterprise-qualified so the same login under two enterprises
 doesn't collide. It matches the lowercasing read path and preserves the trust
 invariant that one identifier maps to at most one teammate. Drizzle can't express
 `COALESCE` / `lower()`, so the model def is approximate and mig 0038 owns the index.
@@ -228,8 +229,7 @@ cost-owning unit as ambiguous and places nobody through them.
 
 ### directory_region_rule
 
-Curated region-derivation config (mig 0088, generalised from the earlier
-`department_to_region`). Each row
+Curated region-derivation config (mig 0088). Each row
 says "when a user's directory `attribute` matches `match_value`, their region is R",
 so any tenant can key on whichever directory field is region-correlated on *their*
 directory — not just `department`.
@@ -294,19 +294,18 @@ to `instance_attestation` on `instance_id` to learn who and which project.
 ### instance_attestation
 
 Located-or-created by `provision_emit` (MCP) at device setup. Device emit
-authenticates with the OAuth `tokenscope.emit` credential (not the legacy session
-token); the read joiner gates on `attestation_state = 'attested'`.
+authenticates with the OAuth `tokenscope.emit` credential; the read joiner gates on `attestation_state = 'attested'`.
 
 | Column | Type | Notes |
 |---|---|---|
-| `instance_id` | UUID PK | canonical instance (device/enrolment) identifier (renamed from `session_id`, mig 0016) |
+| `instance_id` | UUID PK | canonical instance (device/enrolment) identifier (mig 0016) |
 | `principal_oid` | TEXT NOT NULL | Entra object id of the developer |
 | `principal_email` | TEXT | denormalised for audit display; cleared on purge |
 | `teammate_id` | UUID NOT NULL → teammate | resolved principal |
 | `project_code_hash` | TEXT | hashed canonical project code; **nullable** for `unassigned` rows (mig 0014) |
 | `raw_project_code` | TEXT | audit/display only; never crosses the AI-coach boundary |
 | `tool` | TEXT NOT NULL | `claude-code` / `copilot-cli` / future |
-| `session_token_hash` | TEXT UNIQUE | **vestigial** — legacy session-token bridge auth; now **nullable** (emit auth is OAuth `tokenscope.emit` since the cutover) |
+| `session_token_hash` | TEXT UNIQUE | **vestigial** and **nullable** — nothing authenticates with it; emit auth is OAuth `tokenscope.emit` |
 | `ts_start` | TIMESTAMPTZ NOT NULL = now() | |
 | `ts_expected_end` | TIMESTAMPTZ | idle-window end: renewed by every `/bearer` mint and re-provision; `session-gc` closes the device once both this and last mint + 90d have passed |
 | `ts_actual_end` | TIMESTAMPTZ | set when the device ends (any path); a trigger (mig 0141) revokes its bound `oauth_token` rows in the same transaction |
@@ -377,13 +376,9 @@ stored, single-use via an atomic CAS on `consumed_at`.
 | `expires_at` | TIMESTAMPTZ NOT NULL | ~5-min TTL |
 | `consumed_at` | TIMESTAMPTZ | single-use marker, set atomically on redeem |
 
-> **`setup_token` — DROPPED (mig 0034).** The legacy self-service CLI-enrolment
-> table (mig 0013), minted by the deleted `POST /api/v1/me/setup-token` and
-> redeemed at the deleted `POST /api/v1/setup/exchange`, was removed entirely by
-> the MCP-first OAuth cutover (PR #38). Device emit is now provisioned via
-> `emit_handoff` (above). The OAuth grant tables (`oauth_client`,
-> `oauth_auth_code`, `oauth_token`) carry the read+tag credential; see
-> [Authentication & Security](Authentication-and-Security.md).
+The OAuth grant tables (`oauth_client`, `oauth_auth_code`, `oauth_token`) carry
+the read+tag credential; see
+[Authentication & Security](Authentication-and-Security.md).
 
 ### instance_attestation_health
 
@@ -411,19 +406,24 @@ rate cards / provider_org / provider_enterprise, `spend.ts`, `copilot-pool-bill.
 migrations 0001, 0004, 0009, 0011, 0017, 0020, 0021, 0035, 0036, 0038, 0045, 0046,
 0050, 0053, 0055, 0056, 0063, 0071, 0079, 0080, 0094, 0118, 0120, 0121, 0122,
 0123) is the financial heart of the
-system: the immutable record of what was spent, on what, priced by which card. Token
+system: the record of what was spent, on what, and how it was priced. Token
 usage from the Anthropic Analytics API is ingested in parallel into `actual_spend`
 as an independent truth source.
 
 ### attribution_record
 
-The core ledger — one row per attributed cost event. Rows are frozen on write
-(`is_frozen = true`); re-costing only happens via an authorised admin event.
+The core ledger — one row per attributed cost event. `cost_usd` is set on
+write. Other columns change after write: tagging updates `project_id`,
+`cost_owning_unit_id` and `activity` (`server/utils/tag-session.ts`), an admin
+placement correction updates `org_unit_id` or `cost_owning_unit_id`
+(`server/governance/rehome-placement.ts`, `rehome-spend.ts`), and instance
+confirmation updates identity and dimensions. Each of these bumps
+`ts_recorded`. `is_frozen` is written `true` and enforces nothing.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID | part of the composite PK `(id, ts_event)` — see below; `gen_random_uuid()` keeps `id` effectively unique on its own |
-| `instance_id` | UUID NOT NULL → instance_attestation | the attested instance (renamed from `session_id`, mig 0016) |
+| `instance_id` | UUID NOT NULL → instance_attestation | the attested instance (mig 0016) |
 | `claude_session_id` | TEXT | Claude's own `session.id` — the per-session unit the Activity list's session rows group on and `session_assignment` assigns; nullable; added mig 0016 |
 | `teammate_id` | UUID NOT NULL → teammate | |
 | `project_id` | UUID → project | **nullable** (mig 0021): a project-less row is unallocated spend (untagged, or tagged-only with no project budget). `region_id` / `org_unit_id` still describe the emitting teammate and stay NOT NULL |
@@ -436,14 +436,14 @@ The core ledger — one row per attributed cost event. Rows are frozen on write
 | `tokens` | BIGINT NOT NULL | exact count |
 | `cost_usd` | NUMERIC(14,6) NOT NULL | 6-decimal precision |
 | `credit_qty` | NUMERIC(20,6) | native AI-credit (AIU) operand for the GitHub/Copilot lane (mig 0038) so reconciliation is credit-vs-credit; NULL for Claude rows |
-| `rate_card_id` | UUID | **nullable** (mig 0036): NULL for Copilot rows (priced by an AI-credit constant, not a token `rate_line`); non-null for Claude rows |
+| `rate_card_id` | UUID | **nullable** (mig 0036): set only when a rate card decided the amount. NULL for Copilot rows (priced by an AI-credit constant) and for provider-priced Claude rows (the card only sliced the provider's total) |
 | `rate_card_version` | INTEGER | **nullable** (mig 0036); pins the exact version when a card priced the row |
 | `fidelity_tier` | TEXT NOT NULL | `tier-1` / `tier-2` / `tier-3` |
 | `cost_basis` | TEXT NOT NULL | see below |
 | `ts_event` | TIMESTAMPTZ NOT NULL | when the usage occurred; the partition key and second half of the PK |
 | `ts_recorded` | TIMESTAMPTZ NOT NULL = now() | |
 | `source_run_id` | TEXT | provider-side run id (span/request id; retro claims + Copilot parallel-subagent dedup) |
-| `is_frozen` | BOOL NOT NULL = true | re-cost only via authorised admin event |
+| `is_frozen` | BOOL NOT NULL = true | written `true`, read nowhere; no trigger, CHECK or policy enforces it |
 | `activity` | TEXT | orthogonal activity axis (mig 0020), denormalised from `session_assignment` for within-project activity rollups; nullable |
 | `query_source` | TEXT | Claude's per-event `query_source` (mig 0045), stored RAW — Claude's own token (`repl_main_thread`, `agent:custom`, `compact`, …) and **never** the word `main`; classify with `shared/usage/query-source.ts`; NULL = attr absent / pre-0045 (unknown lane, never assumed to be a conversation) |
 | `identity_state` | TEXT | identity provenance (mig 0057) stamped from the emitting instance's `instance_attestation.identity_state` so surfaces can exclude/label provisional usage; display-only, never gates money; NULL = pre-0057 (treat as `confirmed`) |
@@ -457,7 +457,7 @@ on `ts_event` (mig 0055): a partitioned parent with monthly leaf partitions plus
 `DEFAULT` catch-all, so an insert never fails for a missing partition. This bounds
 per-partition index size, gives partition pruning on time-scoped queries, and makes
 retention a `DETACH`/`DROP` rather than a billion-row `DELETE`. Because the partition
-key must be part of every unique constraint, the PK became composite **`(id, ts_event)`**;
+key must be part of every unique constraint, the PK is composite **`(id, ts_event)`**;
 `id` stays effectively unique on its own via `gen_random_uuid()`, and no table
 FK-references `attribution_record.id`, so the composite key breaks nothing.
 
@@ -487,12 +487,9 @@ the money is right — but those zeros were never prices.
   lanes at all, so any future credit-priced lane inherits the answer with no
   code change.
 - **Positive evidence is required.** An unknown — a reader that never carried the
-  fact, or an empty scope — is not a per-lane price. This was corrected in the
-  r6 fix pass: the previous operand, `bool_or(credit_qty IS NOT NULL)` inverted,
-  answered `true` for **all historical Copilot money**, because `credit_qty` was
-  added by migration 0038 with no backfill and reads NULL on every row written
-  before it. Those sessions rendered the carrier convention's structural zeros as
-  real `$0.00` lane prices — the exact defect this field exists to remove.
+  fact, or an empty scope — is not a per-lane price. `credit_qty` cannot serve
+  as the operand: migration 0038 added it with no backfill, so it reads NULL on
+  every row written before it, Copilot rows included.
 - **Effect on the wire:** when it is `false`, every `by_token_type[].cost_usd`
   and `matrix[].cost_usd` is **NULL** — "not priced per lane", never `0.00`. The
   session's money is stated once, in the top-level `cost_usd`. `cache.savings_usd`
@@ -503,8 +500,8 @@ the money is right — but those zeros were never prices.
   it (an unknown token type, or a card pricing the span at <= 0), also lands on a
   carrier (`server/usage/span-costing.ts`) while still carrying a `rate_card_id`,
   and no per-row marker records that — so such a span still reports `true`.
-  Narrowing it needs a new column. This is strictly smaller than the hole it
-  replaced: "no rate card at all" used to fall into it too, and no longer does.
+  Narrowing it needs a new column. A span with no rate card at all is not in
+  this gap: it reports `false`.
 
 **Idempotency** is the load-bearing constraint here:
 
@@ -512,11 +509,11 @@ the money is right — but those zeros were never prices.
 UNIQUE (instance_id, COALESCE(claude_session_id, ''), ts_event, token_type, model, COALESCE(source_run_id, ''))
 ```
 
-Defined mig 0011, redefined mig 0017 to fold in `claude_session_id` (the
-COALESCE lets distinct Claude sessions on one instance dedup independently while
-keeping a single key for the untagged/null case), and extended mig 0035 to add
-`COALESCE(source_run_id, '')` (the span/request id) for Copilot parallel-subagent
-safety — same-ms chat calls to the same model no longer collide. The read joiner
+Migrations 0011, 0017 (`claude_session_id`) and 0035 (`source_run_id`). The
+`claude_session_id` COALESCE lets distinct Claude sessions on one instance dedup
+independently while keeping a single key for the untagged/null case. The
+`source_run_id` member (the span/request id) keeps same-ms chat calls to the
+same model from colliding, which Copilot parallel subagents produce. The read joiner
 inserts `ON CONFLICT DO NOTHING`, so concurrent or replayed joiner runs can't
 double-count spend.
 
@@ -549,7 +546,7 @@ by the worker, not generated columns.
 | `refresh_at` | TIMESTAMPTZ NOT NULL = now() | |
 
 Constraint: `UNIQUE (scope_type, scope_id, period_start, period_end, tool, model, token_type)`
-(`attribution_aggregate_scope_unique`) — `token_type` joined the key in mig 0045.
+(`attribution_aggregate_scope_unique`; `token_type` from mig 0045).
 The live index also keys on `COALESCE(query_source, '')` (mig 0046), an expression
 the Drizzle def can't render.
 
@@ -623,7 +620,7 @@ The grain-unique index keys on `COALESCE` expressions (sentinel uuid for the
 nullable id dims, `''` for the nullable text dims) — same idiom as
 `spend_rollup_daily`; mig 0136 is the source of truth. Read indexes: `(day)`,
 `(region_id, day)`, `(org_unit_id, day)`, `(teammate_id, day)`. RLS is enabled
-with the 0098-converged admin policy (`platform-admin` —
+with the admin policy of mig 0098 (`platform-admin` —
 never bare `admin`) mirroring `attribution_aggregate`, plus
 `REVOKE ALL FROM PUBLIC` — the reporting endpoints authorize via their
 in-query scope predicates, as on every report read.
@@ -765,47 +762,45 @@ Constraint: `UNIQUE (rate_card_id, unit, model)`
 
 Per-user-per-day actual spend pulled from the Anthropic Analytics API by the
 scheduler-invoked `analytics-poll` worker — a truth source independent of
-whether OTel captured the session. Since #142 the poller writes **one row per
-surface lane**: the API's `product` maps to a `tool` via
-`shared/usage/surface.ts` (`mapProductToTool`), so non-Code Claude surfaces no
-longer collapse into (and inflate) the `claude-code` figure.
+whether OTel captured the session. The poller writes **one row per surface
+lane**: the API's `product` maps to a `tool` via `shared/usage/surface.ts`
+(`mapProductToTool`), so non-Code Claude surfaces stay out of the `claude-code`
+figure.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID PK | |
 | `teammate_id` | UUID NOT NULL → teammate | |
 | `date` | DATE NOT NULL | day grain |
-| `tool` | TEXT NOT NULL | the Claude-family lanes (#142): `claude-code` plus the non-Code surfaces `claude-ai` / `claude-cowork` / `claude-office` / `claude-chrome` / `claude-design` / `claude-slack`, with unknown/unattributable products in the **labelled `claude-other` fallback** (never dropped); also `copilot-cli` for Copilot rows |
+| `tool` | TEXT NOT NULL | the Claude-family lanes: `claude-code` plus the non-Code surfaces `claude-ai` / `claude-cowork` / `claude-office` / `claude-chrome` / `claude-design` / `claude-slack`, with unknown/unattributable products in the **labelled `claude-other` fallback** (never dropped); also `copilot-cli` for Copilot rows |
 | `input_tokens` / `output_tokens` | BIGINT NOT NULL | |
 | `cost_usd` | NUMERIC(14,6) NOT NULL | Anthropic's computed cost |
-| `source` | TEXT NOT NULL = `anthropic-analytics-api` | **per-org form** `anthropic-analytics-api:<externalOrgId>` so a teammate active in multiple reconciled orgs gets one row per org; legacy single-org fallback is the bare value |
-| `category` | TEXT | cost-category on the adapter staging row (mig 0038); NULL = legacy (treated as `model_tokens`) |
+| `source` | TEXT NOT NULL = `anthropic-analytics-api` | **per-org form** `anthropic-analytics-api:<externalOrgId>` so a teammate active in multiple reconciled orgs gets one row per org; the bare value is the single-org fallback |
+| `category` | TEXT | cost-category on the adapter staging row (mig 0038); NULL is treated as `model_tokens` |
 | `chargeback_exempt` | BOOL NOT NULL = false | the **computed governance verdict** (`server/governance/verdict.ts` — the one gateway deciding chargeability from `provider_org` / `provider_enterprise` billing, or the legacy heuristic pre-activation; recomputed for every period by the `governance-recompute` worker's wrapping sweep, newest-first by a billing edit). TRUE = excluded from the chargeback view (`v_finance_bill_chargeback`) but NOT from showback (mig 0072) |
 | `pulled_at` | TIMESTAMPTZ NOT NULL = now() | |
 | `raw_payload` | JSONB | the row as returned, for audit/reprocess (also the source the `provider-transform` worker derives `provider_usage_fact` from) |
 | `region_id` / `org_unit_id` / `cost_owning_unit_id` | UUID → region / org_unit | historical-homing dimension snapshot (mig 0101): stamped at write/replay time and never updated on a later re-poll, so a teammate reorg cannot move a historical day's homing |
 | `dimension_source` | TEXT | `ingest-snapshot` (stamped at write) / `legacy-current-placement` (mig 0101's one-time backfill label for pre-existing rows) |
 | `provider_org_id` | UUID → provider_org | governance key (mig 0103); NULL = governance-unresolved — showback-visible, never chargeable; `ON DELETE SET NULL` |
-| `provider_enterprise_id` | UUID → provider_enterprise | governance key — GitHub billing lives on the enterprise (ADR-0011 D11); `ON DELETE SET NULL` |
+| `provider_enterprise_id` | UUID → provider_enterprise | governance key — GitHub billing lives on the enterprise ([ADR-0011](Design-Decisions.md#adr-0011--provider-governance-is-data-not-configuration) D11); `ON DELETE SET NULL` |
 | `governance_key_status` | TEXT | backfill bookkeeping only (`resolved` / `unresolved`); NULL = not yet attempted |
 | `governance_verdict_source` | TEXT | provenance of the current `chargeback_exempt` value: `legacy-heuristic` / `governance:billed` / `governance:tracked` / `unresolved` |
 
 Constraint: `UNIQUE (teammate_id, date, tool, source)`
 (`actual_spend_teammate_date_tool_source_unique`) — the per-org `source` is what
-keeps multi-org teammates from colliding on this key. The #142 per-surface
-split changed nothing about this key: `tool` was already in it, so the split
-simply yields several rows per (teammate, date, source) instead of one.
+keeps multi-org teammates from colliding on this key. Because `tool` is in the
+key, one (teammate, date, source) holds one row per surface.
 Indexes: `(teammate_id, date)`, `(source, pulled_at)`.
 
 Two views consume this table on the two sides of the §A/§B line
 (see [Data Flow §2](Data-Flow.md#2-the-two-axes--a-and-b)):
 
-- **`v_teammate_usage_daily`** (mig 0073; current definition mig 0101, which
-  reverted mig 0084's non-Code exclusion) — the **complete** §A
+- **`v_teammate_usage_daily`** (mig 0073; current definition mig 0101) — the **complete** §A
   per-(teammate, day, tool) usage truth: `claude-code` **and** the non-Code
   Claude lanes (`claude-ai` … `claude-other`) from `actual_spend`, plus the
   Copilot lanes (`copilot-cli` / `copilot-agent`, mig 0086) from
-  `reconciliation_record`. Worklist safety no longer lives in this view: the
+  `reconciliation_record`. Worklist safety is not this view's job: the
   tools that can never become taggable "unaccounted usage" records — no
   sessions, no OTel — are excluded by the §A reconciliation itself via
   `INGEST_ONLY_USAGE_TOOLS` (`shared/usage/surface.ts`), while staying visible
@@ -821,11 +816,11 @@ Two views consume this table on the two sides of the §A/§B line
   require materialising `v_complete_usage`, whose 4-arm `UNION` with aggregating
   CTEs admits no index for a `MIN`. `security_invoker`, so RLS applies to the
   reader and the floor is scoped to what that caller can see.
-- **`v_finance_bill_chargeback`** (mig 0059, redefined migs 0081 and 0085) — the §B
-  chargeback lane (mig 0085 splits out the Copilot chargeback lane). It always
-  carried `tool` in its grain, so the split flows through unchanged; its consumers
-  (finance/practice rollups, CSV export, the reporting UI) now group by `tool` to
-  render each Claude surface as its own chargeback lane.
+- **`v_finance_bill_chargeback`** (migs 0059, 0081, 0085) — the §B chargeback
+  lane, with the Copilot chargeback lane split out (mig 0085). It carries `tool`
+  in its grain; its consumers (finance/practice rollups, CSV export, the
+  reporting UI) group by `tool` to render each Claude surface as its own
+  chargeback lane.
 - **`v_finance_project_overlay`** (mig 0059, redefined mig 0146) — the chargeable bill
   of `v_finance_bill_chargeback` split per `(teammate, day, tool)` across projects
   by tagged share.
@@ -841,7 +836,7 @@ The signed-delta reconciliation ledger (mig 0038) and the **§A usage truth for
 Copilot**. Grain: provider · enterprise · day · category · scope ·
 teammate-or-org — at most one OPEN row per key, with terminal rows accumulating
 beside it as history (see the index below).
-`attribution_record` stays the immutable OTel truth;
+`attribution_record` keeps its OTel cost as written;
 corrections and provider-sourced additions land here as a signed `delta_usd`,
 and `v_effective_spend` (mig 0039) = attribution + applied deltas. Copilot lines
 are always `indicative` — this table is never a chargeback figure (that is
@@ -896,7 +891,6 @@ set** — `loc_added_sum`, `loc_deleted_sum`, `loc_suggested_to_add_sum`,
 `totals_by_language_model[]` and `totals_by_language_feature[]`. All are
 nullish with no defaults and a `.catch` guard, so a shape surprise degrades that
 one dimension to absent and can never cost the record its `ai_credits_used`.
-Declaring them changed nothing at rest.
 
 `server/usage/copilot-engagement.ts` reads the engagement set **by key at
 request time** — a derived read, not a second store — for the My-usage
@@ -957,7 +951,7 @@ Discriminate on `provider` before summing `cost_usd`.
 | `date` | DATE NOT NULL | day grain |
 | `tool` | TEXT NOT NULL | surface lane (`claude-code`, `claude-ai`…, `copilot-cli`, `copilot-agent`) |
 | `model` | TEXT | the provider-reported model; NULL on grains the provider reports without one (all github money rows) |
-| `cost_type` | TEXT | NULL = the **token** row (four token lanes + `requests` + `web_search_requests`, never cost); non-NULL = a **cost** row (`tokens` / `web_search` / `code_execution` / …, carries `cost_usd`, never tokens). Pre-#226 payloads are stamped `tokens` by the transform |
+| `cost_type` | TEXT | NULL = the **token** row (four token lanes + `requests` + `web_search_requests`, never cost); non-NULL = a **cost** row (`tokens` / `web_search` / `code_execution` / …, carries `cost_usd`, never tokens). Payloads captured without a cost type are stamped `tokens` by the transform |
 | `context_window` | TEXT | the provider-reported context-window band, verbatim (`0-200k` / `200k+` today — the vocabulary is the provider's to extend: no enum, no CHECK on values, only a blank-shape CHECK). A **grain dimension** on both token and cost rows since mig 0127 (`group_by` on both Anthropic reports). NULL = the capture predates collection (history older than the trailing 30-day poll window can never heal — raw stores only what `group_by` asked) or the wire has no such dimension (all github rows). Read surfaces type NULL as a reason-typed un-banded remainder, never as a band |
 | `region_id` / `org_unit_id` / `cost_owning_unit_id` | UUID → region / org_unit | historical-homing snapshot, stamped at INSERT and never refreshed (omitted from the upsert `SET` list, same discipline as `actual_spend`); NULL on unresolved rows |
 | `dimension_source` | TEXT NOT NULL = `ingest-snapshot` | how the homing was derived; NOT NULL even when the three ids are NULL |
@@ -971,8 +965,8 @@ Discriminate on `provider` before summing `cost_usd`.
 
 Constraints and indexes:
 
-- **Grain unique index** (`provider_usage_fact_grain_uidx`, mig 0118; replaced
-  by mig 0127 to admit the `context_window` member) — the NULL-safe expression
+- **Grain unique index** (`provider_usage_fact_grain_uidx`, mig 0118; current
+  form mig 0127, with the `context_window` member) — the NULL-safe expression
   key the upsert conflicts on:
 
   ```sql
@@ -1030,7 +1024,7 @@ is the unit of the needs-tagging worklist: one row, one tagging decision.
 |---|---|---|
 | `id` | UUID PK | |
 | `teammate_id` | UUID NOT NULL → teammate | |
-| `region_id` / `org_unit_id` | UUID → region / org_unit | denormalised from the teammate for RLS/rollups; currently refreshed on recompute (issue #44 tracks freezing them) |
+| `region_id` / `org_unit_id` | UUID → region / org_unit | stamped from the teammate's placement at first write; recompute refreshes only the money and tokens. An admin placement correction (`rehome-placement.ts`) can update `org_unit_id` |
 | `day` | DATE NOT NULL | the API's finest grain |
 | `tool` | TEXT NOT NULL | |
 | `cost_usd` | NUMERIC(14,6) NOT NULL | the reconciled delta, ≥ 0; recomputed every run |
@@ -1119,7 +1113,7 @@ them, and the budgets that govern spend.
 ### reporting_snapshot
 
 What a calendar month READ when it was reported, and who recorded it. One row
-per month, once recorded (mig 0128, replacing `finance_period`).
+per month, once recorded (mig 0128).
 
 | column | type | notes |
 |---|---|---|
@@ -1144,8 +1138,7 @@ difference makes the two incomparable and the arithmetic is withheld rather than
 presenting "we changed how we count" as money moving.
 
 Recording serialises on the `reportingSnapshot` advisory lock (namespace
-ordinal 4, deliberately unchanged across the rename so a rolling deploy contends
-on the same lock space) plus `SELECT … FOR UPDATE`.
+ordinal 4) plus `SELECT … FOR UPDATE`.
 
 ### project
 
@@ -1158,8 +1151,8 @@ path so a client-identifying code never crosses the Foundry boundary.
 | `id` | UUID PK | |
 | `code` | TEXT NOT NULL UNIQUE | canonical tag |
 | `code_hash` | TEXT NOT NULL UNIQUE | SHA-256 of code |
-| `display_name` | TEXT NOT NULL | safe to show |
-| `client_facing_name` | TEXT | the real client name; never sent to AI coach |
+| `display_name` | TEXT NOT NULL | safe to show; 1..200 chars, no control chars (C0, DEL, C1; mig 0155) |
+| `client_facing_name` | TEXT | the real client name; never sent to AI coach; 1..200 chars, no control chars (mig 0155) |
 | `type` | TEXT NOT NULL | `billable` / `pursuit` / `internal` |
 | `region_id` | UUID NOT NULL → region | |
 | `cost_owning_unit_id` | UUID NOT NULL → org_unit | which CoU owns this code's P&L |
@@ -1174,6 +1167,18 @@ path so a client-identifying code never crosses the Foundry boundary.
 
 Constraint: partial unique `UNIQUE (fin_system, fin_system_id) WHERE fin_system IS NOT NULL`
 (`project_fin_system_id_unique`) — applies only to synced projects.
+
+Constraints (mig 0155, `NOT VALID`: enforced on every new write, existing rows
+not validated): `project_display_name_bounded` and
+`project_client_facing_name_bounded` — 1..200 characters, no control
+character (C0, DEL or C1), matching the admin write validators
+(`shared/schemas/display-text.ts`; both count code points). `display_name` is
+returned to every member's agent by the MCP `list_my_projects` tool;
+`client_facing_name` never leaves the app and is bounded for UI safety.
+`activity_type.label` carries the same rule at 1..64
+(`activity_type_label_bounded`) and reaches agents through
+`list_activity_types`. Both MCP read paths also pass these values through
+`cleanDisplayText`, so a row written before 0155 is bounded on the way out.
 
 ### repo_project_map
 
@@ -1221,7 +1226,7 @@ Carries the provenance triple. Every allocation row references an
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID PK | |
-| `scope_type` | TEXT NOT NULL | `teammate` / `project` / `cou` / `region` — CHECKed to that domain (mig 0131, `NOT VALID`). `cou` is what the Business-Unit epic's S6 writes |
+| `scope_type` | TEXT NOT NULL | `teammate` / `project` / `cou` / `region` — CHECKed to that domain (mig 0131, `NOT VALID`). `cou` is in the CHECK domain; nothing writes it today |
 | `scope_id` | UUID NOT NULL | no FK: the column is shared across scope axes |
 | `teammate_id` | UUID → teammate | per-dev cap (mig 0008); NULL = shared-pool baseline. CHECKed to `project`/`cou` rows |
 | `budget_usd` | NUMERIC(14,2) NOT NULL | |
@@ -1270,10 +1275,10 @@ Constraint: `EXCLUDE USING gist (scope_type WITH =, scope_id WITH =, limit_kind 
 
 ### client_connection_setting
 
-The admin **Client connection** policy (mig 0151, tightened by 0153): what the
-connect dialog tells developers to install for this deployment. One row
+The admin **Client connection** policy (migs 0151, 0153): what the connect
+dialog tells developers to install for this deployment. One row
 (`key = 'policy'`, pinned by CHECK); **an absent row means the defaults** in
-`shared/connect.ts`, which reproduce the pre-policy dialog exactly.
+`shared/connect.ts`.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -1281,7 +1286,7 @@ connect dialog tells developers to install for this deployment. One row
 | `marketplace_ref` | TEXT | optional pinned ref (Claude only; the Copilot CLI cannot pin) |
 | `marketplace_name` | TEXT | the marketplace's name in `<plugin>@<marketplace>` |
 | `claude_plugin` · `copilot_plugin` | TEXT | plugin names, `[a-z0-9-]{1,64}` |
-| `enabled_clients` | TEXT[] | non-empty subset of `claude-code`, `copilot-cli`; a disabled client's connect buttons are hidden |
+| `enabled_clients` | TEXT[] | non-empty subset of `claude-code`, `copilot-cli`; a disabled client's connect buttons are hidden. `claude-code` covers both Claude guides, **Claude Desktop** and **Claude Code CLI**: one tool, two installs |
 | `support_url` | TEXT | optional `https://` link shown in the dialog |
 | `updated_by` · `updated_at` | UUID → teammate · TIMESTAMPTZ | last writer; every write is also an `audit_event` |
 
@@ -1354,6 +1359,7 @@ tables (`allocation`, `tier_assignment`, `project_assignment`,
 | `payload` | JSONB NOT NULL | before / after / context |
 | `ip_address` | INET | |
 | `user_agent` | TEXT | |
+| `impersonator_oid` | TEXT | mig 0154. Entra OID of the admin acting through persona override (sandbox/local only); the `actor_*` columns then name the persona. Stamped by `recordAuditEvent` from the transaction-local GUC `app.impersonator_oid`, which `withRequestRls` sets from the session. Callers never pass it. NULL = no override was active |
 | `ts_recorded` | TIMESTAMPTZ NOT NULL = now() | |
 
 **Append-only enforcement** is a trigger, not a convention. A
@@ -1440,16 +1446,14 @@ NULL OR expires_at > now())`, checked at READ time (no worker, no expiry audit
 event); an expired-but-not-revoked row stays LISTED until an admin revokes it
 or a re-grant supersedes it with its own audited revoke
 (`context.reason = 'expired-superseded'`). `granted_by = NULL` means the row
-came from the migration's backfill (system), not an admin action — the
-backfill preserves every teammate's pre-migration access exactly, from
-(role × the retired mode × active `cou_owner` ownership). Enforcement lives in
+came from the migration's backfill (system), not an admin action. Enforcement lives in
 `shared/auth/report-visibility.ts` + `server/auth/report-scope.ts`.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID PK | |
 | `teammate_id` | UUID NOT NULL → teammate | |
-| `permission` | TEXT NOT NULL | `permission IN ('operational','finance','revoke-all')` CHECK (mig 0129 for the two positive grants, widened by mig 0130 for the `revoke-all` deny), pinned to `REPORT_ACCESS_GRANT_VALUES` |
+| `permission` | TEXT NOT NULL | `permission IN ('operational','finance','revoke-all')` CHECK (mig 0129 for the two positive grants, mig 0130 for `revoke-all`), pinned to `REPORT_ACCESS_GRANT_VALUES` |
 | `granted_by` | UUID → teammate | NULL = system (migration backfill) |
 | `granted_at` | TIMESTAMPTZ NOT NULL = now() | |
 | `expires_at` | TIMESTAMPTZ | optional; NULL = open-ended |
@@ -1506,11 +1510,10 @@ PARTITION the cards exactly, via the one shared classifier
 | `countNoAllocation` | no allocation at all (utilisation `null`) |
 | `asOfDate` | MAX(`ts_event`) across the visible cards |
 
-`countNotStarted` was split out of `countOnTrack`: "$0.00 of $500.00 · 0% ·
-On track" reads as a data failure to the one person who can act on it, when the
-truth is "nobody homed here emitted this period". The word is **`not-started`**
-everywhere — `useRagState.ts` and both prototypes already use it, and a second
-name for one fact is the divergence this model exists to prevent. Renderers key
+`countNotStarted` is separate from `countOnTrack`: "$0.00 of $500.00 · 0% ·
+On track" would read as a data failure to the one person who can act on it, when
+the truth is "nobody homed here emitted this period". The word is
+**`not-started`** everywhere, `useRagState.ts` included: one name for one fact. Renderers key
 `Record<CostCentreBudgetState, …>` maps off the union, so adding a state is a
 compile error until every surface answers for it.
 
@@ -1555,14 +1558,16 @@ plus the shared scope predicates) — see
 The schema also carries row-level-security policies, inventoried below. They
 match on session variables the request transaction sets (`app.user_region_id`,
 `app.user_org_path` as an LTREE, `app.user_role`), but they do not execute: the
-app connects as the table owner, and owners bypass RLS.
+app connects as the table owner, and owners bypass RLS ([ADR-0013](Design-Decisions.md#adr-0013--authorization-is-enforced-in-the-application)). The request
+lane maps `platform-admin` onto the scope value `global-finops`, and every
+worker connection carries `app.user_role=global-finops` (`server/db/worker-db.ts`).
 
 Tables with policies defined:
 
 - `attribution_record` — `attribution_record_region_scope` and
   `attribution_record_org_scope` (the org policy matches on `org_unit.path <@
-  app.user_org_path`); both fall through for `platform-admin`
-  (mig 0098 removed the region-scoped `admin` from that arm).
+  app.user_org_path`); both fall through for `platform-admin` only, not the
+  region-scoped `admin` (mig 0098).
 - `instance_attestation` — `instance_attestation_region_scope`.
 - `project` — `project_region_scope`.
 - `attribution_aggregate`, `limit_policy`, `tier_assignment`, `spill_record`,
@@ -1572,14 +1577,11 @@ Tables with policies defined:
   (mig 0002) gives admin / platform-admin full access. `allocation_manager_scope`
   (mig 0007) adds manager visibility: a `FOR ALL` policy where an allocation is
   in scope iff it is project-scoped *and* the project's cost-owning-unit path is
-  within the caller's org subtree. This was added because the allocator editor
-  admits the `manager` role at the app layer, which made the app gate *less*
-  restrictive than RLS — a violation of the "app checks must be at least as
-  restrictive as RLS" invariant. It mirrors the app-side predicate in
-  `server/auth/allocation-scope.ts` one-for-one. It takes runtime effect once
-  the app connects under a non-owner DB role / `FORCE ROW LEVEL SECURITY`; until
-  then the app-level predicate is the live gate and this keeps the two in
-  lockstep.
+  within the caller's org subtree. It exists because the allocator editor
+  admits the `manager` role at the app layer, and app checks must be at least as
+  restrictive as RLS. It mirrors the app-side predicate in
+  `server/auth/allocation-scope.ts` one-for-one. Like every policy here it does
+  not execute; the app-level predicate is the live gate.
 
 ### The attestation-state CHECK
 
@@ -1606,12 +1608,10 @@ will not build without them:
 
 - `burst_request`, `coaching_nudge`, and `fin_project_staging` were designed
   but are **not built** — no schema file and no migration creates them.
-- The design doc describes monthly `RANGE` partitioning for `audit_event` (from
-  day one) and `attribution_record` (deferred). As-built these landed the other
-  way round: **`attribution_record` is monthly `RANGE`-partitioned on `ts_event`**
-  (mig 0055 — a partitioned parent with monthly leaves plus a `DEFAULT` catch-all;
-  its PK became composite `(id, ts_event)`), while **`audit_event` stays a plain
-  table** (created in mig 0001, never partitioned). See
+- **`attribution_record` is monthly `RANGE`-partitioned on `ts_event`** (mig
+  0055 — a partitioned parent with monthly leaves plus a `DEFAULT` catch-all;
+  its PK is composite `(id, ts_event)`), while **`audit_event` is a plain
+  table** (mig 0001). The design doc has these the other way round. See
   [attribution_record](#attribution_record).
 - Several index names referenced in the design doc as inline comments are
   realised under the concrete names given above (e.g.

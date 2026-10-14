@@ -55,6 +55,7 @@ import { isMainModule } from '../scripts/is-main.mjs'
 import { resolveRepoProjectCode, computeCodeHash, readGlobalEnrolment, writeRepoTag, resolveRepoRoot } from '../scripts/tag-repo.mjs'
 import { reconcilePluginPaths, parseHelperCommand } from '../scripts/env-builder.mjs'
 import { assertConfinedPath } from '../scripts/argv-guard.mjs'
+import { claudeSettingsPath } from '../scripts/claude-config-dir.mjs'
 import {
   readSettingsEnv,
   readEmitSentinel,
@@ -379,10 +380,12 @@ const EXEC_STEERING_KEYS = [
  * always be found by name by the children it spawns — that is the one entry we
  * can be certain about, because it is where we ourselves came from.
  */
-function fallbackPath() {
-  const own = dirname(process.execPath)
-  const base = ['/usr/local/bin', '/usr/bin', '/bin', '/usr/local/sbin', '/usr/sbin', '/sbin']
-  return [own, ...base.filter((p) => p !== own)].join(':')
+export function fallbackPath(platform = process.platform, own = dirname(process.execPath)) {
+  const base =
+    platform === 'win32'
+      ? ['C:\\Windows\\System32', 'C:\\Windows']
+      : ['/usr/local/bin', '/usr/bin', '/bin', '/usr/local/sbin', '/usr/sbin', '/sbin']
+  return [own, ...base.filter((p) => p !== own)].join(platform === 'win32' ? ';' : ':')
 }
 
 /**
@@ -507,7 +510,7 @@ export function hookStateDir(cwd = process.cwd()) {
  * settings env, so it must not choose the list.
  */
 export function selfHealPluginPaths({
-  settingsPath = join(homedir(), '.claude', 'settings.json'),
+  settingsPath = claudeSettingsPath({ home: homedir() }),
   scriptsDir = resolve(HOOK_DIR, '..', 'scripts'),
   storeDir = trustedStateDir(),
   platform = process.platform,
@@ -791,7 +794,7 @@ function projectBillabilityWarning(result) {
  * removed. Returns a message string or null.
  */
 export function migrateOffForwarderEndpoint({
-  settingsPath = join(homedir(), '.claude', 'settings.json'),
+  settingsPath = claudeSettingsPath({ home: homedir() }),
   dir = hookStateDir(),
   repoSettingsPath = null,
 } = {}) {

@@ -46,8 +46,11 @@ export interface PlacementStore {
   /** Create a REAL teammate from a provider-attested bill email (entra_oid='bill:'||uuid),
    *  homed to orgUnitId. Returns the new id. region_id is set by the trigger. */
   createBillTeammate(args: { email: string; displayName: string | null; orgUnitId: string }): Promise<string>
-  /** Re-home an existing teammate to orgUnitId (region_id follows via the trigger). */
-  homeTeammate(teammateId: string, orgUnitId: string): Promise<void>
+  /**
+   * Re-home an existing teammate to orgUnitId (region_id follows via the trigger),
+   * re-asserting rehome-safety under the teammate lock. Returns whether it moved.
+   */
+  homeTeammate(teammateId: string, orgUnitId: string): Promise<boolean>
   /**
    * Re-home ONLY if every precondition still holds AT WRITE TIME: the teammate is
    * still safe to move without the revoke cascade (rehome-safety.ts), is still in
@@ -295,8 +298,7 @@ export async function provisionAndPlace(emailRaw: string, deps: PlacementDeps): 
     // (findTeammateByEmail.rehomeSafe). A teammate on a real node was deliberately placed;
     // a teammate with a live session must go through the admin region-PATCH revoke cascade.
     if (existing.onUnplaced && existing.rehomeSafe) {
-      await store.homeTeammate(teammateId, orgUnitId)
-      homed = true
+      homed = await store.homeTeammate(teammateId, orgUnitId)
     }
   }
 

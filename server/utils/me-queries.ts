@@ -17,6 +17,7 @@
  * moved here.
  */
 import { sql } from 'drizzle-orm'
+import { ACTIVITY_LABEL_MAX, PROJECT_NAME_MAX, cleanDisplayText } from '../../shared/schemas/display-text'
 import { splitBounds, type RollupGate } from '../usage/rollup-gate'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { activeProjectPredicate, endedProjectExpr } from '../db/project-predicates'
@@ -404,7 +405,9 @@ export async function getMyUsage(
     total_quota_usd: totalQuotaUsd.toFixed(2),
     buckets: [...rows].map((r) => ({
       project_code: r.project_code,
-      display_name: r.display_name,
+      // Reaches every member's agent (MCP my_usage): bounded on the way out for
+      // rows written before mig 0155's NOT VALID constraints.
+      display_name: r.display_name == null ? r.display_name : cleanDisplayText(r.display_name, PROJECT_NAME_MAX),
       cost_usd: Number(r.cost_usd).toFixed(2),
       tokens: Number(r.tokens),
       allocation_total_usd: Number(r.allocation_total_usd).toFixed(2),
@@ -655,12 +658,16 @@ export async function getUnallocatedSummary(
       }
     } else {
       taggedCost += cost
-      const acc = byActivity.get(r.activity) ?? { cost: 0, tokens: BigInt(0), sessions: 0, tools: new Set<string>() }
+      // Reaches the agent (MCP my_usage tagged_spend): clean before keying, so a
+      // legacy control-bearing label is bounded and labels that clean to the same
+      // text merge their totals.
+      const label = cleanDisplayText(r.activity, ACTIVITY_LABEL_MAX) || '(unlabelled)'
+      const acc = byActivity.get(label) ?? { cost: 0, tokens: BigInt(0), sessions: 0, tools: new Set<string>() }
       acc.cost += cost
       acc.tokens += BigInt(r.tokens)
       acc.sessions += items
       for (const t of Array.isArray(r.tools) ? r.tools : []) acc.tools.add(t)
-      byActivity.set(r.activity, acc)
+      byActivity.set(label, acc)
     }
   }
   const taggedSpend: TaggedSpend[] = [...byActivity.entries()]
@@ -844,7 +851,9 @@ export async function getMyProjects(tx: Tx, teammateId: string): Promise<MyProje
       AND ${activeProjectPredicate('p')}
     ORDER BY p.code
   `)
-  return [...rows]
+  // display_name reaches every member's agent (MCP list_my_projects); bound it on
+  // the way out too, for rows written before mig 0155's NOT VALID constraints.
+  return [...rows].map((r) => ({ ...r, display_name: cleanDisplayText(r.display_name, PROJECT_NAME_MAX) }))
 }
 
 // ── resolve a repo's .tokenscope code → a member budget ─────────────────────
@@ -896,7 +905,9 @@ export async function resolveRepoProject(
       AND ${activeProjectPredicate('p')}
     LIMIT 1
   `)
-  return [...rows][0] ?? null
+  const row = [...rows][0]
+  // Returned by the MCP resolve_repo_project tool: bounded like getMyProjects.
+  return row ? { ...row, display_name: cleanDisplayText(row.display_name, PROJECT_NAME_MAX) } : null
 }
 
 // ── activity types ─────────────────────────────────────────────────────────
@@ -962,14 +973,23 @@ export async function getActivityTypes(
 
   const seen = new Set<string>()
   const out: ActivityType[] = []
-  for (const r of mineRows) {
+  // Both sources reach the agent (MCP list_activity_types): the caller's own
+  // free-form tags (session_assignment.activity, which predate any input bound)
+  // and the admin vocabulary. Clean both before de-duplicating; drop what
+  // cleans to nothing.
+  for (const raw of mineRows) {
+    const r = { label: cleanDisplayText(raw.label, ACTIVITY_LABEL_MAX) }
+    if (!r.label) continue
     const key = r.label.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
     out.push({ label: r.label, is_standard: stdByLower.has(key), is_mine: true })
   }
   for (const r of stdRows) {
-    const display = displayLabel(r.label)
+    // Admin-authored and shown to every member's agent: bounded on the way out
+    // (rows before mig 0155 are not covered by its NOT VALID constraint).
+    const display = cleanDisplayText(displayLabel(r.label), ACTIVITY_LABEL_MAX)
+    if (!display) continue
     const key = display.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)

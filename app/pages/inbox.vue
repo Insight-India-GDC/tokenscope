@@ -149,6 +149,7 @@ function categoryBadgeLabel(cat: string): string {
   if (cat === 'untagged-backlog') return 'Untagged'
   if (cat === 'structural-conflict') return 'Structural'
   if (cat === 'connector-health') return 'Connector'
+  if (cat === 'over-emission-escalated') return 'Over-emission'
   return cat
 }
 

@@ -21,6 +21,11 @@
  * same bytes, and the card would report "no data" for "we could not find out".
  *
  * RBAC: admin / platform-admin (the same gate as the snapshot). Read-only.
+ * The drift section is platform-admin only: v_cost_drift has no region_id, so
+ * a region admin cannot be clamped to their own region there. For a region
+ * admin the drift query never runs; `costDrift` is null, `reads` carries no
+ * `costDrift` entry, and `costDriftScopedOut` states why. `costingRungs` stays
+ * region-clamped as before.
  */
 import { defineEventHandler } from 'h3'
 import { sql } from 'drizzle-orm'
@@ -40,6 +45,8 @@ export default defineEventHandler(async (event) => {
   // read's zero shape for existing consumers; THIS is the only thing that
   // separates that zero from a genuine finding.
   let driftRead: ReadAvailability = { available: true }
+  // v_cost_drift has no region_id, so platform-admin is the only clamp.
+  const driftVisible = session.role === 'platform-admin'
   let rungsRead: ReadAvailability = { available: true }
 
   // ── Cost drift (our rate-card estimate vs the provider, migs 0045/0091) ──
@@ -129,65 +136,67 @@ export default defineEventHandler(async (event) => {
     rateCardPct: null,
     fallbackModels: [],
   }
-  try {
-    const driftRows = await withRequestRls(event, (tx) =>
-      tx.execute<{
-        spans: string
-        provider_spans: string
-        rate_card_spans: string
-        mean_abs_pct: string | null
-        span_key: string | null
-        model: string | null
-        rate_card_cost_usd: string | null
-        law_cost_usd: string | null
-        drift_usd: string | null
-        priced_by: string | null
-      }>(sql`
-        WITH windowed AS (
-          SELECT * FROM v_cost_drift
-          WHERE ts_event >= ${windowEnd}::timestamptz - interval '7 days' AND law_cost_usd > 0
-        ),
-        worst AS (
-          SELECT * FROM windowed ORDER BY ABS(drift_usd) DESC LIMIT 1
-        )
-        SELECT
-          (SELECT COUNT(*) FROM windowed)::text AS spans,
-          (SELECT COUNT(*) FROM windowed WHERE priced_by <> 'rate-card')::text AS provider_spans,
-          (SELECT COUNT(*) FROM windowed WHERE priced_by = 'rate-card')::text AS rate_card_spans,
-          (SELECT AVG(ABS(drift_usd) / law_cost_usd) * 100 FROM windowed)::text AS mean_abs_pct,
-          w.span_key, w.model,
-          w.rate_card_cost_usd::text AS rate_card_cost_usd,
-          w.law_cost_usd::text AS law_cost_usd,
-          w.drift_usd::text AS drift_usd,
-          w.priced_by
-        FROM (SELECT 1) one
-        LEFT JOIN worst w ON TRUE
-      `),
-    )
-    const r = [...driftRows][0]
-    const spans = Number(r?.spans ?? 0)
-    costDrift = {
-      spansCompared: spans,
-      meanAbsDriftPct:
-        r?.mean_abs_pct != null ? Number(Number(r.mean_abs_pct).toFixed(2)) : null,
-      providerPricedSpans: Number(r?.provider_spans ?? 0),
-      rateCardPricedSpans: Number(r?.rate_card_spans ?? 0),
-      worstSpan:
-        spans > 0 && r?.span_key != null
-          ? {
-              spanKey: r.span_key,
-              model: r.model ?? 'unknown',
-              rateCardCostUsd: r.rate_card_cost_usd ?? '0',
-              lawCostUsd: r.law_cost_usd ?? '0',
-              driftUsd: r.drift_usd ?? '0',
-              pricedBy: r.priced_by ?? 'unknown',
-            }
-          : null,
+  if (driftVisible) {
+    try {
+      const driftRows = await withRequestRls(event, (tx) =>
+        tx.execute<{
+          spans: string
+          provider_spans: string
+          rate_card_spans: string
+          mean_abs_pct: string | null
+          span_key: string | null
+          model: string | null
+          rate_card_cost_usd: string | null
+          law_cost_usd: string | null
+          drift_usd: string | null
+          priced_by: string | null
+        }>(sql`
+          WITH windowed AS (
+            SELECT * FROM v_cost_drift
+            WHERE ts_event >= ${windowEnd}::timestamptz - interval '7 days' AND law_cost_usd > 0
+          ),
+          worst AS (
+            SELECT * FROM windowed ORDER BY ABS(drift_usd) DESC LIMIT 1
+          )
+          SELECT
+            (SELECT COUNT(*) FROM windowed)::text AS spans,
+            (SELECT COUNT(*) FROM windowed WHERE priced_by <> 'rate-card')::text AS provider_spans,
+            (SELECT COUNT(*) FROM windowed WHERE priced_by = 'rate-card')::text AS rate_card_spans,
+            (SELECT AVG(ABS(drift_usd) / law_cost_usd) * 100 FROM windowed)::text AS mean_abs_pct,
+            w.span_key, w.model,
+            w.rate_card_cost_usd::text AS rate_card_cost_usd,
+            w.law_cost_usd::text AS law_cost_usd,
+            w.drift_usd::text AS drift_usd,
+            w.priced_by
+          FROM (SELECT 1) one
+          LEFT JOIN worst w ON TRUE
+        `),
+      )
+      const r = [...driftRows][0]
+      const spans = Number(r?.spans ?? 0)
+      costDrift = {
+        spansCompared: spans,
+        meanAbsDriftPct:
+          r?.mean_abs_pct != null ? Number(Number(r.mean_abs_pct).toFixed(2)) : null,
+        providerPricedSpans: Number(r?.provider_spans ?? 0),
+        rateCardPricedSpans: Number(r?.rate_card_spans ?? 0),
+        worstSpan:
+          spans > 0 && r?.span_key != null
+            ? {
+                spanKey: r.span_key,
+                model: r.model ?? 'unknown',
+                rateCardCostUsd: r.rate_card_cost_usd ?? '0',
+                lawCostUsd: r.law_cost_usd ?? '0',
+                driftUsd: r.drift_usd ?? '0',
+                pricedBy: r.priced_by ?? 'unknown',
+              }
+            : null,
+      }
+    } catch (err) {
+      // Non-fatal — pre-0045 DBs have no view. costDrift keeps its zero shape,
+      // and reads.costDrift says the shape is a failure, not a finding.
+      driftRead = readUnavailable(err, 'diagnostics:cost-drift')
     }
-  } catch (err) {
-    // Non-fatal — pre-0045 DBs have no view. costDrift keeps its zero shape,
-    // and reads.costDrift says the shape is a failure, not a finding.
-    driftRead = readUnavailable(err, 'diagnostics:cost-drift')
   }
 
   try {
@@ -294,5 +303,16 @@ export default defineEventHandler(async (event) => {
     rungsRead = readUnavailable(err, 'diagnostics:costing-rungs')
   }
 
+  if (!driftVisible) {
+    return {
+      costDrift: null,
+      costDriftScopedOut: {
+        reason: 'platform-admin-only' as const,
+        detail: 'Cost drift is estate-wide (v_cost_drift has no region), so only platform-admin can read it.',
+      },
+      costingRungs,
+      reads: { costingRungs: rungsRead },
+    }
+  }
   return { costDrift, costingRungs, reads: { costDrift: driftRead, costingRungs: rungsRead } }
 })

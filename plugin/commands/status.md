@@ -63,6 +63,20 @@ words (no "emit", "bearer" or "OAuth" in what you say):
 
 Also:
 
+- **Claude app (`desktop_env`)**: present only in a Claude app (Desktop)
+  session. The app replaces the settings file's device labels, so its sessions
+  are attributed only when the login environment carries this device too.
+  `desktop_env.verdict` `ok` adds nothing to say. `missing` or `mismatch` means
+  this session's usage arrives but cannot be linked to them: even when the rest
+  is green, say so in plain words and give `desktop_env.fix`. `next-login`
+  (Linux) means setup is done but this session started before it took effect:
+  give `desktop_env.fix` (log out and back in), and do NOT tell them to run
+  setup again. `duplicate` (Linux) means the session carries an older device
+  label too: give `desktop_env.fix` (restart the computer), not setup.
+- **Which install**: `settings_file` is the settings file this report checked.
+  Mention it when it is not `~/.claude/settings.json`. If `config_dir_refused`
+  is present, quote it: CLAUDE_CONFIG_DIR was set but not trusted, so the
+  report is about `~/.claude` instead.
 - **Last recorded failure**: if `last_failure` is non-null, surface it (HTTP
   `last_failure.http_status`: `last_failure.message` at `last_failure.ts`). Even
   if the live probe now succeeds, a recent sentinel means emission flapped.

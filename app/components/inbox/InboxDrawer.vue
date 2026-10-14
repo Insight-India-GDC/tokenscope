@@ -22,6 +22,7 @@ import DrawerBodyVelocity from './DrawerBodyVelocity.vue'
 import DrawerBodySyncConflict from './DrawerBodySyncConflict.vue'
 import DrawerBodyUntagged from './DrawerBodyUntagged.vue'
 import DrawerBodyPersonalSubscription from './DrawerBodyPersonalSubscription.vue'
+import DrawerBodyOverEmission from './DrawerBodyOverEmission.vue'
 import { variantForCategory, type InboxItem } from './types'
 
 const props = defineProps<{
@@ -94,12 +95,15 @@ const severityBadgeKind = computed<
         </NuxtLink>
       </div>
     </header>
-    <div class="flex-1 overflow-y-auto px-6 py-5">
+    <!-- Keyed by item: selecting another item of the same kind remounts the body,
+         so no body can keep showing the first item's figures. -->
+    <div :key="item.id" class="flex-1 overflow-y-auto px-6 py-5" data-testid="drawer-body">
       <DrawerBodyOverBudget v-if="variant === 'over-budget'" :body="item.body" />
       <DrawerBodyVelocity v-else-if="variant === 'velocity'" :body="item.body" />
       <DrawerBodySyncConflict v-else-if="variant === 'sync-conflict'" :body="item.body" />
       <DrawerBodyUntagged v-else-if="variant === 'untagged'" :body="item.body" />
       <DrawerBodyPersonalSubscription v-else-if="variant === 'personal-subscription'" :body="item.body" />
+      <DrawerBodyOverEmission v-else-if="variant === 'over-emission'" :body="item.body" />
       <div v-else class="text-sm text-carbon-2 leading-relaxed">
         Details for this category aren't laid out yet. Use the
         actions below to acknowledge, resolve, or dismiss.

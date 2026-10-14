@@ -182,6 +182,31 @@ describe('require-front-door middleware', () => {
   })
 
   // ── AZURE_FRONT_DOOR_REQUIRED truth table (code-half only) ─────────
+  describe('/api/health exemption compares the ROUTED path, not a normalised one', () => {
+    beforeEach(() => {
+      process.env.AZURE_FRONT_DOOR_ID = FDID
+    })
+
+    it.each(['/api/health', '/api/health?probe=live'])('%s with no header stays exempt', async (path) => {
+      const result = await invoke(makeEvent({ path }))
+      expect(result.ok).toBe(true)
+    })
+
+    it.each([
+      '/api/v1/mcp/x/../../../health',
+      '/api/v1/mcp/x/%2e%2e/%2e%2e/%2e%2e/health',
+      '/api/v1/mcp/x/%2E%2E/%2E%2E/%2E%2E/health',
+      '/api/v1/mcp/x/.%2e/%2e./../health',
+      '/api/health/../v1/x',
+      '/api/health/%2e%2e/v1/x',
+    ])('%s with no header is NOT exempt (403)', async (path) => {
+      const result = await invoke(makeEvent({ path }))
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.err.statusCode).toBe(403)
+    })
+  })
+
   describe('AZURE_FRONT_DOOR_REQUIRED', () => {
     it('REQUIRED unset + ID empty → allow (the existing three-phase no-op, unchanged)', async () => {
       // AZURE_FRONT_DOOR_ID already deleted in the outer beforeEach.

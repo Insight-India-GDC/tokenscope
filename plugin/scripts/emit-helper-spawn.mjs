@@ -55,6 +55,17 @@ export function windowsPowerShellPath({ env = process.env, exists = existsSync }
 }
 
 /**
+ * Absolute path of `C:\Windows\System32\<name>` (setx.exe, reg.exe), or null.
+ * The fixed path only, never SystemRoot: a repository's settings can set that,
+ * and a `<drive>:\Windows` shape check does not prove a directory is Windows'
+ * own. A Windows installed elsewhere gets null, and the caller says so.
+ */
+export function windowsSystem32Path(name, { exists = existsSync } = {}) {
+  const fixed = win32.join(DEFAULT_WINDOWS_DIR, 'System32', name)
+  return exists(fixed) ? fixed : null
+}
+
+/**
  * `{ file, args }` for spawning the helper at `helper` (an absolute path to the
  * platform's script, see helperScriptName), or null when Windows PowerShell
  * cannot be found. `powershell` replaces the resolved executable: a FUNCTION

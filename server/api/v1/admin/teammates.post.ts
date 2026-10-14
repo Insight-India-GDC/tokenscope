@@ -40,6 +40,7 @@ import { getDirectoryUserByOid } from '../../../azure/directory'
 import { assertDirectoryIdentityPickable } from '../../../auth/provision-directory-teammate'
 import { loadDirectoryExclusionPatterns } from '../../../utils/directory-exclusions'
 import { ROLES } from '../../../../shared/auth/roles'
+import { followPlacement } from '../../../utils/device-lifecycle'
 
 // Postgres unique-violation; drizzle wraps the postgres-js error, real `.code`
 // on `.cause` (jit-teammate.ts pattern).
@@ -132,6 +133,10 @@ export default defineEventHandler(async (event) => {
           RETURNING id::text AS id
         `)
         adopteeId = [...adopted][0]?.id
+        // A `bill:` placeholder has no device by construction (only a real
+        // sign-in provisions one); followed anyway so the rule holds on every
+        // path that sets a placement (#417).
+        if (adopteeId) await followPlacement(sp as never, adopteeId)
       })
     } catch (err) {
       if (!isUniqueViolation(err)) throw err

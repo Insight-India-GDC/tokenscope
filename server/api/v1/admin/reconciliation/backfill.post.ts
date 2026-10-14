@@ -11,9 +11,9 @@
  *   - startDate within the last 90 days and not in the future; endDate = today (UTC).
  *   - one in-flight (pending|running) request per scope (409 otherwise — no queue spam).
  *
- * RBAC: requireRole('admin') + assertSameOrigin. Audited. Provider scopes are
- * GLOBAL (not region-partitioned) — no reconciliation admin endpoint applies requireRegionScope —
- * so a region-scoped admin may backfill any reconciled scope, by design (matches orgs/enterprises).
+ * RBAC: requireRole('platform-admin') + assertSameOrigin. Audited. The target is resolved
+ * with no region term (a provider_org of any region, or a region-less provider_enterprise),
+ * so platform-admin is the only clamp — same rule as the enterprises routes.
  */
 import { defineEventHandler, createError, getRequestIP, getHeader } from 'h3'
 import { readValidated } from '../../../../utils/validated-body'
@@ -54,7 +54,8 @@ function utcMidnight(d: Date): Date {
 }
 
 export default defineEventHandler(async (event) => {
-  const caller = await requireRole(event, 'admin')
+  // provider_org / provider_enterprise are resolved estate-wide, so platform-admin is the only clamp.
+  const caller = await requireRole(event, 'platform-admin')
   assertSameOrigin(event)
   const body = await readValidated(event, Body)
   const ip = getRequestIP(event, { xForwardedFor: true }) ?? null

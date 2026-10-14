@@ -9,10 +9,9 @@ The companion page [Data Lineage](Data-Lineage.md) is the data-architect view:
 every table, column, transformation and invariant. This page is the shape; that
 page is the detail.
 
-> **Status.** Rewritten 2026-08-02 from a full code trace. Every claim below
-> carries a `file:line` or a dated observation. Where two canonical documents
-> disagree, this page says so and names which wins — it does not silently pick
-> one. Claims that could not be closed from code are marked `[VERIFY]`.
+> **How to read it.** Claims carry a `file:line` or a dated observation. Where
+> two canonical documents disagree, this page says so and names which wins.
+> Claims that could not be closed from code are marked `[VERIFY]`.
 
 ---
 
@@ -81,12 +80,11 @@ permanent primary source for everyone else. A reporting axis built only from
 OTel is therefore blank for 95% of spend **by construction**, and the fix is
 never "chase enrolment"; it is "read the dimension the API already carries."
 
-This once meant most of the model axis rendered as a "Not split by model"
-bucket (58% of the reference deployment's spend on 2026-08-01). That state is superseded. Both
-providers send a model dimension on every row (captured live), and
-it is now read, not discarded: the hourly `provider-transform` worker stores it
+The model axis is the example. Anthropic reports cost at model grain. GitHub
+reports AI-credit cost per day and model activity separately, so Copilot cost is
+not named by model. The API lane reads what each provider sends: the hourly `provider-transform` worker stores it
 in `provider_usage_fact` (migs 0118–0122), and `v_complete_usage` names a model
-on every row the sources can name (mig 0124) —
+on every row the sources can name (mig 0124):
 
 | rows | model comes from |
 |---|---|
@@ -106,9 +104,8 @@ footer, never as a category row.
 
 ## 2. The two axes — §A and §B
 
-The system separates two concerns that look alike and are not. Conflating them
-has produced wrong decisions repeatedly, so the design holds them apart
-explicitly.
+The system separates two concerns that look alike and are not, and the design
+holds them apart explicitly.
 
 | | **§A — usage completeness** | **§B — billing / chargeback** |
 |---|---|---|
@@ -129,8 +126,8 @@ is available (§A — it is, and we already store it).
 
 ### 3.1 Three ingest paths, not two
 
-The wiki has long said "two ingestion paths." There are three live paths writing
-three different tables, plus two dormant lanes.
+Three live paths write three different tables. Two further lanes are dormant
+or non-monetary.
 
 ![Three provider-API paths cover every teammate in an onboarded scope; the OTel path covers enrolled devices only](images/data-flow-ingest-paths.svg)
 
@@ -186,7 +183,7 @@ most consequential provider limitation in the system:
 2. The OTel operand: corroborated `attribution_record` rows for the same key,
    here $30. Both directions share this operand
    (`server/usage/corroborated-otel.ts`). It leaves out sessions in an open
-   `api-uncorroborated` quarantine and, since mig 0119, self-billed rows.
+   `api-uncorroborated` quarantine and self-billed rows (mig 0119).
 3. API above OTel, the normal case: `usage-reconciliation` writes
    `unaccounted_usage` = max(0, API − OTel) = $70, a taggable worklist item,
    with its per-model `unaccounted_usage_model` children in the same
@@ -194,6 +191,15 @@ most consequential provider limitation in the system:
 4. OTel above API: `over_emission` holds max(0, OTel − API). It flags only an
    excess above max($25, API) on a settled day, plus a weaker no-bill lane. It
    is an integrity signal and never spend.
+   A developer resolves a flag by quarantining one conversation, but only if
+   all of that conversation's records sit in the flag's (UTC day, tool) cell.
+   The quarantine itself covers the whole conversation, so each
+   `usage-reconciliation` run re-checks it. If the conversation later records
+   usage outside the cell, the run lifts the quarantine and escalates the flag
+   (`sweepStrayQuarantines` in `over-emission-detection.ts`). An escalated flag,
+   whoever escalated it, goes to its region's admins and the platform admins (platform admins only
+   when it has no region) as an
+   `over-emission-escalated` item (`server/notifications/over-emission.ts`).
 5. Arm 2 (`api-reconciled`) shows the residual, per model where the
    subtraction names one, otherwise as a reason-typed remainder row.
 6. Arm 1 (`otel-emitted`) shows OTel rows directly, with session, project and
@@ -205,8 +211,7 @@ most consequential provider limitation in the system:
 *Arm 2 is the API figure minus the OTel detail, so arms 1 and 2 add back to
 the bill.*
 
-**The invariant, stated precisely** (imprecision here is what makes people
-propose designs that break it):
+**The invariant, stated precisely:**
 
 > For a given (teammate, day, tool) **where OTel ≤ API**:
 > `Σ arm 1 + arm 2 = the API figure`.
@@ -286,8 +291,8 @@ Three consequences that are enforced, not conventional:
   (`drizzle/migrations/0085_…sql:62`, `:114`, `:135`). A reader who assumes
   Copilot charges flow through `actual_spend` will be wrong.
 - **§B money is READ, never priced.** Net/gross/discount come straight off the
-  bill (`server/workers/copilot-pool-bill.ts:141-179`). Computing
-  `seats × rate` was wrong by 27% against a live invoice
+  bill (`server/workers/copilot-pool-bill.ts:141-179`). `seats × rate` does
+  not reproduce the invoice: it is 27% off a live one
   (`provider-billing-attribution-model.md:164-173`).
 - **No double charge is structural.** The pool view charges either the
   allocation *or* the org-homed figure, made mutually exclusive by a
@@ -297,8 +302,8 @@ Three consequences that are enforced, not conventional:
 
 ## 4. How money is valued — and the rate card's real job
 
-This is the point on which the two canonical documents contradict each other,
-and where a wrong belief has been propagated for months. Resolving it:
+The two canonical documents contradict each other on this point. This section
+resolves it.
 
 **The cost-precedence ladder** (`server/usage/span-costing.ts:209-225`):
 
@@ -308,9 +313,9 @@ and where a wrong belief has been propagated for months. Resolving it:
 | 2 `rate-card` | provider cost missing, zero, negative or unstorable | our card prices each row — **and raises an alert** (`azure-monitor-reader.ts:1750-1756`) |
 | 3 `skip` | neither | the span is not written at all |
 
-**Observed on the reference deployment, one 7-day sample (2026-08-01): 21,839 spans provider-priced,
-0 rate-card-priced.** That is a dated observation from one environment, **not** a
-proof that rung 2 is dead. Rung 2 is live code: it fires for missing, zero and
+**On the reference deployment, a 7-day sample (2026-08-01) had 21,839 spans
+provider-priced and 0 rate-card-priced.** That is one environment, **not** proof
+that rung 2 is dead. Rung 2 is live code: it fires for missing, zero and
 negative provider cost (`tests/integration/azure/joiner-provider-cost.test.ts:330-380`)
 and for an unstorable one (`:793-842`). Any decision that depends on rung 2 being
 rare needs production-wide rung counts, not this sample.
@@ -364,12 +369,12 @@ If **any** token type has no rate line, no split is defensible, so the whole
 provider total lands on one deterministic carrier row rather than being guessed
 (`span-costing.ts:434-462`).
 
-### Two open questions this raises
+### Two consequences
 
-1. **The over-emission threshold stays at 2×. Owner-settled 2026-08-02.**
+1. **The over-emission threshold stays at 2× (owner-settled).**
    `over-emission-detection.ts:11-23` justifies the 2× band plus a $25 floor as
    absorbing "honest rate-card drift", on the premise that OTel is an estimate
-   and the API is a bill. That rationale is now stale — but the **threshold is
+   and the API is a bill. That premise does not hold, but the **threshold is
    still right, for a different reason**: the alarm is an informational
    "something looks off" signal, not an integrity control, *because OTel is
    never billed*. The API is the bill; OTel is project direction and indicative.
@@ -387,8 +392,8 @@ provider total lands on one deterministic carrier row rather than being guessed
    breakdown drifts. The same card also feeds rate-derived estimates in
    `server/usage/insights.ts:225-254` and `:319-349` (loaded by `fetchRateLines`,
    `:676-690`).
-   **Owner decision 2026-08-02: refresh the card and keep the savings advice
-   on.** Refreshing fixes both consumers at once — the nudges become accurate and
+   **The owner's decision: refresh the card and keep the savings advice on.**
+   Refreshing fixes both consumers at once — the nudges become accurate and
    the token-type split stops drifting. **Open — issue #42.**
 
 ### The personal-subscription false positive
@@ -407,9 +412,8 @@ never waived by a personal declaration"*, `:194`). Accepted as-is: the signal is
 advisory and costs nobody money.
 
 **Copilot never uses a rate card at all.** Its cost is `nano_aiu × 1e-11` at a
-fixed $0.01/credit (`azure-monitor-reader.ts:294`, `:317-332`); the seeded
-Copilot card was deleted as "dead and misleading"
-(`drizzle/migrations/0037_…sql`).
+fixed $0.01/credit (`azure-monitor-reader.ts:294`, `:317-332`). No Copilot
+rate card exists (`drizzle/migrations/0037_…sql` removes the seeded one).
 
 ---
 
@@ -422,7 +426,7 @@ configured; a deployment's own provider plans and credentials may differ.
 
 | | |
 |---|---|
-| Plan | **Usage-based.** Seat-based plans are no longer purchasable. |
+| Plan | **Usage-based.** Seat-based plans cannot be purchased. |
 | API kind | **`enterprise-analytics`** — *not* `claude-code-admin` |
 | Branch | `server/workers/analytics-poller.ts:810`, on `provider_org.api_kind` |
 | Endpoints | `/v1/organizations/analytics/user_usage_report` and `…/user_cost_report` |
@@ -435,7 +439,7 @@ configured; a deployment's own provider plans and credentials may differ.
 The `claude-code-admin` path (`server/anthropic/client.ts`) is **dormant here**.
 It is a different endpoint with no `group_by`, no `bucket_width`, a hardcoded
 `tool='claude-code'` and no raw capture. Evidence drawn from it does not
-describe production, and has been mistaken for production before.
+describe production.
 
 The two `group_by` arrays differ in exactly one member, deliberately:
 `cost_type` exists only on cost rows, so sending it to the usage report would
@@ -447,12 +451,6 @@ are at different grains, and a dimension on one side only makes the join harder.
 `speed` is the other dimension the same rule names and is deliberately not
 requested — no surface needs it, and every added dimension multiplies rows
 against the page ceiling.
-
-> **Dated observation, not a code-proven fact:** a live probe on 2026-08-01
-> returned `cost_type` populated 240/240, where a capture before the `group_by`
-> change had it null 395/395. The inference that the exclusion had therefore
-> never fired before that change is consistent with both captures but is **not**
-> established by execution evidence — no query counted excluded rows historically.
 
 ### GitHub Copilot
 
@@ -517,7 +515,8 @@ proven otherwise.
 
 ## 7. What the providers cannot give us — and the standing obligation
 
-**Dated 2026-08-02. This section has a shelf life.**
+**This section has a shelf life.** Each row carries the date it was last
+verified.
 
 | limitation | consequence | verified |
 |---|---|---|
@@ -548,32 +547,23 @@ proven otherwise.
 
 ## 8. Known gaps
 
-Real and current unless marked CLOSED (kept in place so numbering stays
-stable). Listed so they are not rediscovered as surprises.
+Real and current. Listed so they are not rediscovered as surprises.
 
-1. **The model dimension is discarded at ingest — CLOSED.** Both providers send
-   it on every row; `actual_spend` still has no model column, and no longer
-   needs one: `provider-transform` derives `provider_usage_fact` (teammate ·
-   day · tool · **model** · cost_type · context_window) from the captured
-   payloads (migs 0118–0122, 0127), the §A residual stores its per-model
-   subtraction as
-   `unaccounted_usage_model` children (mig 0123), and `v_complete_usage` fans
-   both NULL-model arms out into named models plus reason-typed remainders
-   (mig 0124). See §1.
-2. **§A residuals are not frozen by finance close.** The close guard
-   (mig 0116) protects `actual_spend` only. `unaccounted_usage` keeps being
-   recomputed on a 35-day trailing window across a closed month boundary. No
-   guard, no comment claiming one, no test. `[VERIFY]` whether this is intended.
-3. **The over-emission threshold and the stale rate card** — §4, issue #42.
-4. **Copilot has no raw capture.** Mig 0117 covers Anthropic only.
-5. **`is_frozen` enforces nothing.** Written `true` on every
+1. **The over-emission threshold and the stale rate card** — §4, issue #42.
+2. **Copilot has no raw capture.** Mig 0117 covers Anthropic only.
+3. **`is_frozen` enforces nothing.** Written `true` on every
    `attribution_record` row and read nowhere; no trigger, CHECK or policy makes
    the row immutable.
+4. **§A residuals are not frozen by a reporting snapshot.** Reconciliation
+   recomputes `unaccounted_usage` over its trailing 35-day window on every run,
+   including days before a recorded month boundary, so a residual in a recorded
+   month can change after the snapshot.
 
 ---
 
 ## See also
 
 - [Data Lineage](Data-Lineage.md) — tables, columns, transformations, invariants
-- [Data Model](Data-Model.md) — schema reference *(stale on this path; see gaps)*
+- [Data Model](Data-Model.md) — schema reference *(some money-path tables are
+  not documented there yet; Data Lineage lists them)*
 - [Reporting](Reporting.md) — what reads these surfaces

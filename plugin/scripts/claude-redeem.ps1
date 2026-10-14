@@ -1076,6 +1076,23 @@ function Invoke-TsMain($Argv) {
     Write-TsOut "[tokenscope] Environment changed: $from -> $to. Old credentials and endpoints removed."
   }
   Write-TsOut '[tokenscope] OK - Tracking is on for Claude Code on this computer, without Node.js.'
+  # Claude Desktop only (desktop-env.mjs): the app replaces the settings-file
+  # resource attributes at launch, so this device also goes into the user
+  # environment, which the app merges. The CLI path never runs this.
+  if (Test-TsTrustedDesktop $settingsPath) {
+    $desktopIid = Get-TsJsonString $resp 'instance_id'
+    if ($desktopIid -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+      try {
+        $merged = Merge-TsDesktopAttrs ([Environment]::GetEnvironmentVariable('OTEL_RESOURCE_ATTRIBUTES', 'User')) $desktopIid
+        if ($null -eq $merged) { throw 'your user OTEL_RESOURCE_ATTRIBUTES is not key=value pairs; left unchanged' }
+        [Environment]::SetEnvironmentVariable('OTEL_RESOURCE_ATTRIBUTES', $merged, 'User')
+        Write-TsOut '[tokenscope] OK - Claude Desktop: this device is set in your user environment, so Desktop sessions are attributed.'
+        Write-TsOut '[tokenscope]   Next: quit the Claude app completely and open it again. Tracking starts in the new session.'
+      } catch {
+        Write-TsOut "[tokenscope] WARN: Desktop sessions will not be attributed: could not set your user environment ($($_.Exception.Message))."
+      }
+    }
+  }
   Write-TsOut '[tokenscope]   Next: restart Claude Code. Tracking starts in the new session.'
   Write-TsOut '[tokenscope]   In a repo with a .tokenscope file, restart once more if you see a "superseded device enrolment" warning.'
   Write-TsOut '[tokenscope]   Needs Node.js: the status line, /tokenscope:backfill and repo tagging from a .tokenscope file.'
@@ -1085,10 +1102,53 @@ function Invoke-TsMain($Argv) {
   return 0
 }
 
-try {
-  $code = Invoke-TsMain $args
-} catch {
-  Write-TsErr "[tokenscope] Fatal: $($_.Exception.Message)"
-  $code = 1
+# Claude Desktop gate (desktop-env.mjs): the app's CLAUDE_CODE_ENTRYPOINT, and not
+# one a PROJECT settings file (.claude\settings.json or settings.local.json, from
+# the working directory up) supplied: Claude Code applies a project's env to the
+# session, so a checked-out repository could otherwise switch this on.
+function Test-TsTrustedDesktop([string]$UserSettings) {
+  if ("$env:CLAUDE_CODE_ENTRYPOINT".Trim() -ne 'claude-desktop') { return $false }
+  $dir = (Get-Location).ProviderPath
+  while ($dir) {
+    foreach ($f in @('settings.json', 'settings.local.json')) {
+      $p = [IO.Path]::Combine($dir, '.claude', $f)
+      if ($p -ieq $UserSettings -or -not [IO.File]::Exists($p)) { continue }
+      try {
+        $j = [IO.File]::ReadAllText($p) | ConvertFrom-Json
+        if ($j.env -and ($j.env.PSObject.Properties.Name -contains 'CLAUDE_CODE_ENTRYPOINT')) { return $false }
+      } catch { }
+    }
+    $parent = [IO.Path]::GetDirectoryName($dir)
+    if (-not $parent -or $parent -eq $dir) { break }
+    $dir = $parent
+  }
+  return $true
 }
-exit $code
+
+# The same merge as desktop-env.mjs mergeDesktopAttrs: keep the user's other
+# key=value pairs, replace tokenscope.instance_id and tool with this device's;
+# $null when the existing value is not key=value pairs (left alone).
+function Merge-TsDesktopAttrs([string]$Existing, [string]$Iid) {
+  $kept = @()
+  foreach ($seg in ("" + $Existing).Split(',')) {
+    $t = $seg.Trim()
+    if (-not $t) { continue }
+    $eq = $t.IndexOf('=')
+    if ($eq -le 0) { return $null }
+    $k = $t.Substring(0, $eq).Trim()
+    if ($k -ne 'tokenscope.instance_id' -and $k -ne 'tool') { $kept += $t }
+  }
+  $kept += "tokenscope.instance_id=$($Iid.ToLowerInvariant()),tool=claude-code"
+  return ($kept -join ',')
+}
+
+# Dot-sourcing (tests) loads the functions without running setup.
+if ($MyInvocation.InvocationName -ne '.') {
+  try {
+    $code = Invoke-TsMain $args
+  } catch {
+    Write-TsErr "[tokenscope] Fatal: $($_.Exception.Message)"
+    $code = 1
+  }
+  exit $code
+}

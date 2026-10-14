@@ -26,6 +26,10 @@ describe('variantForCategory', () => {
     expect(variantForCategory('untagged-backlog')).toBe('untagged')
   })
 
+  it('routes escalated over-emission flags to the over-emission body', () => {
+    expect(variantForCategory('over-emission-escalated')).toBe('over-emission')
+  })
+
   it('routes personal-subscription prompts to the declaration guidance body', () => {
     expect(variantForCategory('personal-subscription-prompt')).toBe('personal-subscription')
   })

@@ -40,7 +40,7 @@ describe('ProviderOrgDialog — anthropic discover flow', () => {
     vi.stubGlobal('$fetch', fetchMock)
 
     const wrapper = mount(ProviderOrgDialog, {
-      props: { open: true, target: null, enterprises: ENTERPRISES, regions: REGIONS },
+      props: { open: true, target: null, enterprises: ENTERPRISES, regions: REGIONS, canDiscoverOrg: true, canCreateAnthropicOrg: true },
     })
     await flushPromises()
 
@@ -74,7 +74,7 @@ describe('ProviderOrgDialog — anthropic discover flow', () => {
     vi.stubGlobal('$fetch', fetchMock)
 
     const wrapper = mount(ProviderOrgDialog, {
-      props: { open: true, target: null, enterprises: ENTERPRISES, regions: REGIONS },
+      props: { open: true, target: null, enterprises: ENTERPRISES, regions: REGIONS, canDiscoverOrg: true, canCreateAnthropicOrg: true },
     })
     await flushPromises()
     await wrapper.find('[data-testid="po-cred"]').setValue('acme-admin-key')
@@ -86,6 +86,26 @@ describe('ProviderOrgDialog — anthropic discover flow', () => {
     expect(err.text().toLowerCase()).toContain('forbidden')
     // The org id was NOT auto-filled on failure.
     expect((wrapper.find('[data-testid="po-org-id"]').element as HTMLInputElement).value).toBe('')
+  })
+
+  it('a region admin is not offered the Anthropic create path, which could only end in 403', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('$fetch', fetchMock)
+
+    const wrapper = mount(ProviderOrgDialog, {
+      props: { open: true, target: null, enterprises: ENTERPRISES, regions: REGIONS, canDiscoverOrg: false, canCreateAnthropicOrg: false },
+    })
+    await flushPromises()
+
+    // Starts on github, has no anthropic option, and says why.
+    const select = wrapper.find('[data-testid="po-provider"]')
+    expect((select.element as HTMLSelectElement).value).toBe('github')
+    expect(select.findAll('option').map((o) => o.attributes('value'))).toEqual(['github'])
+    expect(wrapper.find('[data-testid="po-anthropic-platform-only"]').exists()).toBe(true)
+    // No credential field, no Discover, nothing fetched.
+    expect(wrapper.find('[data-testid="po-cred"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="po-discover"]').exists()).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

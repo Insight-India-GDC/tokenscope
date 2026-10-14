@@ -68,7 +68,7 @@
  * which is the invariant that must hold; the residual false-positive-pick case is a UX gap for
  * map.post's error response to disambiguate, not a security gap.
  *
- * RBAC: requireRole(admin) — same guard as the sibling reconciliation routes.
+ * RBAC: requireRole(admin) — same guard as github/map.post (both region-clamped below).
  * GET (read-only) → no assertSameOrigin.
  *
  * LANES (docs/design/rls-enforcement.md §2): both DB reads — the teammate picker

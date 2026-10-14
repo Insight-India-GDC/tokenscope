@@ -189,6 +189,29 @@ export const MAX_CLIENT_SECRET_AGE_MS = 365 * 24 * 60 * 60 * 1000
  */
 const SOURCE_WINDOW_MS = 60 * 60 * 1000
 export const SOURCE_REGISTRATION_LIMIT = 20
+/*
+ * BOUNDED MEMORY (H30). The map used to be pruned only when the SAME source was
+ * read again, so a flood from many distinct sources (each seen once) grew it
+ * without limit for the life of the process. Three bounds, all O(1) amortised:
+ *
+ *   - Insertion order is recency order: recordSourceRegistration re-inserts its
+ *     key at the end, so the front of the map is always the source whose LAST
+ *     registration is oldest.
+ *   - On every insert, up to SOURCE_SWEEP_BATCH entries are swept from the
+ *     front while they are fully expired. The sweep stops at the first live
+ *     entry — everything behind it is newer — so each key is deleted at most
+ *     once and the cost per insert is constant.
+ *   - At MAX_TRACKED_SOURCES the least-recently-active source is evicted. That
+ *     forgets one source's count (it fails OPEN for that source, never closed),
+ *     which is the right side to fail on: the global COUNT(*) ceilings still
+ *     stand, and the cap only bites under a many-source flood.
+ *
+ * Each source also keeps at most SOURCE_REGISTRATION_LIMIT timestamps: the
+ * ceiling only ever asks "has this source reached the limit?", and the newest
+ * LIMIT timestamps answer that exactly.
+ */
+export const MAX_TRACKED_SOURCES = 10_000
+export const SOURCE_SWEEP_BATCH = 8
 const recentRegistrationsBySource = new Map<string, number[]>()
 
 function recentSourceRegistrationCount(source: string, now: number): number {
@@ -201,10 +224,36 @@ function recentSourceRegistrationCount(source: string, now: number): number {
   return live.length
 }
 
-function recordSourceRegistration(source: string, now: number): void {
+function sweepExpiredSources(now: number): void {
+  const cutoff = now - SOURCE_WINDOW_MS
+  let examined = 0
+  for (const [key, timestamps] of recentRegistrationsBySource) {
+    if (examined++ >= SOURCE_SWEEP_BATCH) return
+    const newest = timestamps[timestamps.length - 1]
+    if (newest !== undefined && newest > cutoff) return // live; everything after is newer
+    recentRegistrationsBySource.delete(key)
+  }
+}
+
+export function recordSourceRegistration(source: string, now: number): void {
+  sweepExpiredSources(now)
   const timestamps = recentRegistrationsBySource.get(source) ?? []
   timestamps.push(now)
+  if (timestamps.length > SOURCE_REGISTRATION_LIMIT) {
+    timestamps.splice(0, timestamps.length - SOURCE_REGISTRATION_LIMIT)
+  }
+  // Delete-then-set moves the key to the END: insertion order stays recency order.
+  recentRegistrationsBySource.delete(source)
+  if (recentRegistrationsBySource.size >= MAX_TRACKED_SOURCES) {
+    const oldest = recentRegistrationsBySource.keys().next()
+    if (!oldest.done) recentRegistrationsBySource.delete(oldest.value)
+  }
   recentRegistrationsBySource.set(source, timestamps)
+}
+
+/** Test seam: the tracked-source count, to prove the map stays bounded. */
+export function trackedSourceCountForTest(): number {
+  return recentRegistrationsBySource.size
 }
 
 /**

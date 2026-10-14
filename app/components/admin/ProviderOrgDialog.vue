@@ -87,12 +87,19 @@ const props = defineProps<{
    * this keeps the form from 409ing on an unrelated edit). Always shown/sent
    * for anthropic, where the org remains its own billing unit. */
   governanceActivated?: boolean
+  /* anthropic/discover is platform-admin only server-side (it resolves the
+   * deployment-wide credential namespace); hide the button from region admins. */
+  canDiscoverOrg?: boolean
+  /* Creating an Anthropic org assigns a credential name and starts unmapped,
+   * both platform-admin only server-side (orgs.post), so for anyone else the
+   * Anthropic create path could only end in 403: it is not offered. */
+  canCreateAnthropicOrg?: boolean
 }>()
 const emit = defineEmits<{ close: []; saved: []; retryRegions: [] }>()
 
 const CRED_RE = /^[a-z0-9-]{3,64}$/
 
-const provider = ref<Provider>('anthropic')
+const provider = ref<Provider>(props.canCreateAnthropicOrg ? 'anthropic' : 'github')
 const externalOrgId = ref('')
 const displayName = ref('')
 const reconciliationMode = ref<'reconciled' | 'indicative'>('reconciled')
@@ -145,7 +152,7 @@ useModalA11y({
   onClose: () => emit('close'),
   onOpen: () => {
     const t = props.target
-    provider.value = t?.provider ?? 'anthropic'
+    provider.value = t?.provider ?? (props.canCreateAnthropicOrg ? 'anthropic' : 'github')
     externalOrgId.value = t?.externalOrgId ?? ''
     displayName.value = t?.displayName ?? ''
     reconciliationMode.value = (t?.reconciliationMode as 'reconciled' | 'indicative') ?? 'reconciled'
@@ -203,6 +210,7 @@ const reconciledNeedsCred = computed(
 )
 const canDiscover = computed(
   () =>
+    props.canDiscoverOrg === true &&
     provider.value === 'anthropic' &&
     !discovering.value &&
     credentialSecretName.value.trim().length > 0 &&
@@ -347,10 +355,13 @@ async function save() {
             class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none disabled:bg-calm/30"
             data-testid="po-provider"
           >
-            <option value="anthropic">anthropic</option>
+            <option v-if="isEdit || canCreateAnthropicOrg" value="anthropic">anthropic</option>
             <option value="github">github</option>
           </select>
           <p v-if="isEdit" class="text-[11px] text-carbon-3 mt-1">Provider can't change after creation.</p>
+          <p v-else-if="!canCreateAnthropicOrg" class="text-[11px] text-carbon-3 mt-1" data-testid="po-anthropic-platform-only">
+            Anthropic orgs are added by a platform admin, because they hold a credential.
+          </p>
         </div>
 
         <!-- ===================== ANTHROPIC ===================== -->
@@ -367,6 +378,7 @@ async function save() {
                 data-testid="po-cred"
               >
               <UiButton
+                v-if="canDiscoverOrg"
                 kind="secondary"
                 size="sm"
                 :disabled="!canDiscover"

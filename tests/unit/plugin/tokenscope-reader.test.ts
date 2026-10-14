@@ -55,6 +55,22 @@ afterAll(() => {
 })
 
 describe('findTokenscopeFile', () => {
+  it('skips a .tokenscope DIRECTORY (the plugin state dir under the home) and keeps walking', () => {
+    const base = mkdtempSync(join(tmpdir(), 'ts-reader-dir-'))
+    try {
+      // home/.tokenscope is the state directory; home/repo/sub has no tag.
+      mkdirSync(join(base, '.tokenscope'), { recursive: true })
+      mkdirSync(join(base, 'repo', 'sub'), { recursive: true })
+      const found = findTokenscopeFile(join(base, 'repo', 'sub'))
+      expect(found === null || !found.startsWith(base)).toBe(true)
+      // A real tag file above is still found.
+      writeFileSync(join(base, 'repo', '.tokenscope'), 'project:\n  code: ABC\n')
+      expect(findTokenscopeFile(join(base, 'repo', 'sub'))).toBe(join(base, 'repo', '.tokenscope'))
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
   it('finds the file in the same dir', () => {
     expect(findTokenscopeFile(root)).toBe(join(root, '.tokenscope'))
   })
