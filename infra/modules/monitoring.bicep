@@ -24,7 +24,7 @@ param name string
 param location string
 
 @description('Environment name — drives retention + alert severity defaults.')
-@allowed(['sandbox', 'dev', 'staging', 'production'])
+@allowed(['sandbox', 'dev', 'demo', 'staging', 'production'])
 param environment string
 
 @description('Daily ingestion cap in GB, applied to EACH Log Analytics workspace (cost guard). Per workspace on purpose: a platform-log flood cannot use up the cap that OTel ingestion depends on.')
@@ -375,7 +375,7 @@ resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = if (!empty(n
     //   staging    → ts-stage   (9)
     //   production → ts-prod    (8)
     // All under 12; all env-distinguishable.
-    groupShortName: 'ts-${environment == 'production' ? 'prod' : environment == 'staging' ? 'stage' : environment == 'dev' ? 'dev' : 'sand'}'
+    groupShortName: 'ts-${environment == 'production' ? 'prod' : environment == 'staging' ? 'stage' : environment == 'dev' ? 'dev' : environment == 'demo' ? 'demo' : 'sand'}'
     enabled: true
     emailReceivers: [
       {

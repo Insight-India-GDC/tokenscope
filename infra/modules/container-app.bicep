@@ -12,7 +12,7 @@ param name string
 param location string
 
 @description('Environment name (drives resources + replica counts).')
-@allowed(['sandbox', 'dev', 'staging', 'production'])
+@allowed(['sandbox', 'dev', 'demo', 'staging', 'production'])
 param environment string
 
 @description('Container image tag (e.g. sandbox-abc1234). The full image is composed inside this module from acrLoginServer + tag.')

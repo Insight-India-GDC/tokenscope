@@ -16,7 +16,7 @@ param name string
 param location string
 
 @description('Environment name (drives SKU + capacity).')
-@allowed(['sandbox', 'dev', 'staging', 'production'])
+@allowed(['sandbox', 'dev', 'demo', 'staging', 'production'])
 param environment string
 
 // ── Private Endpoint params (off in the sandbox posture) ──────────────

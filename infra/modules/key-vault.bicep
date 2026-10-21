@@ -18,7 +18,7 @@ param name string
 param location string
 
 @description('Environment name — drives soft-delete retention.')
-@allowed(['sandbox', 'dev', 'staging', 'production'])
+@allowed(['sandbox', 'dev', 'demo', 'staging', 'production'])
 param environment string
 
 @description('Set to `recover` to restore a soft-deleted vault with the same name.')

@@ -25,7 +25,7 @@ param name string
 param location string
 
 @description('Environment name (drives SKU choice).')
-@allowed(['sandbox', 'dev', 'staging', 'production'])
+@allowed(['sandbox', 'dev', 'demo', 'staging', 'production'])
 param environment string
 
 @description('Log Analytics workspace resource ID for diagnostic settings. Empty = no diagnostic settings (ACR pull + login events disappear from observable state). Set to monitoring.outputs.logAnalyticsId for production-shape audit retention.')

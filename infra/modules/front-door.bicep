@@ -35,7 +35,7 @@
 param name string
 
 @description('Environment name (drives tags + sanity asserts).')
-@allowed(['sandbox', 'dev', 'staging', 'production'])
+@allowed(['sandbox', 'dev', 'demo', 'staging', 'production'])
 param environment string
 
 @description('Container App FQDN (from container-app module output). The AFD origin points at this host AND uses it as the originHostHeader so the CA ingress accepts the request.')

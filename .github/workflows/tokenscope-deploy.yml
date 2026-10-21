@@ -1,0 +1,141 @@
+# TokenScope image build + roll (private ACR, GitHub-hosted runner via a temporary ACR network window).
+# Based on examples/github-actions/tokenscope-deploy.yml.
+name: TokenScope deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub environment (demo | uat)
+        type: choice
+        options: [demo, uat]
+        required: true
+        default: demo
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: tokenscope-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+      HEALTH_URL: ${{ vars.TOKENSCOPE_HEALTH_URL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve resources
+        id: res
+        run: |
+          [ -n "$RG" ] || { echo "::error::AZURE_RESOURCE_GROUP is not set"; exit 1; }
+          ACR=$(az acr list -g "$RG" --query "[0].name" -o tsv)
+          APP=$(az containerapp list -g "$RG" --query "[0].name" -o tsv)
+          [ -n "$ACR" ] && [ -n "$APP" ] || { echo "::error::No registry or Container App in $RG: run the infra workflow first"; exit 1; }
+          PREV=$(az containerapp show -g "$RG" -n "$APP" --query "properties.template.containers[0].image" -o tsv 2>/dev/null || true)
+          {
+            echo "acr=$ACR"
+            echo "app=$APP"
+            echo "tag=$(git rev-parse --short=12 HEAD)"
+            echo "prev=$PREV"
+          } >> "$GITHUB_OUTPUT"
+          echo "Previous image: ${PREV:-none}"
+
+      - name: Open ACR network window
+        id: window
+        run: bash infra/scripts/acr-network-window.sh open "$RG" "${{ steps.res.outputs.acr }}"
+
+      - name: Build and push
+        env:
+          ACR: ${{ steps.res.outputs.acr }}
+          TAG: ${{ steps.res.outputs.tag }}
+        run: |
+          az acr login --name "$ACR"
+          docker build --build-arg GIT_COMMIT_SHA="$GITHUB_SHA" -t "$ACR.azurecr.io/tokenscope:$TAG" .
+          docker push "$ACR.azurecr.io/tokenscope:$TAG"
+
+      - name: Roll
+        id: roll
+        env:
+          ACR: ${{ steps.res.outputs.acr }}
+          APP: ${{ steps.res.outputs.app }}
+          TAG: ${{ steps.res.outputs.tag }}
+        run: az containerapp update -g "$RG" -n "$APP" --image "$ACR.azurecr.io/tokenscope:$TAG" --output none
+
+      - name: Verify the new build is serving
+        id: verify
+        env:
+          ACR: ${{ steps.res.outputs.acr }}
+          APP: ${{ steps.res.outputs.app }}
+          TAG: ${{ steps.res.outputs.tag }}
+        run: |
+          azr() { local i; for i in 1 2 3; do az "$@" && return 0; sleep 15; done; return 1; }
+          ok=""
+          for i in $(seq 1 20); do
+            LATEST=$(azr containerapp show -g "$RG" -n "$APP" --query properties.latestRevisionName -o tsv)
+            READY=$(azr containerapp show -g "$RG" -n "$APP" --query properties.latestReadyRevisionName -o tsv)
+            IMG=$(azr containerapp revision show -g "$RG" -n "$APP" --revision "$LATEST" \
+              --query "properties.template.containers[0].image" -o tsv)
+            HEALTH=$(azr containerapp revision show -g "$RG" -n "$APP" --revision "$LATEST" \
+              --query properties.healthState -o tsv)
+            if [ "$IMG" = "$ACR.azurecr.io/tokenscope:$TAG" ] && [ "$HEALTH" = "Healthy" ] && [ "$READY" = "$LATEST" ]; then
+              ok=1; echo "Revision $LATEST runs $TAG and is healthy"; break
+            fi
+            echo "Attempt $i: revision $LATEST image ${IMG##*/} health ${HEALTH:-?} ready ${READY:-?}"
+            sleep 30
+          done
+          [ -n "$ok" ] || { echo "::error::The new revision did not become healthy"; exit 1; }
+
+          if [ -z "$HEALTH_URL" ]; then
+            echo "::notice::TOKENSCOPE_HEALTH_URL not set: verified through Azure only"
+            exit 0
+          fi
+          for i in $(seq 1 10); do
+            commit=$(curl -s --max-time 10 "$HEALTH_URL/api/v1/meta/build" | sed -n 's/.*"commit":"\([0-9a-f]*\)".*/\1/p' || true)
+            health=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$HEALTH_URL/api/health" || true)
+            if [ -n "$commit" ] && [ "${GITHUB_SHA#"$commit"}" != "$GITHUB_SHA" ] && [ "$health" = "200" ]; then
+              echo "::notice::$HEALTH_URL is serving $commit and healthy"
+              exit 0
+            fi
+            echo "Attempt $i: $HEALTH_URL commit '${commit:-?}', health $health"
+            sleep 30
+          done
+          echo "::error::$HEALTH_URL did not serve commit $GITHUB_SHA healthily"
+          exit 1
+
+      - name: Promote to latest
+        env:
+          ACR: ${{ steps.res.outputs.acr }}
+          TAG: ${{ steps.res.outputs.tag }}
+        run: |
+          az acr import --name "$ACR" --source "$ACR.azurecr.io/tokenscope:$TAG" \
+            --image tokenscope:latest --force
+
+      - name: Roll back to the previous image
+        if: failure() && (steps.roll.outcome == 'failure' || steps.verify.outcome == 'failure') && steps.res.outputs.prev != '' && !contains(steps.res.outputs.prev, 'mcr.microsoft.com')
+        env:
+          APP: ${{ steps.res.outputs.app }}
+          PREV: ${{ steps.res.outputs.prev }}
+        run: |
+          az containerapp update -g "$RG" -n "$APP" --image "$PREV" --output none
+          echo "::warning::Rolled back to $PREV; latest was not moved"
+
+      - name: Close ACR network window
+        if: always() && steps.res.outputs.acr != ''
+        run: bash infra/scripts/acr-network-window.sh close "$RG" "${{ steps.res.outputs.acr }}"

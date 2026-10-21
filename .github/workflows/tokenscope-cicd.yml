@@ -1,0 +1,43 @@
+name: TokenScope CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  demo-infra:
+    uses: ./.github/workflows/tokenscope-infra.yml
+    with:
+      environment: demo
+      mode: apply
+    secrets: inherit
+
+  demo-deploy:
+    needs: demo-infra
+    uses: ./.github/workflows/tokenscope-deploy.yml
+    with:
+      environment: demo
+    secrets: inherit
+
+  uat-infra:
+    needs: demo-deploy
+    uses: ./.github/workflows/tokenscope-infra.yml
+    with:
+      environment: uat
+      mode: apply
+    secrets: inherit
+
+  uat-deploy:
+    needs: uat-infra
+    uses: ./.github/workflows/tokenscope-deploy.yml
+    with:
+      environment: uat
+    secrets: inherit

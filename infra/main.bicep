@@ -33,8 +33,11 @@ targetScope = 'resourceGroup'
 // ── Parameters ────────────────────────────────────────────────────
 
 @description('Environment name. Drives every SKU / capacity / retention choice across the modules. Only `production` gets the production SKUs; `sandbox` is the only deployed env that may enable persona override. See infra/parameters/example-*.bicepparam.')
-@allowed(['sandbox', 'dev', 'staging', 'production'])
+@allowed(['sandbox', 'dev', 'demo', 'staging', 'production'])
 param env string
+
+@description('Environment label used only in resource names (e.g. `uat` while env = `staging`). Empty = use env.')
+param envNameLabel string = ''
 
 @description('Azure region for all resources. Defaults to the resource-group region.')
 param location string = resourceGroup().location
@@ -402,9 +405,10 @@ param tags object = {
 var regionShortMap = {
   australiaeast: 'aue'
   westus3: 'wus3'
+  westeurope: 'weu'
 }
 var regionShort = contains(regionShortMap, location) ? regionShortMap[location] : location
-var nameSuffix = '${projectName}-${env}-${regionShort}'
+var nameSuffix = '${projectName}-${empty(envNameLabel) ? env : envNameLabel}-${regionShort}'
 
 // ── User-Assigned Managed Identity ────────────────────────────────
 // Created at root scope so its principalId is available BEFORE any

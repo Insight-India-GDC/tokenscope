@@ -11,7 +11,7 @@ param name string
 param location string
 
 @description('Environment name (drives SKU + HA shape).')
-@allowed(['sandbox', 'dev', 'staging', 'production'])
+@allowed(['sandbox', 'dev', 'demo', 'staging', 'production'])
 param environment string
 
 @description('Administrator login.')
@@ -262,7 +262,7 @@ param sharedPreloadLibraries string = ''
 var devPreloadLibraries = 'pg_cron,pg_stat_statements'
 var effectivePreloadLibraries = !empty(sharedPreloadLibraries)
   ? sharedPreloadLibraries
-  : (environment == 'dev' ? devPreloadLibraries : '')
+  : (environment == 'dev' || environment == 'demo' ? devPreloadLibraries : '')
 
 resource preloadLibraries 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = if (!empty(effectivePreloadLibraries)) {
   parent: postgresql
