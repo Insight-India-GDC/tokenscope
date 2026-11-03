@@ -219,6 +219,16 @@ jobs:
         run: node scripts/check-persona-override-params.mjs
       - name: Check user-facing docs reference things that exist
         run: npm run check:docs-references
+      - name: Check the public snapshot (leak gate + public docs check)
+        # The public mirror has no tools/publish (internal-only), so it skips this step.
+        if: hashFiles('tools/publish/publish.sh') != ''
+        # The step above checks the internal tree, where docs/design and the
+        # other internal-only paths still exist. publish.sh drops them and
+        # rewrites names, so a doc can pass here and fail the publish (the
+        # v1.0.4 publish did, #520). --gate-only builds the snapshot exactly as
+        # a publish does, runs the leak gate and the docs check on it, and
+        # stops: no unit suite, no remote, no push.
+        run: tools/publish/publish.sh --ref HEAD --gate-only
       - name: Compile the example parameter files
         # The examples read secrets with readEnvironmentVariable, so they only
         # compile with those variables set; placeholder values are enough.

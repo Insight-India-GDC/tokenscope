@@ -7,6 +7,16 @@ the publish tooling stamps the heading and a pre-PR gate reminds you to add
 the line — see the internal `tools/publish/README.md`, which is not part of
 the public mirror.)
 
+## v1.0.5 — 2026-11-03 (snapshot b497e515)
+
+- Security: node-forge is updated to 1.4.1, which is outside the affected
+  range of all 12 published node-forge advisories (6 high). node-forge is used
+  only by the local development server (`nuxt dev`) to make its self-signed
+  certificate. The deployed app never loads it, so no running deployment was
+  exposed.
+- Updated dependencies: Nuxt 4.6.3, nuxt-security 2.7.0 and the MCP SDK
+  1.32.2. Nothing changes in how you deploy or use TokenScope.
+
 ## v1.0.4 — 2026-11-01 (snapshot 41782ff9)
 
 - **Before upgrading:**
