@@ -80,7 +80,7 @@ test.describe('Region admin — owner assignment (J4)', () => {
     await expect(page.locator('[data-testid="cc-owners-foxtrot"]')).toContainText('No owner')
 
     await page.click('[data-testid="admin-tab-checklist"]')
-    await expect(page.locator('[data-testid="panel-checklist"]')).toContainText('Assign cost-centre owners')
+    await expect(page.locator('[data-testid="panel-checklist"]')).toContainText('Assign Business Unit owners')
     await expect(page.locator('[data-testid="panel-checklist"]')).toContainText('Designate project managers')
   })
 

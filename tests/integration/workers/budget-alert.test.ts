@@ -14,6 +14,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { startTestDb, stopTestDb, type TestDb } from '../helpers/db'
 import { runBudgetAlert } from '../../../server/workers/budget-alert'
+import { fetchProjectAllocations } from '../../../server/usage/consumption'
 import * as schema from '../../../drizzle/schema'
 
 let t: TestDb
@@ -525,10 +526,10 @@ describe('runBudgetAlert', () => {
     expect(Number(rows[0]!.c)).toBeGreaterThanOrEqual(1)
   })
 
-  it('MID-MONTH TOP-UP counts toward the cap (allocation overlap, not month-start containment)', async () => {
-    // The @> -> && fix. A top-up effective from mid-month does not CONTAIN
-    // month-start, so the old point-containment cap missed it entirely and the
-    // worker paged "over budget" against a cap the PM had already raised.
+  it('MID-MONTH TOP-UP in force counts toward the cap (not month-start containment)', async () => {
+    // A top-up effective from mid-month does not CONTAIN month-start, so a
+    // month-start cap missed it and the worker paged "over budget" against a cap
+    // the PM had already raised. The cap is the budget in force at the run's now.
     const projectId = await createProject('BA-TOPUP')
     await createBaselineAllocation(projectId, '50.00')
     await t.db.insert(schema.allocation).values({
@@ -577,7 +578,7 @@ describe('runBudgetAlert', () => {
     expect(Number(after2[0]!.c)).toBe(initial) // no new items
   })
 
-  it('SUCCESSIVE BASELINES do not double the cap (only the one in force at month-start counts)', async () => {
+  it('SUCCESSIVE BASELINES do not double the cap (only the one in force now counts)', async () => {
     // Baselines are non-overlapping but successive ones are allowed (change the
     // budget mid-month). Summing every baseline that merely OVERLAPS the month
     // would read a $50 budget as $100 and silently suppress a real page.
@@ -600,12 +601,47 @@ describe('runBudgetAlert', () => {
     })
     await recordSpend(projectId, '80.00', new Date('2026-05-10T10:00:00Z'))
 
-    // Cap is the month-start baseline ($50), not $50+$50 — so $80 IS over.
+    // Cap is the baseline in force now ($50), not $50+$50 — so $80 IS over.
     await runBudgetAlert(t.db, { now: NOW })
     const rows = await t.client<{ c: string }[]>`
       SELECT COUNT(*)::text AS c FROM inbox_item
        WHERE category = 'over-budget' AND related_entity_id = ${projectId}::uuid`
     expect(Number(rows[0]!.c)).toBeGreaterThanOrEqual(1)
+  })
+
+  it('MID-MONTH BASELINE: the cap is the budget the project page shows, baseline and top-up together', async () => {
+    // A $1,000 baseline starting mid-month with a $25 top-up over the same
+    // period. The project page reads $1,025 (fetchProjectAllocations at now);
+    // a month-start cap dropped the baseline and kept the top-up, paging $30 of
+    // spend against $25.
+    const projectId = await createProject('BA-MIDBASE')
+    for (const [kind, usd] of [['baseline', '1000.00'], ['top-up', '25.00']] as const) {
+      await t.db.insert(schema.allocation).values({
+        scopeType: 'project',
+        scopeId: projectId,
+        budgetUsd: usd,
+        effective: '[2026-05-10T00:00:00+00,2026-06-01T00:00:00+00)',
+        allocationKind: kind,
+        auditEventId: await newAuditId(),
+      })
+    }
+    await recordSpend(projectId, '30.00', new Date('2026-05-12T10:00:00Z'))
+    const page = await fetchProjectAllocations(t.db, [projectId], NOW.toISOString())
+    expect(page.get(projectId)).toBe(1025)
+
+    await runBudgetAlert(t.db, { now: NOW })
+    const quiet = await t.client<{ c: string }[]>`
+      SELECT COUNT(*)::text AS c FROM inbox_item
+       WHERE category = 'over-budget' AND related_entity_id = ${projectId}::uuid`
+    expect(Number(quiet[0]!.c)).toBe(0)
+
+    // Over the page's figure, it pages — against that figure.
+    await recordSpend(projectId, '1000.00', new Date('2026-05-13T10:00:00Z'))
+    await runBudgetAlert(t.db, { now: NOW })
+    const [item] = await t.client<{ body: { capUsd: number } }[]>`
+      SELECT body::jsonb AS body FROM inbox_item
+       WHERE category = 'over-budget' AND related_entity_id = ${projectId}::uuid LIMIT 1`
+    expect(item!.body.capUsd).toBe(1025)
   })
 
   it('AUDIENCE: the Copilot contributor who blew the budget is notified', async () => {

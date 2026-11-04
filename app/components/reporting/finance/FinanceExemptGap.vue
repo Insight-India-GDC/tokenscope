@@ -34,8 +34,8 @@ defineProps<{
     </p>
 
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-      <FinanceKpiTile label="Indicative usage" :value="fmtUsd(gap.indicativeUsageUsd)" sub="§A usage lane" />
-      <FinanceKpiTile label="Chargeable" :value="fmtUsd(gap.chargebackUsd)" sub="§B charged back" />
+      <FinanceKpiTile label="Indicative usage" :value="fmtUsd(gap.indicativeUsageUsd)" sub="attributed usage" />
+      <FinanceKpiTile label="Chargeable" :value="fmtUsd(gap.chargebackUsd)" sub="charged back" />
       <FinanceKpiTile label="Gap" :value="fmtUsd(gap.gapUsd)" sub="usage the bill does not charge" />
     </div>
 
@@ -46,7 +46,7 @@ defineProps<{
       data-testid="finance-exempt-gap-copilot-caption"
     >
       Chargeable includes Copilot pooled net pending cutover ({{ fmtUsd(gap.copilotChargebackUsd) }}),
-      held back from the per-CoU Chargeable column.
+      held back from the per-Business Unit Chargeable column.
     </p>
   </UiCard>
 </template>

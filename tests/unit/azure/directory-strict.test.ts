@@ -252,9 +252,9 @@ describe('getUserManager — already strict, now on the bounded transport', () =
     graphCalls = []
     graphAnswers = [
       { status: 503, headers: { 'retry-after': '0' } },
-      { status: 200, body: { id: 'mgr', mail: 'Boss@example.com', userPrincipalName: null } },
+      { status: 200, body: { id: 'mgr', mail: 'Boss@example.com', userPrincipalName: null, displayName: 'Boss' } },
     ]
-    expect(await getUserManager(OID, { retries: WORKER_GRAPH_RETRIES })).toEqual({ oid: 'mgr', email: 'boss@example.com' })
+    expect(await getUserManager(OID, { retries: WORKER_GRAPH_RETRIES })).toEqual({ oid: 'mgr', email: 'boss@example.com', name: 'Boss' })
     expect(graphCalls).toHaveLength(2)
   })
 })

@@ -38,6 +38,6 @@ const { data, error, refresh } = useLazyFetch<ReportAccessData | null>('/api/v1/
     <AdminReportAccessSection v-else :data="data" @changed="refresh()" />
   </div>
   <div v-else class="max-w-[1600px] mx-auto px-10 py-16 text-center" data-admin-page="/admin/policies/report-access">
-    <div class="text-lg font-bold text-carbon">Global finance access required.</div>
+    <div class="text-lg font-bold text-carbon">Admin access required.</div>
   </div>
 </template>

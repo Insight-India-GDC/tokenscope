@@ -146,7 +146,7 @@ export async function resolveDrillScope(
   }
 
   if (src.startsWith('cc:')) {
-    if (grants.costCentre === false) forbidSrc('Your role does not grant a cost-centre frame.')
+    if (grants.costCentre === false) forbidSrc('Your role does not grant a Business Unit view.')
     const ccId = src.slice(3)
     // `isUuid`, NOT the legacy lax `/^[0-9a-f-]{36}$/i` (the known-bad API-5
     // pattern retired by server/utils/require-uuid-param.ts). The lax form
@@ -201,7 +201,7 @@ export async function resolveDrillScope(
   return {
     token: src,
     label: `Region · ${scope.region?.displayName ?? scope.effectiveRegionId}`,
-    usage: clampedUsage(scope.usageScope('u.region_id', 'u.org_unit_id')),
+    usage: clampedUsage(scope.usageScope('u.teammate_id')),
     key: `region:${scope.scopeKey}`,
   }
 }
@@ -240,7 +240,7 @@ export interface TeammateIdentity {
    * carried separately from the homing EXISTS — each conjunct is its own fact.
    */
   isProvisional: boolean
-  /** CURRENT placement, labelled as such on the face; §A rows home point-in-time. */
+  /** CURRENT placement — the same placement every report groups this person's usage by. */
   practice: string | null
   region: string | null
   costOwningUnit: string | null
@@ -286,7 +286,8 @@ export async function fetchTeammateIdentity(
 
 /**
  * D34's FIRST conjunct: does the subject have ≥1 in-window row ALREADY inside
- * this frame? EMIT-TIME homing, never current placement.
+ * this frame? Read on CURRENT placement (current-org lens), the same lens the
+ * frame's own report ranked them in.
  *
  * It also anchors the WINDOW: an empty in-scope window is a 403 in the same
  * shape as no-grant, so the endpoint is never an existence oracle about scopes
@@ -300,7 +301,7 @@ export async function subjectHasInScopeRow(
 ): Promise<boolean> {
   const rows = await tx.execute<{ present: boolean }>(sql`
     SELECT EXISTS (
-      SELECT 1 FROM v_complete_usage u
+      SELECT 1 FROM v_complete_usage_current u
        WHERE u.teammate_id = ${subjectId}::uuid
          AND ${scopeSql(scope)}
          AND ${CONFIRMED_ONLY}
@@ -355,7 +356,7 @@ export async function fetchTeammateTokenSheet(
   }>(sql`
     WITH mine AS (
       SELECT u.project_id, COALESCE(SUM(u.cost_usd), 0) AS usd
-        FROM v_complete_usage u
+        FROM v_complete_usage_current u
        WHERE u.teammate_id = ${subjectId}::uuid
          AND u.project_id IS NOT NULL
          AND ${scopeSql(scope)}
@@ -369,7 +370,7 @@ export async function fetchTeammateTokenSheet(
     -- budget belongs to the project, not to the people the viewer can see.
     whole AS (
       SELECT u.project_id, COALESCE(SUM(u.cost_usd), 0) AS usd
-        FROM v_complete_usage u
+        FROM v_complete_usage_current u
        WHERE u.project_id IN (SELECT project_id FROM mine)
          AND ${CONFIRMED_ONLY}
          AND u.ts_event >= ${win.startIso}::timestamptz
@@ -378,7 +379,7 @@ export async function fetchTeammateTokenSheet(
     ),
     -- The SAME allocation predicate every other budget figure sums
     -- (consumption.ts fetchProjectAllocations / cost-centres.ts
-    -- fetchCostCentreProjectBudgets): baseline + top-up, currently effective.
+    -- fetchCostCentreProjectBudgets): pool baseline + top-up, currently effective.
     -- A project with no active allocation is ABSENT, never 0.
     alloc AS (
       SELECT a.scope_id AS project_id, COALESCE(SUM(a.budget_usd), 0) AS usd
@@ -386,6 +387,7 @@ export async function fetchTeammateTokenSheet(
        WHERE a.scope_type = 'project'
          AND a.scope_id IN (SELECT project_id FROM mine)
          AND a.allocation_kind IN ('baseline', 'top-up')
+         AND a.teammate_id IS NULL
          AND a.effective @> now()
        GROUP BY a.scope_id
     )
@@ -504,7 +506,7 @@ export async function fetchTeammateContribution(
            COALESCE(SUM(u.cost_usd), 0)::text AS usd,
            ${NO_PROJECT_STATE} AS state,
            COUNT(DISTINCT (u.ts_event AT TIME ZONE 'UTC')::date)::text AS days
-      FROM v_complete_usage u
+      FROM v_complete_usage_current u
      WHERE u.teammate_id = ${subjectId}::uuid
        AND ${scopeSql(scope)}
        AND ${CONFIRMED_ONLY}
@@ -521,7 +523,7 @@ export async function fetchTeammateContribution(
     SELECT COUNT(DISTINCT (u.ts_event AT TIME ZONE 'UTC')::date)::text AS active,
            COUNT(DISTINCT (u.ts_event AT TIME ZONE 'UTC')::date)
              FILTER (WHERE ${NO_PROJECT_STATE} = 'untagged')::text AS untagged_days
-      FROM v_complete_usage u
+      FROM v_complete_usage_current u
      WHERE u.teammate_id = ${subjectId}::uuid
        AND ${scopeSql(scope)}
        AND ${CONFIRMED_ONLY}

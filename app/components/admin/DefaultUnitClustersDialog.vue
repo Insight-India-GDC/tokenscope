@@ -30,10 +30,11 @@
  * misconfiguration. `manager_owns_unit_count` comes back per cluster and the
  * action is replaced, for those rows, by the reason it is not on offer.
  */
-import { ref, watch } from 'vue'
+import { ref, watch, type ComponentPublicInstance } from 'vue'
 import { consola } from 'consola'
 import UiButton from '../ui/Button.vue'
 import { apiErrorDetail } from '../../composables/useApiError'
+import { useModalA11y } from '../../composables/useModalA11y'
 
 interface Cluster {
   manager_oid: string | null
@@ -58,6 +59,17 @@ interface OccupancyResponse {
 
 const props = defineProps<{ orgUnitId: string | null; unitName: string }>()
 const emit = defineEmits<{ close: []; 'open-worklist': [] }>()
+
+// Shared dialog contract: Escape closes, Tab is trapped, Close takes focus on
+// open (the content is read-only until it loads) and focus returns on close.
+const dialogEl = ref<HTMLElement | null>(null)
+const closeBtn = ref<ComponentPublicInstance | null>(null)
+useModalA11y({
+  isOpen: () => props.orgUnitId !== null,
+  dialogEl,
+  firstField: closeBtn,
+  onClose: () => emit('close'),
+})
 
 const data = ref<OccupancyResponse | null>(null)
 const loading = ref(false)
@@ -92,6 +104,7 @@ watch(
     @click.self="emit('close')"
   >
     <div
+      ref="dialogEl"
       class="w-full max-w-2xl bg-white rounded-xl shadow-xl max-h-[85vh] overflow-y-auto"
       role="dialog"
       aria-modal="true"
@@ -105,7 +118,7 @@ watch(
             Who is in {{ unitName }} that should not be?
           </h2>
         </div>
-        <UiButton kind="ghost" size="sm" data-testid="default-clusters-close" @click="emit('close')">Close</UiButton>
+        <UiButton ref="closeBtn" kind="ghost" size="sm" data-testid="default-clusters-close" @click="emit('close')">Close</UiButton>
       </div>
 
       <div class="px-6 py-4">

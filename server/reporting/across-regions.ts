@@ -14,7 +14,8 @@
  *     (attribution ∪ the API−OTel gap), read through `usage_rollup_daily` — the
  *     day-grain rollup DEFINED as an aggregate of `v_complete_usage`
  *     (docs/design/usage-rollup-lane.md R5; seasonality alone stays on the
- *     view — it is off the page's request path), `region_id` grain.
+ *     view — it is off the page's request path); region cards and the region axis
+ *     group by each person's CURRENT region (v_usage_rollup_current).
  *   - the monetised genuine-vs-chargeable pair → `v_finance_chargeback_month`
  *     (the §B bill lane), region grain. The Copilot chargeable is gated on
  *     `copilot.mode` (build-design §6 interim labelling) — held back with a
@@ -367,8 +368,8 @@ export interface AcrossRegionCard {
 
 /**
  * Per-region comparison cards (build-design §3 "region cards"; PRD region
- * comparison: $, %, active users, avg/user). Usage by `region_id` from
- * `usage_rollup_daily` (the §A rollup — usage-rollup-lane.md R5; teammate_id is
+ * comparison: $, %, active users, avg/user). Usage by each person's CURRENT region from
+ * `v_usage_rollup_current` (the §A rollup — usage-rollup-lane.md R5; teammate_id is
  * in its grain, so the distinct-user count is exact) merged with the
  * finance-lane chargeable pair. The NULL
  * region_id bucket is retained as an explicit "Unassigned" card so the cards SUM
@@ -389,7 +390,7 @@ export async function fetchAcrossRegionCards(
     SELECT u.region_id::text AS region_id, r.code, r.display_name,
            COALESCE(SUM(u.cost_usd), 0)::text AS genuine,
            COUNT(DISTINCT u.teammate_id)::int AS active_users
-    FROM usage_rollup_daily u
+    FROM v_usage_rollup_current u
     LEFT JOIN region r ON r.id = u.region_id
     WHERE u.day >= ${window.startIso.slice(0, 10)}::date
       AND u.day <  ${window.endIso.slice(0, 10)}::date

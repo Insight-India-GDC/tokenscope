@@ -75,7 +75,8 @@ const showFooter = computed(() => props.total != null && props.rows.length < (pr
             <th
               v-for="c in columns"
               :key="c.key"
-              class="text-left text-[11px] font-bold uppercase tracking-[1.2px] text-carbon-3 px-5 py-3"
+              scope="col"
+              class="text-left text-[11px] font-bold uppercase tracking-[1.2px] text-carbon-3 px-5 py-3 whitespace-nowrap"
             >
               {{ c.label }}
             </th>

@@ -155,6 +155,7 @@ const STUBS = {
   UiBadge: { template: '<span><slot /></span>' },
   UiEyebrow: { template: '<div><slot /></div>' },
   UiEmptyState: true,
+  UiButton: { emits: ['click'], template: '<button @click="$emit(\'click\')"><slot /></button>' },
   NuxtLink: { template: '<a><slot /></a>' },
   DateRangeControl: { template: '<div data-testid="date-range-control" />' },
   UsageWindowToggle: true,
@@ -163,6 +164,8 @@ const STUBS = {
     template:
       '<div data-testid="cb-bars" :data-rows="rows.length" :data-end="endDay" :data-days="windowDays" :data-partial="partialDay" />',
   },
+  ManagePanel: { template: '<div data-testid="project-manage" />' },
+  BudgetRequestCard: { template: '<div data-testid="budget-request-card" />' },
   ExportCsvButton: {
     props: ['endpoint', 'params', 'filename'],
     template: '<a data-testid="csv-export" :data-lane="params.lane" :data-filename="filename" />',
@@ -190,6 +193,7 @@ async function mountPage(opts: MountOpts) {
   vi.stubGlobal('fmtTokens', fmtTokens)
   vi.stubGlobal('fmtTimeAgo', fmtTimeAgo)
   vi.stubGlobal('useRoute', () => ({ params: { code: 'ACME-1' }, query: {} }))
+  vi.stubGlobal('useRouter', () => ({ replace: vi.fn() }))
   vi.stubGlobal('useSession', () => ({ session: ref({ teammateId: T1 }), ensure: async () => {} }))
   vi.stubGlobal('useReportState', () => ({
     month: ref<string | null>(null),
@@ -277,7 +281,7 @@ describe('/projects/[code] member depth — usage lane', () => {
     const { w } = await mountPage({ member: memberUsage() })
     for (const id of MEMBER_USAGE_ONLY) expect(w.find(`[data-testid="${id}"]`).exists(), id).toBe(true)
     expect(w.find('[data-testid="proj-chargeback"]').exists()).toBe(false)
-    expect(w.find('[data-testid="proj-lane-pill"]').text()).toBe('§A · attributed usage')
+    expect(w.find('[data-testid="proj-lane-pill"]').text()).toBe('Attributed usage')
     expect(w.text()).not.toContain('never shows chargeback')
     expect(w.text()).toContain('Switch to Chargeback')
   })
@@ -306,7 +310,7 @@ describe('/projects/[code] member depth — chargeback lane', () => {
     const named = w.findAll('[data-testid="proj-cb-contributor"]')
     expect(named.map((r) => r.text())).toEqual(['Priya Iyer$80.00', 'Ben Ali$30.00', 'kim@example.com$13.45'])
     expect(w.find('[data-testid="proj-cb-remainder"]').exists()).toBe(false)
-    expect(w.find('[data-testid="proj-lane-pill"]').text()).toBe('§B · bill chargeback')
+    expect(w.find('[data-testid="proj-lane-pill"]').text()).toBe('Chargeback')
   })
 
   it('hides every §A-only card, with one line saying why', async () => {
@@ -345,12 +349,43 @@ describe('/projects/[code] member depth — chargeback lane', () => {
   })
 })
 
+describe('/projects/[code] — budgets do not follow the reporting lens', () => {
+  it('a PM gets Manage and its drawer under chargeback, as under usage', async () => {
+    for (const urlLane of ['usage', 'chargeback'] as const) {
+      const v = { ...viewer, can_manage: true }
+      const member = urlLane === 'chargeback' ? { ...memberChargeback(), viewer: v } : memberUsage({ viewer: v })
+      const { w } = await mountPage({ member, urlLane })
+      expect(w.find('[data-testid="project-request-budget"]').exists(), urlLane).toBe(false)
+      await w.find('[data-testid="project-manage-open"]').trigger('click')
+      expect(w.find('[data-testid="project-manage-drawer"] [data-testid="project-manage"]').exists(), urlLane).toBe(true)
+    }
+  })
+
+  it('a member gets Request more budget and its drawer under chargeback, as under usage', async () => {
+    for (const urlLane of ['usage', 'chargeback'] as const) {
+      const member = urlLane === 'chargeback' ? memberChargeback() : memberUsage()
+      const { w } = await mountPage({ member, urlLane })
+      expect(w.find('[data-testid="project-manage-open"]').exists(), urlLane).toBe(false)
+      await w.find('[data-testid="project-request-budget"]').trigger('click')
+      expect(w.find('[data-testid="project-request-drawer"] [data-testid="budget-request-card"]').exists(), urlLane).toBe(true)
+    }
+  })
+
+  it('a viewer admitted by a reports grant sees neither button', async () => {
+    for (const reports of [reportsUsage(), reportsChargeback()]) {
+      const { w } = await mountPage({ member: null, reports })
+      expect(w.find('[data-testid="project-manage-open"]').exists()).toBe(false)
+      expect(w.find('[data-testid="project-request-budget"]').exists()).toBe(false)
+    }
+  })
+})
+
 describe('/projects/[code] reports depth', () => {
   it('usage lane: the toggle renders and the pill no longer sends chargeback to the Finance tab', async () => {
     const { w } = await mountPage({ member: null, reports: reportsUsage() })
     expect(w.find('[data-testid="project-reports-band"]').exists()).toBe(true)
     expect(w.find('[data-testid="lane-toggle"]').exists()).toBe(true)
-    expect(w.find('[data-testid="proj-reports-lane-pill"]').text()).toBe('§A · attributed usage')
+    expect(w.find('[data-testid="proj-reports-lane-pill"]').text()).toBe('Attributed usage')
     expect(w.text()).not.toContain('Finance tab')
     expect(w.find('[data-testid="proj-chargeback"]').exists()).toBe(false)
   })
@@ -359,7 +394,7 @@ describe('/projects/[code] reports depth', () => {
     const { w, queryOf } = await mountPage({ member: null, reports: reportsChargeback(), urlLane: 'chargeback' })
     expect(queryOf('reports').lane).toBe('chargeback')
     expect(w.find('[data-testid="lane-chargeback"]').attributes('aria-pressed')).toBe('true')
-    expect(w.find('[data-testid="proj-reports-lane-pill"]').text()).toBe('§B · bill chargeback')
+    expect(w.find('[data-testid="proj-reports-lane-pill"]').text()).toBe('Chargeback')
     expect(w.find('[data-testid="proj-cb-total"]').text()).toBe('$123.45')
     const named = w.findAll('[data-testid="proj-cb-contributor"]')
     expect(named.map((r) => r.text())).toEqual(['Priya Iyer$100.00'])

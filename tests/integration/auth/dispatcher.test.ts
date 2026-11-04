@@ -321,8 +321,8 @@ describe('dispatchInbox', () => {
 
     const results = await dispatchInbox(t.db, {
       category: 'sync-conflict',
-      subject: 'PSR conflict on DISP-1',
-      body: { connector: 'psr-apac', target: 'project' },
+      subject: 'Pathway conflict on DISP-1',
+      body: { connector: 'pathway-apac', target: 'project' },
       relatedEntityKind: 'project',
       relatedEntityId: proj!.id,
     })

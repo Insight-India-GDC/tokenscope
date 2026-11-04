@@ -413,7 +413,7 @@ const COVERAGE_REMEDIATION_HINT: Record<CoverageOrgObservation['state'], string>
   stale: 'GitHub no longer lists this org as an enterprise member — remove it via Delete on its Orgs row.',
   'not-installed': 'Install the reconciliation App on this org in GitHub, or run "Discover Copilot orgs" if it already has seats.',
   suspended: 'Unsuspend the App installation on this org in GitHub enterprise settings, then Recheck.',
-  'not-onboarded': 'Open Edit on its Orgs row (or "+ Add org" if it has none yet) and set its Cost-owning unit.',
+  'not-onboarded': 'Open Edit on its Orgs row (or "+ Add org" if it has none yet) and set its Business Unit.',
   connected: '',
 }
 // Cross-enterprise banner summary — computed client-side from the SAME payload so it
@@ -765,7 +765,7 @@ async function deleteOrg(o: OrgRow) {
 type GithubVerdict =
   | 'healthy' | 'no-teammate-match' | 'metrics-empty' | 'upstream-transient' | 'probe-error'
   | 'no-license-orgs' | 'auth-failed' | 'egress-blocked' | 'not-installed' | 'key-malformed' | 'no-credential'
-interface GithubStage { ok: boolean; reason?: string; count?: number; rosterMatched?: number; recordCount?: number; matchedRecords?: number; skipped?: boolean; hint?: string }
+interface GithubStage { ok: boolean; reason?: string; count?: number; rosterMatched?: number; selfClaimed?: number; recordCount?: number; matchedRecords?: number; skipped?: boolean; hint?: string }
 // Coverage stage (Workstream D) — a cheap, persisted-only read attached to every
 // Verify outcome. denominator null = no honest "N of M" claim can be made (never
 // render "0 of 0"); nonConnected is the run-warning/banner trigger count.
@@ -870,7 +870,7 @@ useModalA11y({
 // (POST /map writes the enterprise lane) so the reconciler then attributes their spend. The list
 // is LIVE (an unmapped login is skipped before reconciliation_record is written, so it's not
 // persisted) — hence a per-enterprise on-demand button, like Verify.
-interface UnresolvedLogin { login: string; licenseOrg: string | null; credits: number | null; lastSeenDay: string | null; profileName: string | null; profileEmail: string | null }
+interface UnresolvedLogin { login: string; licenseOrg: string | null; credits: number | null; lastSeenDay: string | null; profileName: string | null; profileEmail: string | null; selfClaimedBy: string | null }
 interface UnresolvedResult {
   enterpriseId: string
   externalId: string
@@ -1161,7 +1161,7 @@ function onBackfillSaved() {
     <UiPageHead
       eyebrow="Administration"
       title="Reconciliation"
-      sub="What the billing-reconciliation engine ran, and the deltas it produced. Read-only."
+      sub="What the billing-reconciliation engine ran and the deltas it produced, plus the provider orgs, enterprises and backfills it reads from."
     >
       <template #actions>
         <UiButton
@@ -1200,13 +1200,13 @@ function onBackfillSaved() {
       class="mb-4 p-3 rounded-md text-sm font-medium"
       :class="toast.kind === 'ok'
         ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30'
-        : 'bg-brand-hunger/10 text-brand-hunger border border-brand-hunger/30'"
+        : 'bg-brand-hunger/10 text-brand-heart border border-brand-hunger/30'"
     >
       {{ toast.message }}
     </div>
 
     <!-- Tabs -->
-    <div class="flex gap-1 border-b border-carbon-6 mb-5">
+    <div class="flex gap-1 border-b border-calm-2 mb-5">
       <button
         v-for="t in (['runs', 'records', 'providers'] as const)"
         :key="t"
@@ -1228,9 +1228,9 @@ function onBackfillSaved() {
       <!-- on-demand trigger: force a reconciliation-family worker to run now
            (e.g. bind freshly-onboarded Copilot seats without waiting for cron).
            platform-admin only — the workers are global. -->
-      <div v-if="canRunWorkers" class="flex flex-wrap items-center gap-2 mb-4 p-3 rounded-md border border-carbon-6">
+      <div v-if="canRunWorkers" class="flex flex-wrap items-center gap-2 mb-4 p-3 rounded-md border border-calm-2">
         <span class="text-[11px] uppercase font-bold text-carbon-3">Run now</span>
-        <select v-model="triggerWorker" class="text-sm border border-carbon-6 rounded-md px-3 py-1.5 bg-white" data-testid="admin-recon-trigger-worker">
+        <select v-model="triggerWorker" class="text-sm border border-calm rounded-md px-3 py-1.5 bg-white" data-testid="admin-recon-trigger-worker">
           <option v-for="w in TRIGGERABLE_WORKERS" :key="w" :value="w">{{ w }}</option>
         </select>
         <button
@@ -1245,7 +1245,7 @@ function onBackfillSaved() {
       </div>
 
       <div class="flex flex-wrap gap-3 mb-4">
-        <select v-model="runWorker" class="text-sm border border-carbon-6 rounded-md px-3 py-1.5 bg-white" data-testid="admin-recon-run-worker">
+        <select v-model="runWorker" class="text-sm border border-calm rounded-md px-3 py-1.5 bg-white" data-testid="admin-recon-run-worker">
           <option value="">All workers</option>
           <option value="reconciliation-sync">reconciliation-sync</option>
           <option value="identity-sync">identity-sync</option>
@@ -1253,7 +1253,7 @@ function onBackfillSaved() {
           <option value="reconciliation-gap">reconciliation-gap</option>
           <option value="connector-health">connector-health</option>
         </select>
-        <select v-model="runStatus" class="text-sm border border-carbon-6 rounded-md px-3 py-1.5 bg-white" data-testid="admin-recon-run-status">
+        <select v-model="runStatus" class="text-sm border border-calm rounded-md px-3 py-1.5 bg-white" data-testid="admin-recon-run-status">
           <option value="">Any status</option>
           <option value="success">success</option>
           <option value="failure">failure</option>
@@ -1263,7 +1263,7 @@ function onBackfillSaved() {
 
       <UiFetchErrorBanner :error="runsError" label="worker runs" @retry="refreshRuns()" />
       <UiCard>
-        <ul v-if="runs?.runs.length" class="divide-y divide-carbon-6">
+        <ul v-if="runs?.runs.length" class="divide-y divide-calm-2">
           <li v-for="r in runs.runs" :key="r.id" :data-testid="`admin-recon-run-${r.id}`">
             <button class="w-full flex items-center justify-between py-3 gap-4 text-left" :disabled="!isPlatformAdmin" @click="openRun(r.id)">
               <div class="flex items-center gap-3 min-w-0">
@@ -1288,7 +1288,7 @@ function onBackfillSaved() {
                 </div>
                 <div v-if="selectedRun.error" class="mb-3 font-mono text-xs text-brand-hunger break-all">{{ selectedRun.error }}</div>
                 <div v-if="resultEntries.length" class="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1">
-                  <div v-for="[k, v] in resultEntries" :key="k" class="flex items-center justify-between gap-2 border-b border-carbon-7 py-1">
+                  <div v-for="[k, v] in resultEntries" :key="k" class="flex items-center justify-between gap-2 border-b border-calm-2 py-1">
                     <span class="text-carbon-2 font-mono text-xs">{{ k }}</span>
                     <span class="text-carbon font-mono text-xs font-bold">{{ v }}</span>
                   </div>
@@ -1332,21 +1332,21 @@ function onBackfillSaved() {
       </div>
 
       <div class="flex flex-wrap gap-3 mb-4">
-        <select v-model="recStatus" class="text-sm border border-carbon-6 rounded-md px-3 py-1.5 bg-white" data-testid="admin-recon-rec-status">
+        <select v-model="recStatus" class="text-sm border border-calm rounded-md px-3 py-1.5 bg-white" data-testid="admin-recon-rec-status">
           <option value="proposed">proposed</option>
           <option value="applied">applied</option>
           <option value="rejected">rejected</option>
           <option value="superseded">superseded</option>
           <option value="all">all statuses</option>
         </select>
-        <select v-model="recDisposition" class="text-sm border border-carbon-6 rounded-md px-3 py-1.5 bg-white" data-testid="admin-recon-rec-dispo">
+        <select v-model="recDisposition" class="text-sm border border-calm rounded-md px-3 py-1.5 bg-white" data-testid="admin-recon-rec-dispo">
           <option value="">All dispositions</option>
           <option value="untagged">untagged</option>
           <option value="walk_back">walk-back</option>
           <option value="no_install">no-install</option>
           <option value="ingest_only">ingest-only</option>
         </select>
-        <select v-model="recProvider" class="text-sm border border-carbon-6 rounded-md px-3 py-1.5 bg-white" data-testid="admin-recon-rec-provider">
+        <select v-model="recProvider" class="text-sm border border-calm rounded-md px-3 py-1.5 bg-white" data-testid="admin-recon-rec-provider">
           <option value="">All providers</option>
           <option value="anthropic">anthropic</option>
           <option value="github">github</option>
@@ -1357,7 +1357,7 @@ function onBackfillSaved() {
         <div v-if="recs?.records.length" class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
-              <tr class="text-[11px] uppercase tracking-wide text-carbon-3 text-left border-b border-carbon-6">
+              <tr class="text-[11px] uppercase tracking-wide text-carbon-3 text-left border-b border-calm-2">
                 <th class="py-2 pr-3 font-bold">Period</th>
                 <th class="py-2 pr-3 font-bold">Subject</th>
                 <th class="py-2 pr-3 font-bold">Category</th>
@@ -1371,7 +1371,7 @@ function onBackfillSaved() {
             <tbody>
               <template v-for="r in recs.records" :key="r.id">
                 <tr
-                  class="border-b border-carbon-7 hover:bg-carbon-8 cursor-pointer"
+                  class="border-b border-calm-2 hover:bg-calm-2/40 cursor-pointer"
                   :data-testid="`admin-recon-rec-${r.id}`"
                   @click="toggleRecord(r.id)"
                 >
@@ -1385,11 +1385,11 @@ function onBackfillSaved() {
                   <td class="py-2 pr-3 text-right font-mono text-xs font-bold">{{ usd(r.deltaUsd) }}</td>
                 </tr>
                 <tr v-if="openRecordId === r.id" :data-testid="`admin-recon-rec-detail-${r.id}`">
-                  <td colspan="8" class="bg-carbon-8 px-3 py-3">
+                  <td colspan="8" class="bg-calm-2/40 px-3 py-3">
                     <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-2 text-xs">
                       <div><span class="text-carbon-3">Provider</span><div class="font-mono">{{ r.provider }} / {{ r.enterpriseRef }}</div></div>
                       <div v-if="r.licenseOrg"><span class="text-carbon-3">License org</span><div class="font-mono">{{ r.licenseOrg }}</div></div>
-                      <div><span class="text-carbon-3">Cost-owning unit</span><div class="font-mono">{{ r.costOwningUnit ?? '—' }}</div></div>
+                      <div><span class="text-carbon-3">Business Unit</span><div class="font-mono">{{ r.costOwningUnit ?? '—' }}</div></div>
                       <div><span class="text-carbon-3">Region</span><div class="font-mono">{{ r.regionCode ?? '—' }}</div></div>
                       <div><span class="text-carbon-3">Reconcile math</span><div class="font-mono">{{ usd(r.actualUsd) }} actual − {{ usd(r.otelAttributedUsd) }} OTel = {{ usd(r.deltaUsd) }}</div></div>
                       <div v-if="r.actualQty"><span class="text-carbon-3">Native qty</span><div class="font-mono">{{ Number(r.actualQty) }} {{ r.actualUnitType }}</div></div>
@@ -1437,7 +1437,7 @@ function onBackfillSaved() {
       <div
         v-if="isPlatformAdmin && coverageBanner.hasAnyGithubEnterprise && (coverageBanner.nonConnected > 0 || coverageBanner.unknownEnterprises > 0)"
         class="mb-4 rounded-md border px-4 py-3 text-sm"
-        :class="coverageBanner.nonConnected > 0 ? 'border-brand-hunger bg-brand-hunger/5' : 'border-carbon-6 bg-carbon-8'"
+        :class="coverageBanner.nonConnected > 0 ? 'border-brand-hunger bg-brand-hunger/5' : 'border-calm-2 bg-calm-2/40'"
         data-testid="admin-recon-coverage-banner"
       >
         <div class="font-bold text-carbon">
@@ -1475,7 +1475,7 @@ function onBackfillSaved() {
         <div v-else-if="entData?.enterprises.length" class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
-              <tr class="text-[11px] uppercase tracking-wide text-carbon-3 text-left border-b border-carbon-6">
+              <tr class="text-[11px] uppercase tracking-wide text-carbon-3 text-left border-b border-calm-2">
                 <th class="py-2 pr-3 font-bold">Provider</th>
                 <th class="py-2 pr-3 font-bold">Name</th>
                 <th class="py-2 pr-3 font-bold">External id</th>
@@ -1491,7 +1491,7 @@ function onBackfillSaved() {
               <tr
                 v-for="e in entData.enterprises"
                 :key="e.id"
-                class="border-b border-carbon-7 hover:bg-carbon-8"
+                class="border-b border-calm-2 hover:bg-calm-2/40"
                 :data-testid="`admin-recon-ent-${e.id}`"
               >
                 <td class="py-2 pr-3"><UiBadge kind="neutral">{{ e.provider }}</UiBadge></td>
@@ -1637,7 +1637,7 @@ function onBackfillSaved() {
         <div v-else-if="orgsData?.orgs.length" class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
-              <tr class="text-[11px] uppercase tracking-wide text-carbon-3 text-left border-b border-carbon-6">
+              <tr class="text-[11px] uppercase tracking-wide text-carbon-3 text-left border-b border-calm-2">
                 <th class="py-2 pr-3 font-bold">Provider</th>
                 <th class="py-2 pr-3 font-bold">Name</th>
                 <th class="py-2 pr-3 font-bold">Variant</th>
@@ -1655,7 +1655,7 @@ function onBackfillSaved() {
               <tr
                 v-for="o in orgsData.orgs"
                 :key="o.id"
-                class="border-b border-carbon-7 hover:bg-carbon-8"
+                class="border-b border-calm-2 hover:bg-calm-2/40"
                 :data-testid="`admin-recon-org-${o.id}`"
               >
                 <td class="py-2 pr-3"><UiBadge kind="neutral">{{ o.provider }}</UiBadge></td>
@@ -1780,7 +1780,7 @@ function onBackfillSaved() {
           <AdminPageSkeleton v-if="!backfillsError && backfills == null" :rows="2" :toolbar="false" />
           <ul
             v-else-if="backfills?.requests.length"
-            class="divide-y divide-carbon-6"
+            class="divide-y divide-calm-2"
             data-testid="backfill-requests"
           >
             <li
@@ -1902,7 +1902,8 @@ function onBackfillSaved() {
               <span class="font-bold text-carbon">{{ verifyResult.credentialKind === 'github-app' ? 'externalIdentities' : 'seats' }}</span>
               <span v-if="verifyResult.stages.licenses.ok" class="text-carbon-2">
                 — ok · {{ verifyResult.stages.licenses.count }} {{ verifyResult.credentialKind === 'github-app' ? 'identities' : 'seats' }},
-                {{ verifyResult.stages.licenses.rosterMatched }} matched
+                {{ verifyResult.stages.licenses.rosterMatched }} matched<template v-if="verifyResult.stages.licenses.selfClaimed">,
+                  {{ verifyResult.stages.licenses.selfClaimed }} claimed by the teammate only (not counted until an admin binds them)</template>
               </span>
               <span v-else class="text-brand-hunger">— {{ stageReason(verifyResult.stages.licenses.reason) }}</span>
               <!-- actionable, key-safe remediation hint (App-mode externalIdentities org-admin-read denial) -->
@@ -2004,6 +2005,9 @@ function onBackfillSaved() {
             <div class="flex items-center gap-3">
               <div class="min-w-0 flex-1">
                 <div class="text-sm font-mono text-carbon truncate">{{ l.login }}</div>
+                <div v-if="l.selfClaimedBy" class="text-[11px] text-carbon-2 truncate" :data-testid="`admin-recon-unresolved-claimed-${l.login}`">
+                  Claimed by {{ l.selfClaimedBy }}, unverified: its overage share stays Unallocated until mapped
+                </div>
                 <!-- Self-asserted github profile text. Labelled as such because it looks
                      authoritative and is not: it informs the admin's choice, it never makes
                      one. See getUserProfile in github-client.ts. -->
@@ -2035,7 +2039,7 @@ function onBackfillSaved() {
                 v-model="mapQuery"
                 type="search"
                 placeholder="Search teammates by name or email…"
-                class="w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+                class="w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
                 :data-testid="`admin-recon-unresolved-search-${l.login}`"
                 @input="onMapQueryInput"
               >

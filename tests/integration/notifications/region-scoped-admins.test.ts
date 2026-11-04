@@ -98,7 +98,7 @@ describe('region-scoped admin routing', () => {
       await dispatchInbox(t.db, {
         category: 'sync-conflict',
         subject: 'conflict on RSA-1',
-        body: { connector: 'psr' },
+        body: { connector: 'pathway' },
         relatedEntityKind: 'project',
         relatedEntityId: projA,
       }),
@@ -113,7 +113,7 @@ describe('region-scoped admin routing', () => {
       await dispatchInbox(t.db, {
         category: 'sync-conflict',
         subject: 'unscoped conflict',
-        body: { connector: 'psr' },
+        body: { connector: 'pathway' },
       }),
     )
     expect(got).toEqual(new Set(CROSS_REGION()))
@@ -190,7 +190,7 @@ describe('region-scoped admin routing', () => {
     await dispatchInbox(t.db, {
       category: 'sync-conflict',
       subject: 'scoped',
-      body: { connector: 'psr' },
+      body: { connector: 'pathway' },
       relatedEntityKind: 'project',
       relatedEntityId: projA,
     })

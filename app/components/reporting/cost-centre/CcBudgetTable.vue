@@ -141,7 +141,7 @@ const LEGEND: { state: BudgetState; label: string }[] = [
       <div class="min-w-0">
         <h3 class="text-sm font-semibold text-carbon-1">Budget tracker</h3>
         <p class="text-[11px] text-carbon-3 mt-0.5">
-          <template v-if="isChargeback">Chargeback (§B) per {{ BU_LABEL_LOWER }} — select one to drill in.</template>
+          <template v-if="isChargeback">Chargeback per {{ BU_LABEL_LOWER }} — select one to drill in.</template>
           <template v-else>Ranked by burn · select a {{ BU_LABEL_LOWER }} to drill in.</template>
         </p>
         <p
@@ -167,7 +167,7 @@ const LEGEND: { state: BudgetState; label: string }[] = [
       <li v-for="(row, i) in rows" :key="row.card.id">
         <button
           type="button"
-          class="group w-full text-left border-l-2 px-4 sm:px-5 py-3.5 flex flex-col gap-3 transition-colors hover:bg-brand-harmony-sheer/60 focus:outline-none focus-visible:bg-brand-harmony-sheer md:grid md:items-center md:gap-x-5 md:gap-y-0 md:grid-cols-[1.5rem_minmax(8rem,1.25fr)_6.5rem_minmax(9.5rem,1.9fr)_minmax(8rem,auto)_0.6rem]"
+          class="group w-full text-left border-l-2 px-4 sm:px-5 py-3.5 flex flex-col gap-3 transition-colors hover:bg-brand-harmony-sheer/60 focus-visible:-outline-offset-2 focus-visible:bg-brand-harmony-sheer md:grid md:items-center md:gap-x-5 md:gap-y-0 md:grid-cols-[1.5rem_minmax(8rem,1.25fr)_6.5rem_minmax(9.5rem,1.9fr)_minmax(8rem,auto)_0.6rem]"
           :class="isChargeback ? 'border-l-transparent' : ACCENT_CLASS[row.state]"
           :data-testid="`cc-row-${row.card.code}`"
           :data-state="row.state"

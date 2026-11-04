@@ -10,7 +10,11 @@ import { sql } from 'drizzle-orm'
 import { requireRole } from '../../../../auth/rbac'
 import { withRequestRls } from '../../../../db/request-rls'
 import { isPlatformAdmin } from '../../../../../shared/auth/roles'
-import { GOVERNANCE_SETTING_KEYS } from '../../../../utils/governance-settings'
+import {
+  GOVERNANCE_PLATFORM_ONLY_KEYS,
+  GOVERNANCE_SETTING_KEYS,
+  GOVERNANCE_SWITCH_KEYS,
+} from '../../../../utils/governance-settings'
 
 interface PlatformRow extends Record<string, unknown> {
   key: string
@@ -52,6 +56,8 @@ export default defineEventHandler(async (event) => {
     `)
     return {
       keys: GOVERNANCE_SETTING_KEYS,
+      switch_keys: GOVERNANCE_SWITCH_KEYS,
+      platform_only_keys: GOVERNANCE_PLATFORM_ONLY_KEYS,
       platform: [...platform].map((r) => ({
         key: r.key,
         value: Number(r.value_numeric),

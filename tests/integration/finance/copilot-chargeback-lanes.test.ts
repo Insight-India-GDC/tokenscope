@@ -126,7 +126,6 @@ function wholeScope(): RegionalScope {
     ou: null,
     usageScope: truthy,
     financeScope: truthy,
-    pointInTimeDims: true,
   }
 }
 

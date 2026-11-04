@@ -494,6 +494,8 @@ describe('the KPI row threads a SEPARATE clamp per lane', () => {
         VALUES (${inst!.id}::uuid, ${m!.id}::uuid, ${regionB}::uuid, ${u!.id}::uuid, 'claude-code',
                 'claude-sonnet-4-6', 'input', 100, 2, 'tier-1', 'estimated',
                 '2026-04-09T00:00:00Z'::timestamptz, 'conv-sb-april')`
+      // The floor reads the day rollup (month-floor.ts), so materialise the row.
+      await rebuildUsageRollup(t.db)
       const mine = await fetchKpiCore(t.db, scopeA(), MONTH_WINDOW, OFF)
       const all = await fetchKpiCore(t.db, scopeAll(), MONTH_WINDOW, OFF)
       expect(all.monthFloor).toBe('2026-04') // region B's April is company history
@@ -503,6 +505,7 @@ describe('the KPI row threads a SEPARATE clamp per lane', () => {
       expect(all.genuineUsd).toBeCloseTo(14, 2)
     } finally {
       await t.client`DELETE FROM attribution_record WHERE claude_session_id = 'conv-sb-april'`
+      await rebuildUsageRollup(t.db)
     }
   })
 })
@@ -764,21 +767,23 @@ describe('one implementation, not two', () => {
     // day-grain rollup DEFINED as an aggregate of v_complete_usage
     // (docs/design/usage-rollup-lane.md R5/R7). Same lane, same wall: none of
     // them may touch a v_finance_* view, and the bill engine may touch neither
-    // the §A view nor its rollup.
+    // the §A view nor its rollup. Placement-aware readers go through the
+    // current-org lens view over the rollup (mig 0162), which is the same source.
     const usage = read('server/reporting/engine/usage-series.ts')
     const coverage = read('server/reporting/engine/usage-coverage.ts')
     const drivers = read('server/reporting/engine/drivers.ts')
     const bill = read('server/reporting/engine/chargeback-series.ts')
-    expect(usage).toContain('usage_rollup_daily')
+    expect(usage).toMatch(/\b(usage_rollup_daily|v_usage_rollup_current)\b/)
     expect(usage).not.toContain('v_finance_bill_chargeback')
-    expect(coverage).toContain('usage_rollup_daily')
+    expect(coverage).toMatch(/\b(usage_rollup_daily|v_usage_rollup_current)\b/)
     expect(coverage).not.toMatch(/v_finance_/)
     expect(coverage).not.toContain('attribution_record')
     expect(coverage).not.toContain('attribution_aggregate')
-    expect(drivers).toContain('usage_rollup_daily')
+    expect(drivers).toMatch(/\b(usage_rollup_daily|v_usage_rollup_current)\b/)
     expect(drivers).not.toMatch(/v_finance_/)
     expect(bill).toContain('v_finance_bill_chargeback')
     expect(bill).not.toContain('v_complete_usage')
     expect(bill).not.toContain('usage_rollup_daily')
+    expect(bill).not.toContain('v_usage_rollup_current')
   })
 })

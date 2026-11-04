@@ -144,7 +144,7 @@ function fmtDate(iso: string | null): string {
             type="text"
             inputmode="decimal"
             placeholder="500.00"
-            class="w-full px-2.5 py-1.5 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+            class="w-full px-2.5 py-1.5 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
             data-testid="topup-amount"
           >
         </label>
@@ -153,7 +153,7 @@ function fmtDate(iso: string | null): string {
           <input
             v-model="form.effective_from"
             type="date"
-            class="w-full px-2.5 py-1.5 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+            class="w-full px-2.5 py-1.5 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
             data-testid="topup-from"
           >
         </label>
@@ -162,7 +162,7 @@ function fmtDate(iso: string | null): string {
           <input
             v-model="form.effective_to"
             type="date"
-            class="w-full px-2.5 py-1.5 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+            class="w-full px-2.5 py-1.5 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
             data-testid="topup-to"
           >
         </label>
@@ -174,7 +174,7 @@ function fmtDate(iso: string | null): string {
           type="text"
           placeholder="Q2 scope extension, embeddings POC, …"
           maxlength="500"
-          class="w-full px-2.5 py-1.5 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+          class="w-full px-2.5 py-1.5 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
           data-testid="topup-reason"
         >
       </label>

@@ -90,11 +90,12 @@ export const teammate = pgTable('teammate', {
   source: text('source').notNull().default('manual'),
   isPinned: boolean('is_pinned').notNull().default(true),
   lastSyncAt: timestamp('last_sync_at', { withTimezone: true }),
-  // Wave-VII: active-session revocation anchor. NULL = no revocation
-  // pending; non-NULL = any ts_session with issuedAt <= revoked_at is
-  // treated as cleared by validate-session middleware. Written by the
-  // role-change PATCH (auto-revoke) and the explicit revoke-sessions
-  // endpoint; both go through the audit-row + UPDATE single tx.
+  // The SESSION ANCHOR, and only that (#428, mig 0168's column comment).
+  // Every cookie session, auth code (by its approving session, #431) and
+  // interactive credential minted before it is refused; anything minted after
+  // is valid. Bumped by a role change, a region move, revoke-sessions and
+  // shadow retirement. Offboarding is is_active; device emission is
+  // emit_revoked_at. Never gate eligibility on it.
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
   // Mig 0152 (#414): the anchor device emission is judged against. Bumped by
   // revoke-sessions and retirement only, never by a role or region change.

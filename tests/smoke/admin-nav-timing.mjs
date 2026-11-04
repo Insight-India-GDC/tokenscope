@@ -37,7 +37,12 @@ import { getPersona } from '../../shared/auth/roles.ts'
 const base = process.env.BASE_URL ?? 'http://127.0.0.1:3450'
 const DELAY = Number(process.env.DELAY_MS ?? 1500)
 const SHELL_BUDGET = Number(process.env.SHELL_BUDGET_MS ?? 500)
-const PERSONAS = (process.env.PERSONAS ?? 'admin,finance').split(',').map((p) => p.trim()).filter(Boolean)
+// Default: the Region admin persona, the only demo persona with an admin role. `finance` is a
+// developer with a report_access_grant (shared/auth/roles.ts) and opens no admin page, so it is
+// not run. Platform-only and org-wide items need a platform-admin, and no demo persona is one
+// (deliberately: dev-login could then impersonate an org-wide admin), so this gate does not time
+// them; the run names them below instead of passing over them in silence.
+const PERSONAS = (process.env.PERSONAS ?? 'admin').split(',').map((p) => p.trim()).filter(Boolean)
 // ROUTES=/admin/a,/admin/b limits the run; WARM=1 visits each route once before
 // timing it (isolates route-chunk load — a dev-server cost, since a prod build
 // prefetches visible NuxtLink chunks — from the page's own behaviour).
@@ -238,7 +243,7 @@ try {
 
 // Selection guards. Zero iterations is the one way this gate can exit 0 while
 // asserting nothing, so an empty selection is a failure in its own right.
-if (PERSONAS.length === 0) failures.push('no personas selected — PERSONAS= is empty (default admin,finance)')
+if (PERSONAS.length === 0) failures.push('no personas selected — PERSONAS= is empty (default admin)')
 if (executedPersonas.size === 0) failures.push('no persona timed a single route — the run asserted nothing')
 if (executedRoutes.size === 0) failures.push(`no routes timed${ONLY.size ? ` for ROUTES=${[...ONLY].join(',')}` : ''} — the run asserted nothing`)
 const discoveredPaths = new Set([...discovered].map((h) => h.split('?')[0]))
@@ -260,6 +265,7 @@ const expected = allAdminNavItems().filter(
 if (ONLY.size === 0 && expected.length === 0) {
   failures.push(`no nav items are reachable by ${PERSONAS.join('/')} — coverage would assert nothing`)
 }
+const untimed = allAdminNavItems().filter((i) => !roles.some((r) => roleMeetsAccess(r, i.access)))
 const neverExercised = expected.filter((i) => !discovered.has(i.to))
 if (neverExercised.length) {
   failures.push(`nav items never exercised by ${PERSONAS.join('/')}: ${neverExercised.map((i) => `${i.label} (${i.to}, ${i.access})`).join(', ')}`)
@@ -271,6 +277,9 @@ for (const r of rows) {
 }
 console.warn(table.join('\n'))
 console.warn(`admin-nav-timing: nav items never exercised: ${neverExercised.length ? neverExercised.map((i) => i.to).join(', ') : 'none'}`)
+if (untimed.length) {
+  console.warn(`admin-nav-timing: not timed, no run persona may open them: ${untimed.map((i) => `${i.to} (${i.access})`).join(', ')}`)
+}
 if (clientErrors.length) console.warn(`admin-nav-timing: ${clientErrors.length} HTTP 4xx response(s) (not fatal): ${[...new Set(clientErrors)].slice(0, 5).join(' | ')}`)
 if (failures.length) {
   console.error(`admin-nav-timing: FAIL (${failures.length})\n - ${failures.join('\n - ')}`)

@@ -110,8 +110,12 @@ export function parseTstzrangeText(text: string | null | undefined): {
 
 /**
  * Most top-ups a project pool may carry that are still live (effective range
- * not yet ended). Top-ups stack and every one is a row summed on each budget
- * read, so an unbounded count is unbounded growth from one caller (H32);
- * expired top-ups do not count, so a long-lived project is never locked out.
+ * not yet ended) or were recorded in the last {@link TOPUP_CAP_RECENT_DAYS}
+ * days. Top-ups stack and every one is a row summed on each budget read, so an
+ * unbounded count is unbounded growth from one caller (H32). A back-dated
+ * top-up is never live, so it must count by when it was recorded, or one
+ * caller could append them without limit; old expired top-ups drop out, so a
+ * long-lived project is never locked out.
  */
 export const MAX_LIVE_TOPUPS_PER_PROJECT = 50
+export const TOPUP_CAP_RECENT_DAYS = 30

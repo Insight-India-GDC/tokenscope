@@ -21,6 +21,7 @@ import { z } from 'zod'
 import { resilientFetch } from '../utils/resilient-fetch'
 import { classifyProbeError } from '../utils/redact-probe-error'
 import { canonicaliseEmail } from '../../shared/identity/email'
+import { ACTIVITY_LABEL_MAX, NO_CONTROL_CHARS_RE as DISPLAY_TEXT_RE } from '../../shared/schemas/display-text'
 
 /*
  * KQL-injection guard (ING-10): instance ids are interpolated into KQL string
@@ -115,6 +116,10 @@ const UsageRecordSchema = z.object({
   // at join). Records under one DEVICE_SID may carry DIFFERENT hashes (one per
   // repo). Undefined when the repo emitted no .tokenscope → stays untagged.
   projectCodeHash: z.string().optional(),
+  // The folder's default activity (resource attr tokenscope.activity), decoded
+  // and bounded by boundActivityLabel. A CLAIM only: the joiner stores it only
+  // when it names an active activity_type, and then in the vocabulary's spelling.
+  activity: z.string().optional(),
   // Claude's own per-conversation session.id (Attributes['session.id']). Distinct
   // from our tokenscope.instance_id (the device). Subagents share their parent's
   // value, so grouping on this rolls subagent spend into the parent conversation.
@@ -601,6 +606,7 @@ export const KQL_PROJECTED_COLUMNS = {
   SourceRunId: '_req',
   OrganizationId: '_org',
   ProjectCodeHash: '_proj',
+  Activity: '_act',
   ClaudeSessionId: '_csid',
   Backfill: '_backfill',
   NanoAiu: '_nano_aiu',
@@ -657,6 +663,7 @@ export function buildSessionUsageKql(sessionId: string, sinceTsEvent?: Date, win
              _req = tostring(Attributes['request_id']),
              _org = tostring(Attributes['organization.id']),
              _proj = tostring(ResourceAttributes['project.code_hash']),
+             _act = tostring(ResourceAttributes['tokenscope.activity']),
              _csid = tostring(Attributes['session.id']),
              _backfill = tostring(ResourceAttributes['tokenscope.backfill']),
              _nano_aiu = todouble(Attributes['github.copilot.nano_aiu']),
@@ -667,7 +674,7 @@ export function buildSessionUsageKql(sessionId: string, sinceTsEvent?: Date, win
              // joiner stamps billing_lane='unknown' (== today's behaviour).
              _uemail = tostring(Attributes['user.email']),
              _ts = TimeGenerated
-    | project _sid = tostring(ResourceAttributes['tokenscope.instance_id']), _model, _req, _org, _proj, _csid, _backfill, _ts, _nano_aiu, _qsrc, _law_cost, _uemail,
+    | project _sid = tostring(ResourceAttributes['tokenscope.instance_id']), _model, _req, _org, _proj, _act, _csid, _backfill, _ts, _nano_aiu, _qsrc, _law_cost, _uemail,
               _input = tolong(Attributes['input_tokens']),
               _output = tolong(Attributes['output_tokens']),
               _cread = tolong(Attributes['cache_read_tokens']),
@@ -766,6 +773,7 @@ export function buildSessionUsageKqlGenAI(sessionId: string, sinceTsEvent?: Date
              _req = tostring(Attributes['gen_ai.response.id']),
              _org = '',
              _proj = tostring(ResourceAttributes['project.code_hash']),
+             _act = tostring(ResourceAttributes['tokenscope.activity']),
              _csid = tostring(Attributes['gen_ai.conversation.id']),
              _backfill = '',
              _nano_aiu = todouble(''),
@@ -774,7 +782,7 @@ export function buildSessionUsageKqlGenAI(sessionId: string, sinceTsEvent?: Date
              _uemail = '',
              _ts = TimeGenerated,
              ${tokenExtracts}
-    | project _sid = tostring(ResourceAttributes['tokenscope.instance_id']), _model, _req, _org, _proj, _csid, _backfill, _ts, _nano_aiu, _qsrc, _law_cost, _uemail, ${tokenArray}
+    | project _sid = tostring(ResourceAttributes['tokenscope.instance_id']), _model, _req, _org, _proj, _act, _csid, _backfill, _ts, _nano_aiu, _qsrc, _law_cost, _uemail, ${tokenArray}
     | mv-expand TokenType = dynamic([${tokenTypes}]) to typeof(string),
                 Tokens = pack_array(${tokenArray}) to typeof(long)
     | where Tokens > 0
@@ -831,6 +839,35 @@ export const MAX_EMITTING_EMAIL_LENGTH = 320
 export const MAX_ORGANIZATION_ID_LENGTH = 128
 
 /*
+ * Percent-encoded UTF-8 is at most 12 characters per code point ("%F0%9F%98%80"),
+ * so anything longer cannot decode to a label within ACTIVITY_LABEL_MAX: reject
+ * it before decoding.
+ */
+const MAX_ACTIVITY_RAW_LENGTH = ACTIVITY_LABEL_MAX * 12
+
+/**
+ * Bound the emitted tokenscope.activity. OTEL_RESOURCE_ATTRIBUTES values are
+ * percent-encoded; an SDK normally decodes them, so `%xx` is decoded only when
+ * present. Surrounding whitespace is trimmed; a blank value is absent (''), not
+ * a reject. Returns null to REJECT (bad encoding, too long, control characters).
+ */
+export function boundActivityLabel(raw: string): string | null {
+  if (raw.length > MAX_ACTIVITY_RAW_LENGTH) return null
+  let decoded = raw
+  if (/%[0-9A-Fa-f]{2}/.test(raw)) {
+    try {
+      decoded = decodeURIComponent(raw)
+    } catch {
+      return null
+    }
+  }
+  const label = decoded.trim()
+  if ([...label].length > ACTIVITY_LABEL_MAX) return null
+  if (!DISPLAY_TEXT_RE.test(label)) return null
+  return label
+}
+
+/*
  * claudeSessionId / sourceRunId are OUR OWN identifier shapes (Claude's
  * session.id / request_id) — a conservative charset: alphanumeric plus the
  * identifier punctuation actually observed (hyphen for UUIDs, underscore for
@@ -883,6 +920,8 @@ export interface ParseCounters {
   rejectedClaudeSessionId: number
   rejectedModel: number
   rejectedProjectCodeHash: number
+  /** An optional-field drop: tokenscope.activity failed boundActivityLabel. */
+  rejectedActivity: number
   rejectedSourceRunId: number
   /**
    * mig 0119. An OPTIONAL-field drop (the record is still written, with
@@ -914,6 +953,7 @@ export function emptyParseCounters(): ParseCounters {
     rejectedClaudeSessionId: 0,
     rejectedModel: 0,
     rejectedProjectCodeHash: 0,
+    rejectedActivity: 0,
     rejectedSourceRunId: 0,
     rejectedEmittingEmail: 0,
     rejectedOrganizationId: 0,
@@ -926,6 +966,7 @@ export function mergeParseCounters(target: ParseCounters, source: ParseCounters)
   target.rejectedClaudeSessionId += source.rejectedClaudeSessionId
   target.rejectedModel += source.rejectedModel
   target.rejectedProjectCodeHash += source.rejectedProjectCodeHash
+  target.rejectedActivity += source.rejectedActivity
   target.rejectedSourceRunId += source.rejectedSourceRunId
   target.rejectedEmittingEmail += source.rejectedEmittingEmail
   target.rejectedOrganizationId += source.rejectedOrganizationId
@@ -944,7 +985,7 @@ export function mergeParseCounters(target: ParseCounters, source: ParseCounters)
  *
  * An unsafe model (over-length or a control character) SKIPS the row the same
  * way, counted into `counters.rejectedModel` — see ParseCounters. An unsafe
- * claudeSessionId/sourceRunId/projectCodeHash DROPS ONLY THAT FIELD (the
+ * claudeSessionId/sourceRunId/projectCodeHash/activity DROPS ONLY THAT FIELD (the
  * record is still written, as if the emitter had not reported it), counted
  * into the matching `counters.rejected*`.
  */
@@ -961,6 +1002,7 @@ export function parseLogAnalyticsRows(
   const iRun = idx('SourceRunId')
   const iOrg = idx('OrganizationId')
   const iProj = idx('ProjectCodeHash')
+  const iAct = idx('Activity')
   const iCsid = idx('ClaudeSessionId')
   const iBackfill = idx('Backfill')
   const iNanoAiu = idx('NanoAiu')
@@ -1031,6 +1073,15 @@ export function parseLogAnalyticsRows(
       const bounded = boundIdentifier(String(proj), MAX_PROJECT_CODE_HASH_LENGTH, NO_CONTROL_CHARS_RE)
       if (bounded !== null) rec.projectCodeHash = bounded
       else if (counters) counters.rejectedProjectCodeHash += 1
+    }
+    const act = iAct >= 0 ? row[iAct] : null
+    if (act != null && String(act)) {
+      const label = boundActivityLabel(String(act))
+      if (label === null) {
+        if (counters) counters.rejectedActivity += 1
+      } else if (label) {
+        rec.activity = label
+      }
     }
     const csid = iCsid >= 0 ? row[iCsid] : null
     if (csid != null && String(csid)) {

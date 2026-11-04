@@ -198,7 +198,7 @@ afterAll(async () => {
 
 interface CouRow { couId: string | null; code: string | null; displayName: string; anthropicUsd: number; copilotUsd: number; copilotPending: boolean; chargeableUsd: number }
 interface IndexResp {
-  meta: { scope: string; month: string; pointInTimeDims: boolean }
+  meta: { scope: string; month: string }
   billCheck: { chargebackUsd: number; billUsd: number; deltaUsd: number; matched: boolean; unsettled: boolean; copilotChargebackUsd: number; providers: { provider: string; billUsd: number; unsettled: boolean }[] }
   cous: CouRow[]
   copilot: { mode: string; pending: boolean; unclassifiedWarning: boolean }
@@ -631,9 +631,9 @@ describe('GET /reports/finance — settling honesty + homing disclosure', () => 
     }
   })
 
-  it('every finance surface carries the current-org homing disclosure (D-Homing interim)', async () => {
+  it('every finance surface carries the current-org homing disclosure', async () => {
     const idx = (await indexHandler(ev(gfo(), 'month=2026-05'))) as unknown as IndexResp
-    expect(idx.meta.pointInTimeDims).toBe(false)
+    expect(idx.meta).not.toHaveProperty('pointInTimeDims')
     expect(idx.homingNote.toLowerCase()).toContain('current org structure')
   })
 

@@ -4,9 +4,7 @@
  * docs/design/org-entra-region-derivation.md):
  *   - region_leader CRUD  — GET/POST /admin/regions/{id}/leaders,
  *                           DELETE …/leaders/{leaderId} (soft-revoke)
- *   - department_to_region CRUD — GET/POST /admin/department-map,
- *                           DELETE …/department-map/{departmentLower}
- *   - region-delete emptiness fix — a region with a leader or a dept-map row
+ *   - region-delete emptiness fix — a region with a leader or a department rule
  *     is BLOCKED (clean 409, not a raw 23503 500).
  *
  * Mirrors the activity-types integration test's h3-event harness +
@@ -21,9 +19,6 @@ import type { Session } from '../../../server/utils/auth'
 import leadersGet from '../../../server/api/v1/admin/regions/[id]/leaders.get'
 import leadersPost from '../../../server/api/v1/admin/regions/[id]/leaders.post'
 import leaderDelete from '../../../server/api/v1/admin/regions/[id]/leaders/[leaderId].delete'
-import deptMapGet from '../../../server/api/v1/admin/department-map.get'
-import deptMapPost from '../../../server/api/v1/admin/department-map.post'
-import deptMapDelete from '../../../server/api/v1/admin/department-map/[departmentLower].delete'
 import regionDelete from '../../../server/api/v1/admin/regions/[id].delete'
 import rulesGet from '../../../server/api/v1/admin/directory-region-rules.get'
 import rulesPost from '../../../server/api/v1/admin/directory-region-rules.post'
@@ -112,8 +107,6 @@ const platformAdmin = (): Session => ({ teammateId: platformId, email: 'rd-platf
 
 interface Leader { id: string; leader_oid: string; leader_email: string; kind: string; display_name: string | null }
 interface LeadersResp { leaders: Leader[] }
-interface Mapping { department: string; department_lower: string; region_id: string; region_code: string; region_display_name: string }
-interface MappingsResp { mappings: Mapping[] }
 
 describe('region_leader — add / list / revoke', () => {
   it('adds a leader, lists it active, then soft-revokes it', async () => {
@@ -122,7 +115,7 @@ describe('region_leader — add / list / revoke', () => {
         method: 'POST',
         params: { id: regionA },
         body: { leader_oid: 'oid-leader-1', leader_email: 'Leader.One@x.test', kind: 'region-svp', display_name: 'Leader One' },
-        session: adminA(),
+        session: platformAdmin(),
       }),
     )) as Leader
     expect(created.leader_oid).toBe('oid-leader-1')
@@ -135,7 +128,7 @@ describe('region_leader — add / list / revoke', () => {
     expect(listed.leaders.map((l) => l.leader_oid)).toContain('oid-leader-1')
 
     const revoked = (await leaderDelete(
-      ev({ method: 'DELETE', params: { id: regionA, leaderId: created.id }, session: adminA() }),
+      ev({ method: 'DELETE', params: { id: regionA, leaderId: created.id }, session: platformAdmin() }),
     )) as { revoked: boolean }
     expect(revoked.revoked).toBe(true)
 
@@ -159,7 +152,7 @@ describe('region_leader — add / list / revoke', () => {
         method: 'POST',
         params: { id: regionA },
         body: { leader_oid: 'oid-dup', leader_email: 'dup@x.test', kind: 'region-svp' },
-        session: adminA(),
+        session: platformAdmin(),
       }),
     )
     await expect(
@@ -174,17 +167,36 @@ describe('region_leader — add / list / revoke', () => {
     ).rejects.toMatchObject({ statusCode: 409 })
   })
 
-  it('a region admin cannot manage another region (403)', async () => {
+  it('a region admin cannot assign or revoke leaders, even in their own region (403)', async () => {
     await expect(
       leadersPost(
         ev({
           method: 'POST',
-          params: { id: regionB },
-          body: { leader_oid: 'oid-foreign', leader_email: 'foreign@x.test', kind: 'region-svp' },
+          params: { id: regionA },
+          body: { leader_oid: 'oid-own-region', leader_email: 'own@x.test', kind: 'region-svp' },
           session: adminA(),
         }),
       ),
     ).rejects.toMatchObject({ statusCode: 403 })
+    const [none] = await t.client<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM region_leader WHERE leader_oid = 'oid-own-region'`
+    expect(none!.n).toBe(0)
+
+    const created = (await leadersPost(
+      ev({
+        method: 'POST',
+        params: { id: regionA },
+        body: { leader_oid: 'oid-keep', leader_email: 'keep@x.test', kind: 'region-svp' },
+        session: platformAdmin(),
+      }),
+    )) as Leader
+    await expect(
+      leaderDelete(ev({ method: 'DELETE', params: { id: regionA, leaderId: created.id }, session: adminA() })),
+    ).rejects.toMatchObject({ statusCode: 403 })
+    const [still] = await t.client<{ revoked_at: Date | null }[]>`
+      SELECT revoked_at FROM region_leader WHERE id = ${created.id}::uuid`
+    expect(still!.revoked_at).toBeNull()
+
     await expect(
       leadersGet(ev({ method: 'GET', params: { id: regionB }, session: adminA() })),
     ).rejects.toMatchObject({ statusCode: 403 })
@@ -196,77 +208,19 @@ describe('region_leader — add / list / revoke', () => {
         method: 'POST',
         params: { id: regionA },
         body: { leader_oid: 'oid-reassign', leader_email: 'r@x.test', kind: 'region-svp' },
-        session: adminA(),
+        session: platformAdmin(),
       }),
     )) as Leader
-    await leaderDelete(ev({ method: 'DELETE', params: { id: regionA, leaderId: first.id }, session: adminA() }))
+    await leaderDelete(ev({ method: 'DELETE', params: { id: regionA, leaderId: first.id }, session: platformAdmin() }))
     const second = (await leadersPost(
       ev({
         method: 'POST',
         params: { id: regionA },
         body: { leader_oid: 'oid-reassign', leader_email: 'r@x.test', kind: 'region-svp' },
-        session: adminA(),
+        session: platformAdmin(),
       }),
     )) as Leader
     expect(second.id).not.toBe(first.id)
-  })
-})
-
-describe('department_to_region — upsert / list / delete (GLOBAL roles only)', () => {
-  it('upserts (case-insensitive key), re-points on conflict, then deletes', async () => {
-    const created = (await deptMapPost(
-      ev({ method: 'POST', body: { department: 'Data & AI', region_id: regionA }, session: platformAdmin() }),
-    )) as Mapping
-    expect(created.department_lower).toBe('data & ai')
-    expect(created.region_id).toBe(regionA)
-
-    // Same department, different casing → upsert re-points to region B (one row).
-    const re = (await deptMapPost(
-      ev({ method: 'POST', body: { department: 'DATA & AI', region_id: regionB }, session: platformAdmin() }),
-    )) as Mapping
-    expect(re.department_lower).toBe('data & ai')
-    expect(re.region_id).toBe(regionB)
-
-    const listed = (await deptMapGet(ev({ method: 'GET', session: platformAdmin() }))) as MappingsResp
-    const row = listed.mappings.find((m) => m.department_lower === 'data & ai')
-    expect(row).toBeDefined()
-    expect(row!.region_id).toBe(regionB)
-    expect(row!.region_code).toBe('rd-b')
-    // Exactly one row for that key (upsert, not insert).
-    expect(listed.mappings.filter((m) => m.department_lower === 'data & ai')).toHaveLength(1)
-
-    const removed = (await deptMapDelete(
-      ev({ method: 'DELETE', params: { departmentLower: 'data & ai' }, session: platformAdmin() }),
-    )) as { removed: boolean }
-    expect(removed.removed).toBe(true)
-
-    const after = (await deptMapGet(ev({ method: 'GET', session: platformAdmin() }))) as MappingsResp
-    expect(after.mappings.find((m) => m.department_lower === 'data & ai')).toBeUndefined()
-  })
-
-  it('a region-admin is FORBIDDEN — the dept map is org-wide cross-region config (per design)', async () => {
-    await expect(
-      deptMapPost(ev({ method: 'POST', body: { department: 'Scoped', region_id: regionA }, session: adminA() })),
-    ).rejects.toMatchObject({ statusCode: 403 })
-    await expect(deptMapGet(ev({ method: 'GET', session: adminA() }))).rejects.toMatchObject({ statusCode: 403 })
-  })
-
-  it('deleting a missing department is a clean 404', async () => {
-    await expect(
-      deptMapDelete(ev({ method: 'DELETE', params: { departmentLower: 'no-such-dept' }, session: platformAdmin() })),
-    ).rejects.toMatchObject({ statusCode: 404 })
-  })
-
-  it('an unknown region_id is a 422', async () => {
-    await expect(
-      deptMapPost(
-        ev({
-          method: 'POST',
-          body: { department: 'Ghost', region_id: '00000000-0000-0000-0000-000000000000' },
-          session: platformAdmin(),
-        }),
-      ),
-    ).rejects.toMatchObject({ statusCode: 422 })
   })
 })
 

@@ -13,11 +13,6 @@
  *
  *     visible = reportingRole || isOwner || isGranted
  *     scope   = (!reportingRole && isOwner) ? 'cost-centre' : null
- *
- * Note what the third case pins: a `revoke-all` grant (mig 0130) zeroes ONLY
- * the grant arm. A revoked OWNER keeps the entry. That is the behaviour that
- * shipped, and this test exists so a future change to it is deliberate rather
- * than accidental.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { startTestDb, stopTestDb, type TestDb } from '../helpers/db'
@@ -33,8 +28,6 @@ let plainCouId = ''
 let ownerId = ''
 let strangerId = ''
 let grantedId = ''
-let revokedOwnerId = ''
-let revokedGrantedId = ''
 
 const ev = (session: Session) => {
   const headers: Record<string, string> = { host: 'localhost:3450' }
@@ -120,11 +113,8 @@ beforeAll(async () => {
   ownerId = await mkTeammate('owner@n.test')
   strangerId = await mkTeammate('stranger@n.test')
   grantedId = await mkTeammate('granted@n.test')
-  revokedOwnerId = await mkTeammate('revoked-owner@n.test')
-  revokedGrantedId = await mkTeammate('revoked-granted@n.test')
 
   await t.client`INSERT INTO cou_owner (org_unit_id, teammate_id) VALUES (${couId}::uuid, ${ownerId}::uuid)`
-  await t.client`INSERT INTO cou_owner (org_unit_id, teammate_id) VALUES (${couId}::uuid, ${revokedOwnerId}::uuid)`
 
   /*
    * Asserted ONCE, here, rather than guarded per-test. The grant cases below
@@ -206,30 +196,6 @@ describe('GET /auth/me — reporting nav verdict', () => {
     const r = await call(sessionFor(grantedId, 'developer', 'granted@n.test'))
     // Granted but NOT an owner: entry appears, and the shell self-lands.
     expect(r.reporting).toEqual({ visible: true, scope: null })
-  })
-
-  it('a revoke-all DOES zero a grant-only holder — no ownership to fall back on', async () => {
-    /*
-     * The non-vacuous half of the revoke pair. The owner case below asserts
-     * `visible: true`, which ownership ALONE already delivers — delete the
-     * revoke handling entirely and it still passes. This caller holds a real
-     * positive grant and nothing else, so `visible` is false ONLY if the
-     * revoke actually zeroes the grant arm.
-     */
-    await t.client`INSERT INTO report_access_grant (teammate_id, permission)
-      VALUES (${revokedGrantedId}::uuid, 'operational')`
-    await t.client`INSERT INTO report_access_grant (teammate_id, permission)
-      VALUES (${revokedGrantedId}::uuid, 'revoke-all')`
-    const r = await call(sessionFor(revokedGrantedId, 'developer', 'revoked-granted@n.test'))
-    expect(r.reporting).toEqual({ visible: false, scope: null })
-  })
-
-  it('a revoke-all zeroes the GRANT arm only — an owner keeps the entry', async () => {
-    await t.client`INSERT INTO report_access_grant (teammate_id, permission)
-      VALUES (${revokedOwnerId}::uuid, 'revoke-all')`
-    const r = await call(sessionFor(revokedOwnerId, 'developer', 'revoked-owner@n.test'))
-    // Ownership is untouched by a revoke, so the entry and the deep-link stand.
-    expect(r.reporting).toEqual({ visible: true, scope: 'cost-centre' })
   })
 
   it('ownership of a RETIRED unit is not ownership', async () => {

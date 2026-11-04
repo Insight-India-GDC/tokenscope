@@ -106,6 +106,14 @@ describe('checkRepoProjectBillable — fail-open firewall (all silent)', () => {
     expect(r.status).toBe('no-tag')
   })
 
+  it('never follows a redirect: the scheme guard checked only the first URL', async () => {
+    const spy = vi.fn(() => ({ ok: true, json: async () => ({ billable: true }) }))
+    vi.stubGlobal('fetch', spy as never)
+    await run()
+    expect(spy).toHaveBeenCalledOnce()
+    expect((spy.mock.calls[0] as unknown[])[1]).toMatchObject({ redirect: 'error' })
+  })
+
   it('builds the /project-resolve URL from the cached /bearer endpoint', async () => {
     const spy = vi.fn(() => ({ ok: true, json: async () => ({ billable: true }) }))
     vi.stubGlobal('fetch', spy as never)
@@ -145,5 +153,38 @@ describe('checkRepoProjectBillable — S1 fixes 2+3: state dir + endpoint safety
       if (saved === undefined) delete process.env.TOKENSCOPE_STATE_DIR
       else process.env.TOKENSCOPE_STATE_DIR = saved
     }
+  })
+})
+
+// #503: a command run from a session gets no OTEL_* keys, so the attrs can be
+// absent while the device is set up. The check still runs, on the instance this
+// install's own endpoint addresses, and checks the committed .tokenscope.
+describe('checkRepoProjectBillable — no resource attributes (#503)', () => {
+  // The function falls back to process.env's attrs; a runner that sets them
+  // would otherwise decide these cases.
+  let savedAttrs: string | undefined
+  beforeEach(() => {
+    savedAttrs = process.env.OTEL_RESOURCE_ATTRIBUTES
+    delete process.env.OTEL_RESOURCE_ATTRIBUTES
+  })
+  afterEach(() => {
+    if (savedAttrs !== undefined) process.env.OTEL_RESOURCE_ATTRIBUTES = savedAttrs
+  })
+
+  it('checks the committed tag via the endpoint’s instance, not "not-configured"', async () => {
+    writeFileSync(join(emptyCwd, '.tokenscope'), 'project:\n  code: HBR-2041\n')
+    const fetchSpy = vi.fn(async () => ({ ok: true, json: async () => ({ billable: true }) }))
+    vi.stubGlobal('fetch', fetchSpy as never)
+    const r = await run({ env: { TOKENSCOPE_BEARER_ENDPOINT: BEARER } })
+    expect(r).toMatchObject({ status: 'ok', code: 'HBR-2041', scope: 'committed' })
+    expect(String((fetchSpy.mock.calls[0] as unknown[])[0])).toContain(`/instances/${INSTANCE}/project-resolve?code_hash=`)
+  })
+
+  it('is still "not-configured" with no endpoint at all', async () => {
+    writeFileSync(join(emptyCwd, '.tokenscope'), 'project:\n  code: HBR-2041\n')
+    mockFetch(() => {
+      throw new Error('should not be called')
+    })
+    expect(await run({ env: {} })).toEqual({ status: 'unverifiable', reason: 'not-configured' })
   })
 })

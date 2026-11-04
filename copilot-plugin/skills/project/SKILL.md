@@ -58,12 +58,11 @@ project:
   code: TokenScope-MVP
 ```
 
-Use your own file-writing tool — the MCP server never writes the user's disk. The
-indented `project:` / `  code:` form is required: TokenScope's reader takes the
-code ONLY from an indented `code:` line under `project:`. A bare one-line file
-(just the code) parses to **no** project code and the repo lands **untagged** — and
-worse, a Claude Code repo with the same one-liner would derive a different result,
-splitting the budget across clients. Keep the YAML form so both clients agree.
+Use your own file-writing tool — the MCP server never writes the user's disk. Keep
+the indented `project:` / `  code:` form: it is the documented shape, and the one
+every plugin version reads. Older plugin versions read the code ONLY
+from an indented `code:` line under `project:`, so on those a bare one-line file
+(just the code) left the repo **untagged**.
 
 If a `.tokenscope` already exists with a different code, show the old and new values
 and confirm before overwriting.

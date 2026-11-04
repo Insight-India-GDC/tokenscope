@@ -22,10 +22,11 @@ describe('SELECTABLE_ROLES excludes every retired role', () => {
   it('never offers `global-finops` (retired 2026-09-05)', () => {
     expect(SELECTABLE_ROLES).not.toContain('global-finops')
   })
+  it('never offers `admin` (Region admin can no longer be granted)', () => {
+    expect(SELECTABLE_ROLES).not.toContain('admin')
+  })
   it('keeps every other role', () => {
-    expect([...SELECTABLE_ROLES].sort()).toEqual(
-      ROLES.filter((r) => r !== 'finance' && r !== 'global-finops').sort(),
-    )
+    expect([...SELECTABLE_ROLES].sort()).toEqual(['developer', 'manager', 'platform-admin'])
   })
 })
 
@@ -48,8 +49,8 @@ describe('isAdminRole / isOrgWideRole', () => {
 
 describe('roleLabel — canonical display names', () => {
   it('renders the disambiguated admin/finance labels', () => {
-    expect(roleLabel('admin')).toBe('Region admin')
-    expect(roleLabel('platform-admin')).toBe('Platform admin')
+    expect(roleLabel('admin')).toBe('Region admin (retired)')
+    expect(roleLabel('platform-admin')).toBe('Admin')
     // Both retired members say so, so a historical row never reads as live.
     expect(roleLabel('finance')).toBe('Finance (retired)')
     expect(roleLabel('global-finops')).toBe('Global finance (retired)')

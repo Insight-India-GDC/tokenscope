@@ -41,7 +41,6 @@ const meta = {
   providerStates: [],
   coverage: { applicable: true, denominator: 207, connected: 29, nonConnected: 178, stale: false },
   scope: 'region' as const,
-  pointInTimeDims: true,
 }
 
 /** Fourteen days of §A daily metrics — the SAME window the headline was summed over. */

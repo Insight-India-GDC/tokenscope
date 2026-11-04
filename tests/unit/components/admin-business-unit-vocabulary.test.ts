@@ -26,8 +26,10 @@
  *     or a green test is not worth a word.
  *   - `costCenter` / "directory cost-centre code": the REAL finance code, the
  *     one thing this rename must not swallow.
- *   - "cost-owning unit": a genuine property (a unit that carries P&L, versus a
- *     container that groups others), not a synonym for the unit itself.
+ *   - "cost-owning": stripped here only because this scan is about "cost
+ *     centre". Issue 489 ruled that a cost-owning unit IS a Business Unit, so
+ *     the word no longer reaches users either; `user-copy-vocabulary.test.ts`
+ *     enforces that over the whole app, not just admin.
  */
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync, statSync } from 'node:fs'

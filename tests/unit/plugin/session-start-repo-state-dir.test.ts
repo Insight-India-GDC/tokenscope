@@ -60,6 +60,9 @@ import {
 import { realHome } from '../../../plugin/scripts/plugin-runtime.mjs'
 import { materialiseSandboxedPlugin } from './helpers/sandboxed-plugin.js'
 
+// Windows (#430): skipped on win32 because this file assumes tmpdir() is outside the home and HOME steers homedir(); on Windows tmpdir() is inside the profile and homedir() follows USERPROFILE.
+const POSIX_ONLY = process.platform === 'win32'
+
 const BUNDLE_SRC = resolve(__dirname, '../../../plugin')
 
 // The product walks REAL paths (it realpaths the cwd to meet the git root), and
@@ -178,7 +181,7 @@ function writePlantedGlobal(env: Record<string, string>) {
 
 // --- hookStateDir: the provenance decision itself ------------------------
 
-describe('hookStateDir — provenance, not just presence', () => {
+describe.skipIf(POSIX_ONLY)('hookStateDir — provenance, not just presence', () => {
   it('DROPS a state dir a repo-local settings file declares (both file names)', () => {
     for (const file of ['settings.json', 'settings.local.json']) {
       rmSync(join(repo, '.claude'), { recursive: true, force: true })
@@ -248,7 +251,7 @@ describe('hookStateDir — provenance, not just presence', () => {
 // session launched anywhere below it. A cwd-only provenance check never opened
 // that file.
 
-describe('hookStateDir — the claim is found above the cwd, up to the git root', () => {
+describe.skipIf(POSIX_ONLY)('hookStateDir — the claim is found above the cwd, up to the git root', () => {
   it.each(['settings.json', 'settings.local.json'])(
     'DROPS a state dir declared in the GIT-ROOT %s while the cwd is a subdirectory',
     (file) => {
@@ -332,7 +335,7 @@ describe('hookStateDir — the claim is found above the cwd, up to the git root'
 // whose settings.json this test must not depend on the contents of. `exfil` is
 // an mkdtemp path, so "the planted value never won" is exact regardless.
 
-describe('hookStateDir — a repo-claimed HOME cannot choose the "global" settings file', () => {
+describe.skipIf(POSIX_ONLY)('hookStateDir — a repo-claimed HOME cannot choose the "global" settings file', () => {
   it('DROPS a state dir restored from a settings.json the repo planted via HOME', () => {
     const exfil = join(repo, '.tokenscope-exfil')
     writeGlobal(enrolmentEnv()) // the REAL sandbox global: no state dir to restore
@@ -397,7 +400,7 @@ describe('hookStateDir — a repo-claimed HOME cannot choose the "global" settin
   })
 })
 
-describe('repoSettingsDirs — the walk is bounded', () => {
+describe.skipIf(POSIX_ONLY)('repoSettingsDirs — the walk is bounded', () => {
   it('covers the cwd and every ancestor up to and including the git root', () => {
     expect(repoSettingsDirs(sub)).toEqual([sub, join(repo, 'packages'), repo])
   })
@@ -467,7 +470,7 @@ function runHook(mergedEnv: Record<string, string>, pluginRoot: string, cwd: str
   execFileSync(process.execPath, [installedHook], { cwd, env, encoding: 'utf8' })
 }
 
-describe('the emit helper never runs under a repo-chosen state dir', () => {
+describe.skipIf(POSIX_ONLY)('the emit helper never runs under a repo-chosen state dir', () => {
   let record: string
 
   beforeEach(() => {
@@ -570,7 +573,7 @@ function stubHelperRecordingHome(recordPath: string): string {
   return root
 }
 
-describe('a repo claiming BOTH HOME and TOKENSCOPE_STATE_DIR steers nothing', () => {
+describe.skipIf(POSIX_ONLY)('a repo claiming BOTH HOME and TOKENSCOPE_STATE_DIR steers nothing', () => {
   it('neither the resolved state dir nor the spawned helper follows the planted home', () => {
     const exfil = join(repo, '.tokenscope-exfil')
     const record = join(home, 'helper-home-record.txt')

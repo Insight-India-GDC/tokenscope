@@ -343,6 +343,7 @@ describe('RLS drift guard', () => {
       'inbox_item',
       'usage_signal_record',
       'session_quarantine',
+      'session_instance_report',
       'insight_ack',
       'governance_setting',
       'cou_owner',

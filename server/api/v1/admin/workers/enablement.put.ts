@@ -14,7 +14,7 @@
  * stays open to `admin` — seeing the estate's kill-switch state is not a region
  * boundary crossing.
  */
-import { defineEventHandler, readValidatedBody, createError } from 'h3'
+import { defineEventHandler, createError, getHeader, getRequestIP } from 'h3'
 import { z } from 'zod'
 import { requireRole } from '../../../../auth/rbac'
 import { assertSameOrigin } from '../../../../auth/csrf'
@@ -23,6 +23,7 @@ import { WORKERS } from '../../../../workers/registry'
 import { setWorkerEnabled } from '../../../../workers/enablement'
 import { isWorkerScheduled } from '../../../../../shared/workers/unscheduled'
 import { recordAuditEvent } from '../../../../db/audit'
+import { readValidated } from '../../../../utils/validated-body'
 
 const bodySchema = z.object({
   workerName: z.string().min(1),
@@ -37,7 +38,9 @@ export default defineEventHandler(async (event) => {
   // fleet-wide, so a logged-in admin must not be cross-site-forced into it.
   assertSameOrigin(event)
   const session = await requireRole(event, 'platform-admin')
-  const body = await readValidatedBody(event, (b) => bodySchema.parse(b))
+  const body = await readValidated(event, bodySchema)
+  const ip = getRequestIP(event, { xForwardedFor: true }) ?? null
+  const ua = getHeader(event, 'user-agent') ?? null
 
   // Only real registry workers — a typo would otherwise create a dead row that
   // silently governs nothing and reads as a configured control.
@@ -72,6 +75,8 @@ export default defineEventHandler(async (event) => {
       actorTeammateId: session.teammateId,
       subjectKind: 'worker',
       payload: { worker: body.workerName, reason: body.reason ?? null },
+      ipAddress: ip,
+      userAgent: ua,
     })
     return { workerName: body.workerName, enabled: body.enabled, reason: body.reason ?? null }
   })

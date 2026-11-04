@@ -42,6 +42,7 @@ import { requireRole } from '../../../../auth/rbac'
 import { assertSameOrigin } from '../../../../auth/csrf'
 import { withRequestRls } from '../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../db/audit'
+import { isRealUtcDay } from '#shared/schemas/activity'
 import {
   runWireShapeProbe,
   defaultProbeDay,
@@ -63,6 +64,7 @@ const Body = z.object({
   day: z
     .string()
     .regex(DAY_RE, 'day must be a UTC calendar day formatted YYYY-MM-DD')
+    .refine(isRealUtcDay, 'not a real calendar day')
     .optional(),
   /** How far back the stored scan looks. */
   storedWindowDays: z.number().int().min(1).max(365).default(STORED_DEFAULT_WINDOW_DAYS),

@@ -121,7 +121,10 @@ export default defineEventHandler(async (event) => {
                ${conv.cost_usd}::numeric, ${conv.tokens}::bigint, 'api-uncorroborated'
         FROM instance_attestation ia WHERE ia.instance_id = ${conv.instance_id}::uuid
         ON CONFLICT (conversation_id, instance_id) DO UPDATE SET
-          reason = 'api-uncorroborated', resolved_at = NULL, updated_at = now()
+          reason = 'api-uncorroborated', resolved_at = NULL, updated_at = now(),
+          session_ts_start = EXCLUDED.session_ts_start, session_ts_end = EXCLUDED.session_ts_end,
+          instance_ts_start = EXCLUDED.instance_ts_start,
+          cost_usd = EXCLUDED.cost_usd, tokens = EXCLUDED.tokens
       `)
       // The flip removes this session's arm-1 history from v_complete_usage with no
       // timestamp a trailing window can see — same tx, queue the teammate for a

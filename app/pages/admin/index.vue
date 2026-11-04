@@ -8,10 +8,11 @@
  */
 import { computed } from 'vue'
 import { useAdminAccess } from '../../composables/useAdminAccess'
+import OrgSetupHomeCard from '../../components/admin/OrgSetupHomeCard.vue'
 
 definePageMeta({ layout: 'admin', middleware: 'admin' })
 
-const { isAdmin, isOrgWide, regionId, displayName, roleDisplay } = useAdminAccess()
+const { isAdmin, isOrgWide, isPlatform, regionId, displayName, roleDisplay } = useAdminAccess()
 
 // Every tile is lazy, client-only, null-default and never awaited:
 // docs/design/admin-nav-responsiveness.md D1/D2. The users URL getter is '' for
@@ -34,7 +35,7 @@ const { data: users, error: usersError, refresh: refreshUsers } = useLazyFetch<{
   },
 )
 
-const { data: regions, error: regionsError, refresh: refreshRegions } = useLazyFetch<{ regions: unknown[] } | null>('/api/v1/admin/regions', {
+const { data: regions, error: regionsError, refresh: refreshRegions } = useLazyFetch<{ regions: { id: string; display_name: string }[] } | null>('/api/v1/admin/regions', {
   key: 'admin-overview-regions',
   server: false,
   default: () => null,
@@ -79,6 +80,10 @@ function tile<T>(issued: boolean, data: T | null | undefined, error: unknown, re
   return issued ? { value: '…', state: 'busy' } : { value: '—', state: 'na' }
 }
 
+// The teammate count is per region (the users read takes one), so the tile names it.
+const homeRegionName = computed(() => regions.value?.regions.find((r) => r.id === regionId.value)?.display_name ?? 'your home region')
+const teammatesLabel = computed(() => `Teammates in ${homeRegionName.value}`)
+
 const stats = computed(() => [
   {
     key: 'regions',
@@ -88,7 +93,7 @@ const stats = computed(() => [
   },
   {
     key: 'teammates',
-    label: 'Teammates in your region',
+    label: teammatesLabel.value,
     to: '/admin/users',
     ...tile(!!regionId.value, users.value, usersError.value, (d) => String(d.total)),
   },
@@ -122,7 +127,7 @@ const stripBusy = computed(() => stats.value.some((s) => s.state === 'busy'))
 // the strip; retry refreshes only the reads that actually failed.
 const failed = [
   { label: 'Regions', error: regionsError, refresh: refreshRegions },
-  { label: 'Teammates in your region', error: usersError, refresh: refreshUsers },
+  { label: 'Teammates', error: usersError, refresh: refreshUsers },
   { label: 'Proposed reconciliation deltas', error: reconError, refresh: refreshRecon },
   { label: 'Audit events · 24h', error: auditError, refresh: refreshAudit },
   { label: 'Postgres', error: diagError, refresh: refreshDiag },
@@ -137,9 +142,11 @@ function retryFailed() {
 // Common tasks — the deepest / most-frequent actions, role-aware. Kept short on
 // purpose; the sidebar is the complete surface.
 const quickActions = computed(() => {
-  const region = regionId.value ? `/admin/regions/${regionId.value}` : '/admin/regions'
   const actions = [
-    { key: 'region', label: 'Set up your region', sub: 'Business Units, owners, leaders, teammates', to: region, accent: 'vision' as const },
+    // Org setup is Admin-only; a legacy Region admin keeps their own region's page.
+    isPlatform.value
+      ? { key: 'org-setup', label: 'Org setup', sub: 'Regions, Business Units, owners and leaders', to: '/admin/org-setup', accent: 'vision' as const }
+      : { key: 'region', label: 'Set up your region', sub: 'Business Units, owners, leaders, teammates', to: regionId.value ? `/admin/regions/${regionId.value}` : '/admin/regions', accent: 'vision' as const },
     { key: 'teammates', label: 'Add a teammate', sub: 'Provision someone from the directory', to: '/admin/users', accent: 'harmony' as const },
     { key: 'projects', label: 'Create a project', sub: 'Set a budget and add members', to: '/admin/projects', accent: 'zeal' as const },
     { key: 'reconciliation', label: 'Review reconciliation', sub: 'Runs, deltas and provider onboarding', to: '/admin/reconciliation', accent: 'harmony' as const },
@@ -156,7 +163,7 @@ const quickActions = computed(() => {
     <UiPageHead
       eyebrow="Administration"
       title="Overview"
-      :sub="`Welcome back, ${displayName || roleDisplay}. Here's your region at a glance.`"
+      :sub="`Welcome back, ${displayName || roleDisplay}. Here's the organisation at a glance.`"
     />
 
     <UiFetchErrorBanner v-if="stripError" :error="stripError" :label="stripErrorLabel" @retry="retryFailed" />
@@ -180,6 +187,8 @@ const quickActions = computed(() => {
         <div class="text-[11px] text-carbon-3 mt-1.5 leading-tight">{{ s.label }}</div>
       </NuxtLink>
     </div>
+
+    <OrgSetupHomeCard />
 
     <!-- Common tasks -->
     <h2 class="text-base font-bold text-carbon tracking-tight mb-1">Common tasks</h2>

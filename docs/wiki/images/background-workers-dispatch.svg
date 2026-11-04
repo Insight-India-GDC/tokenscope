@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 640" width="1000" height="640" role="img" aria-labelledby="t d">
   <title id="t">A scheduled worker runs only after the run-worker route verifies the job's HMAC signature, finds the name in the static registry and takes the per-name lock.</title>
-  <desc id="d">Lifeline diagram. A Container Apps job signs a request and posts it to /api/v1/internal/run-worker/{name}. The route verifies the signature within a 300 second window and answers 401 on any failure, looks the name up in the registry and answers 404 for an unknown name, then hands off to dispatchWorker, which takes a Postgres advisory lock (409 if held), checks the admin kill switch, records a worker_run row, runs the worker against Postgres and returns worker, duration_ms and result.</desc>
+  <desc id="d">Lifeline diagram. A Container Apps job signs a request and posts it to /api/v1/internal/run-worker/{name}. The route verifies the signature within a 60 second window and answers 401 on any failure, looks the name up in the registry and answers 404 for an unknown name, then hands off to dispatchWorker, which takes a Postgres advisory lock (409 if held), checks the admin kill switch, records a worker_run row, runs the worker against Postgres and returns worker, duration_ms and result.</desc>
   <style>
     svg {
       --bg: #ffffff; --panel: #ffffff; --fg: #1b2230; --fg2: #4d586b; --line: #c9d0db; --zone: #f3f5f8;
@@ -94,7 +94,7 @@
   <!-- 3 verify -->
   <rect class="act" x="344" y="160" width="12" height="80"/>
   <circle class="cn accent" cx="374" cy="184" r="10"/><text class="cnt accent" x="374" y="188" text-anchor="middle">3</text>
-  <text class="sm acc" x="392" y="182">|now − ts| ≤ 300 s</text>
+  <text class="sm acc" x="392" y="182">|now − ts| ≤ 60 s</text>
   <text class="sm acc" x="392" y="198">timingSafeEqual(sig)</text>
   <line class="e bad" x1="344" y1="226" x2="127" y2="226" marker-end="url(#ah-bad)"/>
   <text class="s bad" x="236" y="218" text-anchor="middle">401 on any failure, same body</text>

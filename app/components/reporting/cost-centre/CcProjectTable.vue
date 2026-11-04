@@ -225,13 +225,13 @@ const centres = computed<CentreVm[]>(() =>
         // nobody failed to tag it and no nudge would help.
         { label: 'provider usage with no session to tag', usd: Number(r.ingest_only_usd), sign: '+' },
         { label: 'homed here, no project claim', usd: Number(r.untagged_usd), sign: '+' },
-        { label: "on another centre's projects", usd: Number(r.foreign_project_usd), sign: '+' },
+        { label: `on another ${BU_LABEL_LOWER}'s projects`, usd: Number(r.foreign_project_usd), sign: '+' },
         // NOT "on this centre's projects, homed elsewhere": the term is every dollar on
         // this centre's projects whose usage row is homed anywhere else —
         // reconciled rows (no home at all) AND rows emitted under a DIFFERENT
         // cost centre. Naming only the first half would have an owner hunting
         // reconciliation for money that a cross-centre emit put there.
-        { label: "on this centre's projects, homed elsewhere", usd: Number(r.off_centre_usd), sign: '−' },
+        { label: `on this ${BU_LABEL_LOWER}'s projects, homed elsewhere`, usd: Number(r.off_centre_usd), sign: '−' },
       ] as { label: string; usd: number; sign: '+' | '−' }[]
     ).filter((t) => t.usd !== 0)
 
@@ -338,7 +338,7 @@ const centres = computed<CentreVm[]>(() =>
           <component
             :is="targetFor(cc.card.id, row) ? 'NuxtLink' : 'div'"
             v-bind="targetFor(cc.card.id, row) ? { to: targetFor(cc.card.id, row) } : {}"
-            class="group border-l-2 px-4 sm:px-5 py-3.5 flex flex-col gap-3 transition-colors hover:bg-brand-harmony-sheer/60 focus:outline-none focus-visible:bg-brand-harmony-sheer md:grid md:items-center md:gap-x-5 md:gap-y-0 md:grid-cols-[minmax(9rem,1.4fr)_6.5rem_minmax(9.5rem,1.8fr)_minmax(8.5rem,auto)_0.6rem]"
+            class="group border-l-2 px-4 sm:px-5 py-3.5 flex flex-col gap-3 transition-colors hover:bg-brand-harmony-sheer/60 focus-visible:-outline-offset-2 focus-visible:bg-brand-harmony-sheer md:grid md:items-center md:gap-x-5 md:gap-y-0 md:grid-cols-[minmax(9rem,1.4fr)_6.5rem_minmax(9.5rem,1.8fr)_minmax(8.5rem,auto)_0.6rem]"
             :class="ACCENT_CLASS[row.state]"
             :data-testid="`cc-project-${row.project.code}`"
             :data-state="row.state"
@@ -430,7 +430,7 @@ const centres = computed<CentreVm[]>(() =>
         class="px-4 sm:px-5 py-4 text-[12px] text-carbon-3"
         :data-testid="`cc-projects-empty-${cc.card.code}`"
       >
-        No projects have this cost centre as their lead yet — until one does, its spend has no budget to sit against.
+        No projects have this {{ BU_LABEL_LOWER }} as their lead yet — until one does, its spend has no budget to sit against.
       </p>
 
       <!-- The ranked page is not the whole list, and says so with the Σ. -->
@@ -451,10 +451,10 @@ const centres = computed<CentreVm[]>(() =>
           Projects {{ fmtUsd(cc.burnUsd) }}<template v-for="t in cc.residualTerms" :key="t.label">
             {{ ' ' }}{{ t.sign }} {{ fmtUsd(t.usd) }} <span class="italic">{{ t.label }}</span>
           </template>
-          = {{ fmtUsd(cc.ccBurnUsd) }} cost-centre burn.
+          = {{ fmtUsd(cc.ccBurnUsd) }} {{ BU_LABEL_LOWER }} burn.
         </div>
         <div v-if="cc.memberUntaggedUsd !== 0">
-          {{ fmtUsd(cc.memberUntaggedUsd) }} spent by this centre's people has no project and no cost
+          {{ fmtUsd(cc.memberUntaggedUsd) }} spent by this {{ BU_LABEL_LOWER }}'s people has no project and no cost
           home — never added to the burn.
         </div>
       </footer>

@@ -302,14 +302,14 @@ function retag(r: ActivityRow) {
     <UiEmptyState
       v-else-if="!collapsed && !rows.length && !pending"
       headline="Nothing here yet"
-      sub="Run `claude` in a `.tokenscope`-bearing repo, then the `project` MCP prompt — the session will land here within a minute. Provider-recorded days arrive with reconciliation."
+      sub="Run Claude Code in a repository that has a .tokenscope file, then run the project MCP prompt. The session lands here within a minute. Provider-recorded days arrive with reconciliation."
     />
     <div v-else-if="!collapsed" class="overflow-x-auto">
       <table class="w-full text-sm">
         <thead class="text-[11px] text-carbon-3 uppercase tracking-[1.2px]">
           <tr class="bg-brand-harmony-sheer/40">
             <th class="text-left font-bold px-6 py-3">Record</th>
-            <th class="text-left font-bold px-6 py-3">Instance</th>
+            <th class="text-left font-bold px-6 py-3">Device</th>
             <th class="text-left font-bold px-6 py-3">Project</th>
             <th class="text-left font-bold px-6 py-3">Tool</th>
             <th class="text-left font-bold px-6 py-3">When</th>

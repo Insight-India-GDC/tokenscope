@@ -7,8 +7,8 @@
  *   - RBAC: owner sees only owned + subtree cost-owning; non-owner/foreign 403;
  *     anti-IDOR on `ccId` (foreign region → 403, missing → 404);
  *   - the burn drill RECONCILES to the tracker card burn (both the §A PROJECT-CoU
- *     usage axis) — incl. a spender whose CURRENT placement moved (§A homes by
- *     emit-time cost_owning_unit_id, so they never vanish from the burn), and the
+ *     usage axis) — incl. a spender who now sits in another region, whose
+ *     project-tagged spend stays on the project's Business Unit, and the
  *     NULL-CoU Copilot gap is excluded from both;
  *   - forecast (run-rate $) + exhaustion (budget DATE) are distinct mechanics;
  *   - burn drivers sum-back = headline (each drill axis, incl. the NULL bucket);
@@ -221,7 +221,8 @@ beforeAll(async () => {
   // ccCur — carol: current-month burn 100 (forecast/exhaustion fixture).
   await ar(carolInst, carol, regionA, ccCur, 'claude-sonnet-4-6', 100, currentMonthStartIso, projCur)
   // ccA — phil: July opus 90, emit-homed to ccA (region A) though he now sits in region B.
-  // Proves §A groups by emit-time cost_owning_unit_id: a placement-moved spender STAYS.
+  // His row is tagged to projA, so it counts toward projA's Business Unit (ccA)
+  // wherever he sits (the current-org lens keeps the project axis).
   await ar(philInst, phil, regionA, ccA, 'claude-opus-4-6', 90, '2026-07-04T00:00:00Z', projA)
 
   // NULL-CoU Copilot gap (unaccounted): must NEVER appear in any CC burn.
@@ -461,7 +462,8 @@ describe('the burn drill is the §A usage axis — it RECONCILES to the tracker 
     // alice 30+20 + phil 90 (emit-homed to ccA) = 140; dave's NULL-CoU copilot 30 EXCLUDED.
     expect(a.burnUsd).toBe(140)
     expect(a.allocationUsd).toBe(100)
-    expect(r.laneNote.toLowerCase()).toContain('cost-owning')
+    // #489: the lane note names the unit as a Business Unit, never "cost-owning unit".
+    expect(r.laneNote).toContain('Business Unit burn is usage on the projects')
   })
 
   it('the drill burn EQUALS the tracker card burn (same §A lane); the NULL-CoU gap is excluded', async () => {
@@ -506,10 +508,10 @@ describe('the burn drill is the §A usage axis — it RECONCILES to the tracker 
     expect(d.vendor.claudeUsd + d.vendor.copilotUsd + d.vendor.otherUsd).toBe(d.burnUsd)
   })
 
-  it('a spender whose CURRENT placement MOVED still appears in the burn drill (the bug fix)', async () => {
+  it("a spender who sits elsewhere still appears in the burn drill of their project's unit", async () => {
     const d = (await drillHandler(ev(adminA(), 'month=2026-07&axis=teammate', { ccId: ccA }))) as unknown as DrillResp
-    // Phil is now placed in region B, but his July usage homed to ccA at emit — §A groups
-    // by emit-time cost_owning_unit_id, so he is ccA's LARGEST driver, not dropped.
+    // Phil sits in region B, but his July usage is TAGGED to projA, and project-tagged
+    // usage counts toward the project's Business Unit (ccA), so he is ccA's LARGEST driver.
     const phil = d.rows.find((r) => r.label === 'phil@b.test')
     expect(phil).toBeDefined()
     expect(phil!.usd).toBe(90)
@@ -713,7 +715,7 @@ describe('GET /reports/cost-centres/[ccId] — range/quarter mode reconciles to 
     const d = (await drillHandler(ev(adminA(), `${RANGE}&axis=teammate`, { ccId: ccA }))) as unknown as DrillResp
     const phil = d.rows.find((r) => r.label === 'phil@b.test')
     expect(phil).toBeDefined()
-    expect(phil!.usd).toBe(90) // §A homes by emit-time cost_owning_unit_id — never dropped
+    expect(phil!.usd).toBe(90) // tagged to projA → ccA's burn, wherever he sits
     expect(d.rows.reduce((a, r) => a + r.usd, 0)).toBeCloseTo(155, 6) // Σ drivers = range burn
   })
 })
@@ -723,7 +725,7 @@ describe('GET /reports/export?scope=cost-centre — byte-identical to the screen
     const json = (await cardsHandler(ev(adminA(), 'month=2026-07'))) as unknown as CardsResp
     const csv = (await exportHandler(ev(adminA(), 'scope=cost-centre&report=cards&month=2026-07'))) as unknown as string
     const lines = csv.trim().split('\n')
-    expect(lines[0]).toMatch(/^# tokenscope cost-centres/)
+    expect(lines[0]).toMatch(/^# tokenscope business-units/)
     expect(lines[1]).toBe('cost_centre,region,burn_usd,charge_usd,allocation_usd,utilisation_pct,exhaustion_date,projected_month_end_usd')
     const byBurn = new Map<string, string[]>()
     for (const line of lines.slice(2)) {
@@ -743,7 +745,7 @@ describe('GET /reports/export?scope=cost-centre — byte-identical to the screen
     const json = (await drillHandler(ev(adminA(), 'month=2026-07&axis=teammate', { ccId: ccA }))) as unknown as DrillResp
     const csv = (await exportHandler(ev(adminA(), `scope=cost-centre&report=drivers&cc=${ccA}&axis=teammate&month=2026-07`))) as unknown as string
     const lines = csv.trim().split('\n')
-    expect(lines[0]).toMatch(/^# tokenscope cost-centre drivers/)
+    expect(lines[0]).toMatch(/^# tokenscope business-unit drivers/)
     expect(lines[1]).toBe('driver,spend_usd,share_pct,spend_class,otel_emitted_usd,api_reconciled_usd,provider_usage_usd,surface_mix')
     const csvByLabel = new Map<string, { usd: number; share: number; klass: string }>()
     for (const line of lines.slice(2)) {

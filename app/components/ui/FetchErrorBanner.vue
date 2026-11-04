@@ -34,7 +34,7 @@ const detail = computed(() => {
   >
     <span>
       Couldn't load {{ label ?? 'this data' }} — the figures shown may be missing or stale.
-      <span v-if="detail" class="text-brand-heart/80">({{ detail }})</span>
+      <span v-if="detail" class="text-brand-heart">({{ detail }})</span>
     </span>
     <UiButton kind="secondary" size="sm" data-testid="fetch-error-retry" @click="emit('retry')">
       Retry

@@ -805,6 +805,10 @@ async function provision(tx: Tx, input: ProvisionInput): Promise<ProvisionReport
   for (const template of grants) {
     await execDdl(tx, template, [APP_DB_ROLE])
   }
+  // audit_event is append-only, and nothing in the app updates or deletes it.
+  // Without this the only guard is a trigger, which the table owner can drop.
+  // It must follow the blanket GRANT above, which re-grants on every run.
+  await execDdl(tx, 'REVOKE UPDATE, DELETE ON audit_event FROM %I', [APP_DB_ROLE])
 
   /*
    * ── NO `REVOKE` ON `provider_usage_fact`, AND THIS IS THE RECORD OF WHY ────

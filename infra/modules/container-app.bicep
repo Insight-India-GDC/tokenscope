@@ -109,6 +109,18 @@ param hasAnthropicKey bool = false
 // server/reconciliation/credentials.ts. Default false = no KV ref emitted (ACA
 // rejects a ref to a missing secret), so this is a clean no-op until a PAT is
 // provided + the matching provider_enterprise row is seeded.
+@description('Whether the github-pat-github-1 KV secret was created (generic GitHub slot 1; credential_secret_name "github-1"). Default false = no KV ref emitted.')
+param hasGithubPat1 bool = false
+
+@description('Whether the github-pat-github-2 KV secret was created (generic GitHub slot 2; credential_secret_name "github-2"). Default false = no KV ref emitted.')
+param hasGithubPat2 bool = false
+
+@description('Whether the github-pat-github-3 KV secret was created (generic GitHub slot 3; credential_secret_name "github-3"). Default false = no KV ref emitted.')
+param hasGithubPat3 bool = false
+
+@description('Whether the github-app-key-github-1 KV secret was created (GitHub App private key, base64 PEM, for slot 1; credential_secret_name "github-1"). Default false = no KV ref emitted.')
+param hasGithubAppKey1 bool = false
+
 @description('Whether the github-pat-partner-demo KV secret was created (F2 NFR/internal enterprise). Default false — F2 stays gated off.')
 param hasGithubPatPartnerDemo bool = false
 
@@ -315,8 +327,37 @@ var anthropicSecrets = hasAnthropicKey ? [
   }
 ] : []
 
-// GitHub Copilot reconciliation PATs (F2 — GATED OFF; empty flags = no ref emitted).
+// GitHub credential slots: the generic ones first, then the superseded named
+// ones (F2 — GATED OFF; empty flags = no ref emitted).
 var githubPatSecrets = concat(
+  hasGithubPat1 ? [
+    {
+      name: 'github-pat-github-1'
+      keyVaultUrl: '${keyVaultUri}secrets/github-pat-github-1'
+      identity: identityId
+    }
+  ] : [],
+  hasGithubPat2 ? [
+    {
+      name: 'github-pat-github-2'
+      keyVaultUrl: '${keyVaultUri}secrets/github-pat-github-2'
+      identity: identityId
+    }
+  ] : [],
+  hasGithubPat3 ? [
+    {
+      name: 'github-pat-github-3'
+      keyVaultUrl: '${keyVaultUri}secrets/github-pat-github-3'
+      identity: identityId
+    }
+  ] : [],
+  hasGithubAppKey1 ? [
+    {
+      name: 'github-app-key-github-1'
+      keyVaultUrl: '${keyVaultUri}secrets/github-app-key-github-1'
+      identity: identityId
+    }
+  ] : [],
   hasGithubPatPartnerDemo ? [
     {
       name: 'github-pat-partner-demo'
@@ -534,6 +575,17 @@ var anthropicEnvVars = hasAnthropicKey ? [
 // '-'→'_' (credentials.ts). NUXT_GITHUB_PAT_PARTNER_DEMO <- credential_secret_name
 // 'partner-demo'. Emitted only when the corresponding KV secret exists.
 var githubPatEnvVars = concat(
+  // Generic slots: credential_secret_name 'github-<n>'.
+  hasGithubPat1 ? [
+    { name: 'NUXT_GITHUB_PAT_GITHUB_1', secretRef: 'github-pat-github-1' }
+  ] : [],
+  hasGithubPat2 ? [
+    { name: 'NUXT_GITHUB_PAT_GITHUB_2', secretRef: 'github-pat-github-2' }
+  ] : [],
+  hasGithubPat3 ? [
+    { name: 'NUXT_GITHUB_PAT_GITHUB_3', secretRef: 'github-pat-github-3' }
+  ] : [],
+  // Named slots (superseded; kept so existing deployments keep working).
   hasGithubPatPartnerDemo ? [
     { name: 'NUXT_GITHUB_PAT_PARTNER_DEMO', secretRef: 'github-pat-partner-demo' }
   ] : [],
@@ -552,6 +604,9 @@ var githubPatEnvVars = concat(
 // (credentials.ts). NUXT_GITHUB_APP_KEY_PARTNER_DEMO <- credential_secret_name
 // 'partner-demo'. The value is the base64 PEM (github-app-auth.ts base64-decodes it).
 var githubAppKeyEnvVars = concat(
+  hasGithubAppKey1 ? [
+    { name: 'NUXT_GITHUB_APP_KEY_GITHUB_1', secretRef: 'github-app-key-github-1' }
+  ] : [],
   hasGithubAppKeyPartnerDemo ? [
     { name: 'NUXT_GITHUB_APP_KEY_PARTNER_DEMO', secretRef: 'github-app-key-partner-demo' }
   ] : []

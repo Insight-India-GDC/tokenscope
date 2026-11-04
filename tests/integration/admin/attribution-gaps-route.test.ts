@@ -229,6 +229,21 @@ describe('GET /admin/diagnostics/attribution-gaps — region clamp', () => {
     expect(finopsIds).toContain(idB)
   })
 
+  it('clamps on the region the teammate sits in NOW, not the attestation stamp (current-org-lens §3.2)', async () => {
+    // Stamped region A (where the device was enrolled); its teammate devB sits in region B.
+    const id = await seedGapIn({ regionId, ouId, teammateId: devBId, teammateEmail: 'ag-dev-b3@x.test', daysBehind: 19 })
+    const [adminB] = await t.db
+      .insert(schema.teammate)
+      .values({ entraOid: 'oid-ag-admin-b', email: 'ag-admin-b@x.test', role: 'admin', regionId: regionBId, orgUnitId: ouBId })
+      .returning()
+    const sessionB: Session = { teammateId: adminB!.id, email: 'ag-admin-b@x.test', displayName: 'Admin B', role: 'admin', regionId: regionBId, orgPath: 'ag-b.svc' }
+
+    const asA = (await handler(ev({ session: admin() }))) as { instances: Array<{ instanceId: string }> }
+    const asB = (await handler(ev({ session: sessionB }))) as { instances: Array<{ instanceId: string }> }
+    expect(asA.instances.map((i) => i.instanceId)).not.toContain(id)
+    expect(asB.instances.map((i) => i.instanceId)).toContain(id)
+  })
+
   it('MUST NOT BREAK: the underlying worker predicate stays estate-wide when called with no regionId (the parameter defaults to null)', async () => {
     const idB = await seedGapIn({ regionId: regionBId, ouId: ouBId, teammateId: devBId, teammateEmail: 'ag-dev-b2@x.test', daysBehind: 20 })
     const { findAttributionGaps } = await import('../../../server/workers/attribution-gap')

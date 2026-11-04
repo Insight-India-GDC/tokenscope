@@ -527,6 +527,10 @@ const S: Scenario[] = [
       const r = await c.run({ envSource: 'evil' })
       expect(r.status).toBe(1)
       expect(sentinelOf(c).message).toBe('trusted source unusable, ambient credential present')
+      // #452: both helpers say what they found, not only that they refused.
+      expect(r.stderr).toContain('device store')
+      expect(r.stderr).toContain('is missing.')
+      expect(r.stderr).toContain('could not be read as a settings file.')
       expect(srv.reqs).toHaveLength(0)
     },
   },

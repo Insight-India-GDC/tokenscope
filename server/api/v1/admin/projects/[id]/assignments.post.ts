@@ -2,8 +2,11 @@
  * POST /api/v1/admin/projects/{id}/assignments — assign a person to a project
  * (Journey 3a: confirm assigned devs during onboarding).
  *
- * manager / admin / platform-admin, scoped to the project (admin → region,
- * manager → org subtree).
+ * Gate (spec A1): today's gate — manager / admin / platform-admin scoped to the
+ * project (admin → region, manager → org subtree) — OR a current PM of this
+ * project. A caller admitted ONLY as the project's PM adds existing teammates
+ * with a real identity (A2): directory provisioning (oid) and adopting a bill:
+ * placeholder stay with the roles that had them.
  *
  * Two ways to identify the member — a PM/admin must be able to add ANY person
  * in the Entra directory, including brand-new people who never logged in / have
@@ -16,13 +19,17 @@
  *   - { teammate_id } — an EXISTING teammate (back-compat). Resolves/adopts the
  *                       real Entra identity (a bill: placeholder → adopt) before
  *                       assigning, via ensureRealIdentity.
+ *
+ * Only the PROJECT is region-scoped. The member may sit in any region on both
+ * paths: cross-region project membership is intended.
  */
 import { defineEventHandler, createError, getRequestIP, getHeader } from 'h3'
 import { readValidated } from '../../../../../utils/validated-body'
 import { sql } from 'drizzle-orm'
 import { z } from 'zod'
-import { requireRole } from '../../../../../auth/rbac'
-import { assertProjectScope } from '../../../../../auth/project-scope'
+import { requireAuth } from '../../../../../auth/rbac'
+import { assertProjectScopeOrManager, loadProjectTarget } from '../../../../../auth/project-authority'
+import { isPlatformAdmin } from '../../../../../../shared/auth/roles'
 import { assertSameOrigin } from '../../../../../auth/csrf'
 import { withRequestRls } from '../../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../../db/audit'
@@ -32,6 +39,8 @@ import { assertDirectoryIdentityPickable, provisionDirectoryTeammate } from '../
 import { loadDirectoryExclusionPatterns } from '../../../../../utils/directory-exclusions'
 import { getDirectoryUserByOid } from '../../../../../azure/directory'
 import { projectAssignment } from '../../../../../../drizzle/schema'
+import { lockProjectRowAt } from '../../../../../projects/last-manager'
+import { requestClock } from '../../../../../utils/request-clock'
 
 // Exactly one of teammate_id / oid — the dialog sends oid (directory pick),
 // legacy callers may still send teammate_id.
@@ -48,12 +57,17 @@ const Body = z
   })
 
 export default defineEventHandler(async (event) => {
-  const caller = await requireRole(event, 'manager', 'admin')
+  const caller = await requireAuth(event)
   assertSameOrigin(event)
   const id = requireUuidParam(event, 'id', 'project id')
   const body = await readValidated(event, Body)
   const ip = getRequestIP(event, { xForwardedFor: true }) ?? null
   const ua = getHeader(event, 'user-agent') ?? null
+
+  // A caller with no org role can only be admitted as the project's PM, which
+  // does not carry directory provisioning (A2). Refused before the Graph call.
+  const hasOrgRole = isPlatformAdmin(caller.role) || caller.role === 'manager' || caller.role === 'admin'
+  if (body.oid && !hasOrgRole) throw pmCannotProvision()
 
   // Directory pick: re-resolve identity SERVER-SIDE (never trust a client email /
   // display name) BEFORE the tx — getDirectoryUserByOid is a Graph call.
@@ -78,18 +92,32 @@ export default defineEventHandler(async (event) => {
     // fully-converted handler (docs/design/rls-enforcement.md, the pattern-load
     // class). Still BEFORE any write, so the refusal costs nothing.
     if (dir) assertDirectoryIdentityPickable(dir, await loadDirectoryExclusionPatterns(tx))
-    const projRows = await tx.execute<{ region_id: string; cou_path: string; cou_id: string }>(sql`
-      SELECT p.region_id::text AS region_id, cou.path::text AS cou_path, cou.id::text AS cou_id
+    const target = await loadProjectTarget(tx, id)
+    if (!target) {
+      throw createError({ statusCode: 404, statusMessage: 'Project not found' })
+    }
+    // Lock before the gate, as the remove and role-change routes do: a PM demoted
+    // or removed concurrently is read as such here, and cannot add a PM after.
+    const lockedAt = await lockProjectRowAt(tx, id, requestClock(event).now)
+    const via = await assertProjectScopeOrManager(event, tx, target, lockedAt)
+    if (via === 'project-manager') {
+      if (dir) throw pmCannotProvision()
+      // Adopting a bill: placeholder resolves and writes a directory identity — the
+      // same act as provisioning, so it is not carried by the PM arm either.
+      const [tm] = await tx.execute<{ entra_oid: string }>(sql`
+        SELECT entra_oid FROM teammate WHERE id = ${body.teammate_id!}::uuid LIMIT 1
+      `)
+      if (tm && (tm.entra_oid.startsWith('bill:') || tm.entra_oid.startsWith('provisional:'))) {
+        throw pmCannotProvision()
+      }
+    }
+    const projRows = await tx.execute<{ region_id: string; cou_id: string }>(sql`
+      SELECT p.region_id::text AS region_id, p.cost_owning_unit_id::text AS cou_id
       FROM project p
-      JOIN org_unit cou ON cou.id = p.cost_owning_unit_id
       WHERE p.id = ${id}::uuid
       LIMIT 1
     `)
-    const proj = [...projRows][0]
-    if (!proj) {
-      throw createError({ statusCode: 404, statusMessage: 'Project not found' })
-    }
-    await assertProjectScope(event, { regionId: proj.region_id, couPath: proj.cou_path }, tx)
+    const proj = [...projRows][0]!
 
     // Resolve the member teammate to assign.
     //  - oid path: find-or-provision from the directory pick. The resulting
@@ -149,6 +177,7 @@ export default defineEventHandler(async (event) => {
         role: body.role,
         identity_adopted: member.adopted,
         provisioned_from_directory: member.provisioned,
+        via,
       },
       ipAddress: ip,
       userAgent: ua,
@@ -165,3 +194,17 @@ export default defineEventHandler(async (event) => {
     }
   })
 })
+
+function pmCannotProvision() {
+  return createError({
+    statusCode: 403,
+    statusMessage: 'Forbidden',
+    data: {
+      type: 'https://tokenscope.example.com/errors/project-authority',
+      title: 'Only an admin can add this person',
+      status: 403,
+      detail:
+        'As the project manager you can add people who already use TokenScope. Ask an admin to add someone from the directory.',
+    },
+  })
+}

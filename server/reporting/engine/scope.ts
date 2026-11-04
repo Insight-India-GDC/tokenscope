@@ -25,8 +25,9 @@ import { sql, type SQL } from 'drizzle-orm'
 /*
  * The LANE a clamp is built for, carried in the type.
  *
- * §A clamps address (region_id, org_unit_id) on v_complete_usage; §B clamps
- * address (region_id, cost_owning_unit_id) on v_finance_bill_chargeback. They
+ * §A clamps address the people in a placement (`currentPlacementTeammates`) or
+ * the current-lens columns of v_usage_rollup_current / v_complete_usage_current;
+ * §B clamps address (region_id, cost_owning_unit_id) on v_finance_bill_chargeback. They
  * are different columns over different grains: an org unit that is not
  * cost-owning exists in the §A clamp and not the §B one. Handing a finance
  * clamp to the usage engine therefore type-checked and silently DROPPED usage
@@ -70,6 +71,35 @@ export function clampedUsage(predicate: SQL): UsageScope {
 /** Clamp the §B finance lane — predicates over (region_id, cost_owning_unit_id). */
 export function clampedFinance(predicate: SQL): FinanceScope {
   return { kind: 'clamped', lane: 'finance', predicate }
+}
+
+/**
+ * A §A clamp over the PEOPLE who sit inside a placement scope now
+ * (docs/design/current-org-lens/00-design.md §3.1): `<teammateCol> IN (SELECT
+ * id FROM teammate WHERE <placement over the teammate's current region / unit>)`.
+ *
+ * Why a teammate set rather than a predicate on the current views' placement
+ * columns: those columns come from a join, so a filter on them cannot use the
+ * stamped (region_id, day) / (org_unit_id, day) indexes, while this one uses the
+ * (teammate_id, …) indexes. It is also correct on every relation that carries a
+ * teammate_id (the rollup, the raw lane, provider_usage_fact), so one clamp
+ * serves both lanes of the drivers toggle. A row with no teammate is in no
+ * placement scope, as before.
+ *
+ * `= ANY(ARRAY(subquery))`, not `IN (subquery)`: the array is an initplan, so the
+ * predicate is a plain column filter the planner pushes into every arm of
+ * v_complete_usage and serves from the teammate indexes. `IN` became a hash
+ * semi-join over the whole window, ~2x slower on the raw lane (measured on a
+ * 1.5k-person synthetic estate).
+ *
+ * `placement` receives the teammate's column names; the alias `pt` is private to
+ * the subquery so it cannot capture an outer `t`.
+ */
+export function currentPlacementTeammates(
+  teammateCol: string,
+  placement: (regionCol: string, orgUnitCol: string) => SQL,
+): SQL {
+  return sql`${sql.raw(teammateCol)} = ANY(ARRAY(SELECT pt.id FROM teammate pt WHERE ${placement('pt.region_id', 'pt.org_unit_id')}))`
 }
 
 /**

@@ -106,8 +106,12 @@ export default defineEventHandler(async (event) => {
 
   // A region admin may only create an org mapped into their OWN region, with no credential.
   if (!isPlatformAdmin(caller.role)) {
-    if (!body.regionId) platformAdminOnly('An unmapped provider org (no region) is estate-wide; only platform-admin may write it.')
-    if (body.credentialSecretName) platformAdminOnly('The credential namespace is deployment-wide; only platform-admin may assign credentialSecretName.')
+    if (!body.regionId) platformAdminOnly('An unmapped provider org (no region) is estate-wide; only an Admin may write it.')
+    if (body.credentialSecretName) platformAdminOnly('The credential namespace is deployment-wide; only an Admin may assign credentialSecretName.')
+    // See orgs/[id].patch.ts: for Anthropic the enterprise link can carry a key.
+    if (body.provider === 'anthropic' && body.providerEnterpriseId) {
+      platformAdminOnly("Linking an Anthropic org to an enterprise can hand it the enterprise's key; only an Admin may change providerEnterpriseId on an Anthropic org.")
+    }
   }
   if (body.regionId) await requireRegionScope(event, body.regionId)
 
@@ -216,7 +220,7 @@ export default defineEventHandler(async (event) => {
         })
       }
       if (!ou.is_cost_owning_unit) {
-        badRequest('costOwningUnitId must reference a cost-owning org_unit (is_cost_owning_unit = true)')
+        badRequest('costOwningUnitId must reference a Business Unit (an org unit with is_cost_owning_unit = true)')
       }
     }
 

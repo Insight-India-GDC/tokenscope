@@ -7,8 +7,9 @@
  *
  * Once per escalation: a flag is picked up while escalation_notified_at is unset
  * or older than resolved_at (mig 0156, a partial index holds exactly those), so a
- * re-escalated flag is notified again. Routing is dispatch.ts's: the flag's
- * region's admins plus the platform admins.
+ * re-escalated flag is notified again. Routing is dispatch.ts's: the admins of
+ * the region the teammate sits in NOW (not over_emission.region_id, the stamp
+ * at detection) plus the platform admins.
  */
 import { sql } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
@@ -58,7 +59,7 @@ export async function notifyEscalatedOverEmission(
       const rows = await tx.execute<{
         teammate_id: string
         teammate_name: string
-        region_id: string | null
+        region_id: string
         day: string
         tool: string
         over_usd: string
@@ -68,7 +69,7 @@ export async function notifyEscalatedOverEmission(
       }>(sql`
         SELECT oe.teammate_id::text AS teammate_id,
                COALESCE(NULLIF(t.display_name, ''), t.email) AS teammate_name,
-               oe.region_id::text AS region_id,
+               t.region_id::text AS region_id,
                oe.day::text AS day, oe.tool,
                oe.over_usd::text AS over_usd,
                oe.resolved_over_usd::text AS resolved_over_usd,
@@ -101,18 +102,17 @@ export async function notifyEscalatedOverEmission(
           currentOverUsd: Number(f.over_usd),
           computedAt: f.computed_at,
           escalatedBy: f.by_system ? 'system' : 'teammate',
-          // The teammate report needs a frame (?src=, D33): the flag's region, which
-          // its region admins and the platform admins both hold; with no region,
-          // only the platform admins receive it, and they hold the whole company.
+          // The teammate report needs a frame (?src=, D33): the teammate's region,
+          // which every recipient holds.
           actionHref: `/reporting/teammate/${encodeURIComponent(f.teammate_id)}?${new URLSearchParams({
-            src: f.region_id ? `region:${f.region_id}` : 'across',
+            src: `region:${f.region_id}`,
             from: f.day,
             to: f.day,
           }).toString()}`,
         },
         relatedEntityKind: 'over-emission',
         relatedEntityId: c.id,
-        ...(f.region_id ? { regionId: f.region_id } : {}),
+        regionId: f.region_id,
       })
       // With no recipient yet (no admin), the flag stays pending for a later run.
       if (dispatched.length > 0) {

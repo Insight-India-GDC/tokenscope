@@ -2,7 +2,9 @@
  * POST /api/v1/admin/org-units/:id/move — REPARENT an org unit (and its whole subtree) to a new
  * parent WITHIN THE SAME REGION. The structural move the PATCH endpoint deferred.
  *
- * Body: { new_parent_id: uuid | null }   (null = move to top level under the region).
+ * Body: { new_parent_id: uuid }. null is refused: a region's only parentless units are its
+ * `default` unit and its holding node, so a stray top-level unit is moved under `default` like any
+ * other (docs/design/org-setup/01-second-run-fixes.md, item 1).
  *
  * It rewrites the moved subtree's LTREE paths in ONE statement —
  *   new path = <new-parent-path> || subpath(path, nlevel(old-root-path) - 1)
@@ -11,7 +13,9 @@
  * with a sibling under the new parent. Guards:
  *   - the unit + new parent must exist, be ACTIVE (retired_at IS NULL), and share the region;
  *   - cross-region moves are 400 (a separate, heavier operation — re-homes region/spend dims);
- *   - no cycle: the new parent must not be the unit itself or any of its descendants.
+ *   - no cycle: the new parent must not be the unit itself or any of its descendants;
+ *   - the region's `default` unit and its holding node never move, and nothing moves at or under
+ *     the holding node.
  *
  * Admin / platform-admin; a region admin is bound to the unit's region (requireRegionScope).
  */
@@ -23,14 +27,14 @@ import { requireRole, requireRegionScope } from '../../../../../auth/rbac'
 import { assertSameOrigin } from '../../../../../auth/csrf'
 import { withRequestRls } from '../../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../../db/audit'
+import { isAtOrUnderHoldingNode, isHoldingUnit, isRegionDefaultUnit, lockRegionUnitPaths } from '../../../../../db/org-unit-create'
 
 const Body = z.object({
   new_parent_id: z.string().uuid().nullable(),
 })
 
-/** ltree label: lowercase, non-[a-z0-9_] → '_' (matches org-units.post.ts deriveLabel). */
-function label(code: string): string {
-  return code.toLowerCase().replace(/[^a-z0-9_]/g, '_')
+function invalidMove(detail: string) {
+  return createError({ statusCode: 400, statusMessage: 'Invalid move', data: { type: 'https://tokenscope.example.com/errors/validation', title: 'Invalid move', status: 400, detail } })
 }
 
 export default defineEventHandler(async (event) => {
@@ -46,47 +50,48 @@ export default defineEventHandler(async (event) => {
 
   return await withRequestRls(event, async (tx) => {
     // 1. The unit being moved — must exist + be active. Capture region + path + parent.
-    const [unit] = [...await tx.execute<{ id: string; region_id: string; region_code: string; path: string; code: string; parent_id: string | null }>(sql`
-      SELECT ou.id::text AS id, ou.region_id::text AS region_id, r.code AS region_code,
-             ou.path::text AS path, ou.code, ou.parent_id::text AS parent_id
-      FROM org_unit ou JOIN region r ON r.id = ou.region_id
+    const [unit] = [...await tx.execute<{ id: string; region_id: string; path: string; code: string; parent_id: string | null; unit_type: string }>(sql`
+      SELECT ou.id::text AS id, ou.region_id::text AS region_id,
+             ou.path::text AS path, ou.code, ou.parent_id::text AS parent_id, ou.unit_type
+      FROM org_unit ou
       WHERE ou.id = ${unitId}::uuid AND ou.retired_at IS NULL LIMIT 1`)]
     if (!unit) throw createError({ statusCode: 404, statusMessage: 'Org unit not found (or retired)' })
 
     // Region admin is bound to the unit's region.
     await requireRegionScope(event, unit.region_id)
 
-    // 2. Resolve the destination. null → top level under the region. The top-level path prefix is
-    //    the one existing top-level units in this region share (NOT assumed to be label(region.code)
-    //    — that would strand the moved unit under a root no sibling uses); fall back to the region
-    //    label only when the region has no other top-level unit yet.
-    let newParentId: string | null = null
-    let newParentPath: string
+    // A concurrent move or code change above this unit may have re-pathed it before we locked.
+    await lockRegionUnitPaths(tx, unit.region_id)
+    const [fresh] = [...await tx.execute<{ path: string; parent_id: string | null }>(sql`
+      SELECT path::text AS path, parent_id::text AS parent_id FROM org_unit WHERE id = ${unit.id}::uuid`)]
+    unit.path = fresh!.path
+    unit.parent_id = fresh!.parent_id
+
+    if (isRegionDefaultUnit(unit)) throw invalidMove("the region's default unit cannot be moved")
+    if (isHoldingUnit(unit)) throw invalidMove('the Unplaced holding node cannot be moved')
     if (body.new_parent_id === null) {
-      const [top] = [...await tx.execute<{ prefix: string }>(sql`
-        SELECT subpath(path, 0, 1)::text AS prefix FROM org_unit
-        WHERE region_id = ${unit.region_id}::uuid AND parent_id IS NULL AND retired_at IS NULL AND id <> ${unit.id}::uuid
-        LIMIT 1`)]
-      newParentPath = top?.prefix ?? label(unit.region_code)
-    } else {
-      const [parent] = [...await tx.execute<{ id: string; region_id: string; path: string }>(sql`
-        SELECT id::text AS id, region_id::text AS region_id, path::text AS path
-        FROM org_unit WHERE id = ${body.new_parent_id}::uuid AND retired_at IS NULL LIMIT 1`)]
-      if (!parent) throw createError({ statusCode: 404, statusMessage: 'New parent not found (or retired)' })
-      if (parent.region_id !== unit.region_id) {
-        throw createError({ statusCode: 400, statusMessage: 'Invalid move', data: { type: 'https://tokenscope.example.com/errors/validation', title: 'Invalid move', status: 400, detail: 'cross-region moves are not supported — the new parent must be in the same region as the unit' } })
-      }
-      // Cycle guard: the new parent must not be the unit itself or any of its descendants.
-      const [cyc] = [...await tx.execute<{ bad: boolean }>(sql`SELECT (${parent.path}::ltree <@ ${unit.path}::ltree) AS bad`)]
-      if (cyc?.bad) {
-        throw createError({ statusCode: 400, statusMessage: 'Invalid move', data: { type: 'https://tokenscope.example.com/errors/validation', title: 'Invalid move', status: 400, detail: 'cannot move a unit under itself or one of its own descendants' } })
-      }
-      newParentId = parent.id
-      newParentPath = parent.path
+      throw invalidMove("a unit cannot be moved to the top level of its region; move it under the region's default unit instead")
     }
 
+    // 2. Resolve the destination.
+    const [parent] = [...await tx.execute<{ id: string; region_id: string; path: string }>(sql`
+      SELECT id::text AS id, region_id::text AS region_id, path::text AS path
+      FROM org_unit WHERE id = ${body.new_parent_id}::uuid AND retired_at IS NULL LIMIT 1`)]
+    if (!parent) throw createError({ statusCode: 404, statusMessage: 'New parent not found (or retired)' })
+    if (parent.region_id !== unit.region_id) {
+      throw invalidMove('cross-region moves are not supported — the new parent must be in the same region as the unit')
+    }
+    // Cycle guard: the new parent must not be the unit itself or any of its descendants.
+    const [cyc] = [...await tx.execute<{ bad: boolean }>(sql`SELECT (${parent.path}::ltree <@ ${unit.path}::ltree) AS bad`)]
+    if (cyc?.bad) throw invalidMove('cannot move a unit under itself or one of its own descendants')
+    if (await isAtOrUnderHoldingNode(tx, unit.region_id, parent.path)) {
+      throw invalidMove('nothing can be moved under the Unplaced holding node')
+    }
+    const newParentId = parent.id
+    const newParentPath = parent.path
+
     // No-op: already under that parent.
-    if ((body.new_parent_id ?? null) === (unit.parent_id ?? null)) {
+    if (newParentId === unit.parent_id) {
       return { id: unit.id, code: unit.code, path: unit.path, parent_id: unit.parent_id, moved: false }
     }
 

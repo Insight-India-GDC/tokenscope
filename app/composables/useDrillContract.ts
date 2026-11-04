@@ -63,9 +63,14 @@ export function useDrillGrants(): ComputedRef<DrillGrants> {
  */
 export function useDrillWindow(): ComputedRef<Omit<DrillFrame, 'src'>> {
   const rs = useReportState()
+  // The server's day names the DEFAULT window (no `month`/`from`/`to` in the
+  // URL); the browser clock never does. Auto-imported, so a unit test pins it
+  // with `stubServerClock`.
+  const { today } = useServerClock()
   return computed(() => ({
     month: rs.month.value,
     from: rs.from.value,
     to: rs.to.value,
+    today: today.value,
   }))
 }

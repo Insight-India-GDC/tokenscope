@@ -9,6 +9,16 @@
  * UPDATE). The query-builder paths sometimes surface the bare error. This helper
  * checks both so a clean 409/23503 mapping works regardless of the call style.
  */
+/** The table a Postgres error names (`table_name`), bare or under Drizzle's `.cause`. */
+export function pgErrorTable(err: unknown): string | undefined {
+  if (typeof err !== 'object' || err === null) return undefined
+  for (const e of [err, (err as { cause?: unknown }).cause]) {
+    const t = typeof e === 'object' && e !== null ? (e as { table_name?: unknown }).table_name : undefined
+    if (typeof t === 'string' && t) return t
+  }
+  return undefined
+}
+
 export function pgErrorCode(err: unknown): string | undefined {
   if (typeof err !== 'object' || err === null) return undefined
   const top = (err as { code?: unknown }).code

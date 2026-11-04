@@ -2,13 +2,15 @@
  * reporting/cost-centres — the query layer behind the Cost-Centre reporting scope
  * (docs/design/reporting-consolidation/00-build-design.md §2/§3/§4/§5, Wave 3).
  *
- * ONE lane, end to end (the §A completeness lane, `v_complete_usage`): BOTH the
- * card grid AND the drill read the PROJECT-CoU USAGE axis
- * (`v_complete_usage WHERE cost_owning_unit_id`). The tracker card shows a CC's
- * BURN; drilling it shows WHO/WHAT is burning that budget (teammate / model
- * drivers), reconciling to the SAME burn — including a spender whose CURRENT
- * placement has moved (§A homes by emit-time cost_owning_unit_id, so they never
- * vanish). Copilot pooled rows carry NULL cost_owning_unit_id, so
+ * ONE lane, end to end (the §A completeness lane, read through the current-org
+ * lens `v_complete_usage_current`): BOTH the card grid AND the drill read the
+ * `cost_owning_unit_id` USAGE axis. That column is the PROJECT's Business Unit on
+ * tagged OTel rows and the person's CURRENT Business Unit on provider-reported
+ * rows (mig 0162, docs/design/current-org-lens/00-design.md §3.3), so a person
+ * who moves takes their untaggable usage with them while project-tagged usage
+ * stays with the project's unit. The tracker card shows a CC's BURN; drilling it
+ * shows WHO/WHAT is burning that budget (teammate / model drivers), reconciling
+ * to the SAME burn. Copilot pooled rows carry NULL cost_owning_unit_id, so
  * `WHERE cost_owning_unit_id = ccId` excludes them by construction (the labelled
  * §A gap) — the per-CC burn is Claude-heavy.
  *
@@ -484,7 +486,7 @@ export async function fetchCostCentreCards(
     SELECT u.cost_owning_unit_id::text AS cc_id,
            COALESCE(SUM(u.cost_usd), 0)::text AS burn,
            to_char(MAX(u.ts_event), 'YYYY-MM-DD') AS as_of
-    FROM v_complete_usage u
+    FROM v_complete_usage_current u
     WHERE u.cost_owning_unit_id = ANY(${ids})
       AND u.ts_event >= ${window.startIso}::timestamptz
       AND u.ts_event <  ${window.endIso}::timestamptz
@@ -515,7 +517,7 @@ export async function fetchCostCentreCards(
     SELECT p.cost_owning_unit_id::text AS cc_id, COALESCE(SUM(a.budget_usd), 0)::text AS alloc
     FROM project p
     JOIN allocation a ON a.scope_type = 'project' AND a.scope_id = p.id
-      AND a.allocation_kind IN ('baseline', 'top-up') AND a.effective @> now()
+      AND a.allocation_kind IN ('baseline', 'top-up') AND a.teammate_id IS NULL AND a.effective @> now()
     WHERE p.cost_owning_unit_id = ANY(${ids})
     GROUP BY p.cost_owning_unit_id`)
   const allocByCc = new Map<string, number>()
@@ -663,7 +665,7 @@ export async function fetchCostCentreBurnDrill(
       SELECT COALESCE(SUM(u.cost_usd), 0)::text AS burn,
              to_char(MAX(u.ts_event), 'YYYY-MM-DD') AS as_of,
              ${vendorSplitAggregates}
-      FROM v_complete_usage u
+      FROM v_complete_usage_current u
       WHERE u.cost_owning_unit_id = ${ccId}::uuid
         AND u.ts_event >= ${window.startIso}::timestamptz
         AND u.ts_event <  ${window.endIso}::timestamptz`)),
@@ -702,7 +704,7 @@ export async function fetchCostCentreProjectBudgets(
     SELECT p.id::text AS project_id, COALESCE(SUM(a.budget_usd), 0)::text AS alloc
     FROM project p
     JOIN allocation a ON a.scope_type = 'project' AND a.scope_id = p.id
-      AND a.allocation_kind IN ('baseline', 'top-up') AND a.effective @> now()
+      AND a.allocation_kind IN ('baseline', 'top-up') AND a.teammate_id IS NULL AND a.effective @> now()
     WHERE p.cost_owning_unit_id = ${ccId}::uuid
     GROUP BY p.id`)
   return new Map([...rows].map((r) => [r.project_id, Number(r.alloc)]))
@@ -722,7 +724,7 @@ export async function fetchCostCentreAllocation(tx: Tx, ccId: string): Promise<n
       SELECT COALESCE(SUM(a.budget_usd), 0)::text AS alloc
       FROM project p
       JOIN allocation a ON a.scope_type = 'project' AND a.scope_id = p.id
-        AND a.allocation_kind IN ('baseline', 'top-up') AND a.effective @> now()
+        AND a.allocation_kind IN ('baseline', 'top-up') AND a.teammate_id IS NULL AND a.effective @> now()
       WHERE p.cost_owning_unit_id = ${ccId}::uuid`)),
   ]
   return Number(row?.alloc ?? 0)
@@ -733,9 +735,10 @@ export async function fetchCostCentreAllocation(tx: Tx, ccId: string): Promise<n
  * The cost-centre's Behavioural-exposure card — the SAME primitive the Region
  * scope calls, clamped to this CC's cost-owning unit.
  *
- * WHY `cost_owning_unit_id` AND NOT the §A burn clamp. This is the §B lane, and
- * `provider_usage_fact` stamps `cost_owning_unit_id` at ingest (`0118:70-79`) —
- * the same column the finance clamp addresses everywhere else. The card sits
+ * WHY `cost_owning_unit_id` AND NOT the §A burn clamp. This is the §B lane, read
+ * through `v_provider_usage_fact_current`, whose `cost_owning_unit_id` is the
+ * person's current Business Unit — the column the finance clamp addresses
+ * everywhere else. The card sits
  * beside the §A burn drill and its money is NEVER summed with it (contract C2):
  * the burn is usage-basis and this is provider-billed.
  *
@@ -801,7 +804,7 @@ export async function fetchCostCentreProjectShare(
 ): Promise<Map<string, number>> {
   const rows = await tx.execute<{ project_id: string; share: string }>(sql`
     SELECT u.project_id::text AS project_id, COALESCE(SUM(u.cost_usd), 0)::text AS share
-    FROM v_complete_usage u
+    FROM v_complete_usage_current u
     WHERE u.cost_owning_unit_id = ${ccId}::uuid
       AND u.project_id IS NOT NULL
       AND u.identity_state IS DISTINCT FROM 'provisional'
@@ -854,7 +857,7 @@ export async function fetchCostCentreTeammateTierMix(
   const rows = await tx.execute<{ teammate_id: string | null; model: string | null; value: string }>(sql`
     SELECT u.teammate_id::text AS teammate_id, u.model AS model,
            COALESCE(SUM(u.cost_usd), 0)::text AS value
-    FROM v_complete_usage u
+    FROM v_complete_usage_current u
     WHERE u.cost_owning_unit_id = ${ccId}::uuid
       AND u.model IS NOT NULL
       AND u.ts_event >= ${window.startIso}::timestamptz
@@ -931,8 +934,8 @@ export interface CostCentreBurnDriversResult {
  * Ranked §A burn drivers for one axis, summing back to the CC burn headline
  * (build-design §7(4)):
  *   - teammate → LEFT JOIN teammate for the label; EVERY §A row under a CoU carries a
- *     teammate_id, so the ranking reconciles to the burn — INCLUDING a spender
- *     whose current placement has moved (§A homes by emit-time cost_owning_unit_id).
+ *     teammate_id, so the ranking reconciles to the burn, on the same current-lens
+ *     column the burn is clamped by.
  *     LEFT (not INNER) + COALESCE(...,'Unattributed') is defence-in-depth: an orphaned
  *     teammate_id would silently DROP a row under an inner join and break the sum-back.
  *   - model    → group by (model, usage_provenance); a NULL model → an explicit
@@ -1102,7 +1105,7 @@ export async function fetchCostCentreBurnDrivers(
              u.tool AS tool, u.usage_provenance AS provenance,
              COALESCE(SUM(u.cost_usd), 0)::text AS value,
              ${TEAMMATE_DRILL_FACTS_AGG}
-      FROM v_complete_usage u LEFT JOIN teammate t ON t.id = u.teammate_id
+      FROM v_complete_usage_current u LEFT JOIN teammate t ON t.id = u.teammate_id
       WHERE u.cost_owning_unit_id = ${ccId}::uuid AND ${win}
       GROUP BY u.teammate_id, t.display_name, t.email, u.tool, u.usage_provenance`)
     // The two drill-admission conjuncts the CLIENT cannot infer (D34/D38,
@@ -1159,7 +1162,7 @@ export async function fetchCostCentreBurnDrivers(
     }>(sql`
       SELECT NULL::text AS key, NULL::text AS label, u.tool AS tool, u.usage_provenance AS provenance,
              COALESCE(SUM(u.cost_usd), 0)::text AS value
-      FROM v_complete_usage u
+      FROM v_complete_usage_current u
       WHERE u.cost_owning_unit_id = ${ccId}::uuid AND ${win}
       GROUP BY u.tool, u.usage_provenance`)
     const folded = foldDriverBreakdown(raws).get('') ?? {
@@ -1205,7 +1208,7 @@ export async function fetchCostCentreBurnDrivers(
       SELECT u.model AS key, u.model AS label, u.usage_provenance AS provenance,
              u.model_gap_reason AS gap_reason,
              COALESCE(SUM(u.cost_usd), 0)::text AS value
-      FROM v_complete_usage u
+      FROM v_complete_usage_current u
       WHERE u.cost_owning_unit_id = ${ccId}::uuid AND ${win}
       -- GROUP BY includes usage_provenance (R1-M3, mig 0101) AND
       -- model_gap_reason (mig 0124, r1-H5) — see the identical note in
@@ -1361,7 +1364,7 @@ export function cardsToCsv(
 ): string {
   const lines = [
     csvMetaLine(
-      `# tokenscope cost-centres · month=${meta.month} · as_of=${meta.asOfDate ?? 'n/a'}`
+      `# tokenscope business-units · month=${meta.month} · as_of=${meta.asOfDate ?? 'n/a'}`
     ),
     // `charge_usd` (§B chargeback, the bill lane) sits beside `burn_usd` (§A usage) and is
     // ALWAYS present regardless of the on-screen lane, so the export is complete in both.
@@ -1409,7 +1412,7 @@ export function overSoftCapToCsv(
 ): string {
   const lines = [
     csvMetaLine(
-      `# tokenscope cost-centre over-soft-cap · cc=${meta.ccLabel} · month=${meta.month}` +
+      `# tokenscope business-unit over-soft-cap · bu=${meta.ccLabel} · month=${meta.month}` +
       ` · soft_cap_usd=${usd(data.softCapUsd)} · roster=${data.rosterCount}` +
       ` · roster_usd=${usd(data.rosterUsd)}` +
       ` · within_allowance=${data.withinAllowance.teammates}` +
@@ -1440,7 +1443,7 @@ export function driversToCsv(
 ): string {
   const lines = [
     csvMetaLine(
-      `# tokenscope cost-centre drivers · cc=${meta.ccLabel} · axis=${meta.axis} · month=${meta.month} · as_of=${meta.asOfDate ?? 'n/a'}`
+      `# tokenscope business-unit drivers · bu=${meta.ccLabel} · axis=${meta.axis} · month=${meta.month} · as_of=${meta.asOfDate ?? 'n/a'}`
     ),
     'driver,spend_usd,share_pct,spend_class,otel_emitted_usd,api_reconciled_usd,provider_usage_usd,surface_mix',
     ...rows.map(
@@ -1462,7 +1465,7 @@ export function driversToCsv(
  * before they were merged onto `ScopeHero`.
  *
  * THE TWO CLAMPS ARE NOT THE SAME COLUMN, and the aliasing is load-bearing:
- *   §A usage   — `u.cost_owning_unit_id` on `v_complete_usage`, matching the
+ *   §A usage   — `u.cost_owning_unit_id` on the current-lens views, matching the
  *                alias the engine's own FROM uses AND `fetchCostCentreBurnDrill`
  *                above, so the hero's headline IS the burn the page already
  *                shows rather than a second number over the same window.
@@ -1478,8 +1481,8 @@ export function driversToCsv(
 const ccUsageClamp = (ccId: string): UsageScope => clampedUsage(sql`u.cost_owning_unit_id = ${ccId}::uuid`)
 
 /*
- * THE UNALIASED TWIN. Half the engine's queries write `FROM v_complete_usage`
- * with no alias and half write `FROM v_complete_usage u`, and the predicate has
+ * THE UNALIASED TWIN. Half the engine's queries write `FROM v_usage_rollup_current`
+ * with no alias and half write `FROM v_usage_rollup_current u`, and the predicate has
  * to match the query it lands in:
  *
  *   UNALIASED  fetchKpiCore (kpis.ts:206,:247) · fetchPerPerson (per-person.ts:80)
@@ -1587,7 +1590,7 @@ export async function fetchCostCentreUsageBudgetCoverage(
 // ── The rolling band (parity: BAND 2 and its four cards) ────────────────────
 /*
  * THE UNALIASED TWIN, and it is not a stylistic choice. `fetchUsageWeeklyLanes`
- * selects `FROM v_complete_usage` with NO alias, so a `u.`-qualified predicate
+ * selects `FROM v_usage_rollup_current` with NO alias, so a `u.`-qualified predicate
  * does not resolve there — and because the mismatch is a missing correlation
  * name, Postgres REJECTS the statement outright with "missing FROM-clause entry
  * for table \"u\"" — the request 500s rather than quietly returning no rows. (An

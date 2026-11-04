@@ -409,7 +409,7 @@ const whereMax = computed(() => {
 const NO_PROJECT_SEGMENTS = [
   { key: 'worklist', label: 'needs tagging', colour: 'bg-rag-amber' },
   { key: 'activity_tagged', label: 'activity-tagged', colour: 'bg-brand-harmony/60' },
-  { key: 'dismissed', label: 'dismissed', colour: 'bg-calm-3' },
+  { key: 'dismissed', label: 'dismissed', colour: 'bg-cloud' },
   { key: 'untaggable', label: 'untaggable', colour: 'bg-calm' },
 ] as const
 const noProjectWorklistUsd = computed(() =>
@@ -441,7 +441,7 @@ function rowBudgetUsd(r: WhereItWentRow): number | null | undefined {
 // ── Engagement (D22) ─────────────────────────────────────────────────────────
 const claudeEng = computed(() => data.value?.engagement?.claude ?? null)
 const copilotEng = computed(() => data.value?.engagement?.copilot ?? null)
-const SURFACE_COLOURS = ['bg-brand-hunger', 'bg-brand-claude-ai', 'bg-brand-zeal', 'bg-calm-2']
+const SURFACE_COLOURS = ['bg-brand-hunger', 'bg-lane-claude-ai', 'bg-brand-zeal', 'bg-calm-2']
 const claudeSurfaces = computed(() => {
   const c = claudeEng.value
   if (!c?.surfaces.length) return []
@@ -1309,7 +1309,7 @@ async function onWorklistChanged() {
     </div>
     <UiEmptyState
       v-else-if="error"
-      headline="Couldn't load your consumption"
+      headline="Couldn't load your usage"
       sub="Something went wrong fetching this page. Refresh to try again."
       data-testid="my-consumption-error"
     />

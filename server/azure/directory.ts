@@ -24,7 +24,7 @@
  * getDirectoryUserByOid() rather than trusting the client-supplied email /
  * display name (which would be spoofable).
  */
-import { resilientFetch, DeadlinePassedError } from '../utils/resilient-fetch'
+import { resilientFetch, DeadlinePassedError, abortReason } from '../utils/resilient-fetch'
 
 const GRAPH_SCOPE = 'https://graph.microsoft.com/.default'
 
@@ -40,10 +40,12 @@ export const WORKER_GRAPH_RETRIES = 2
  * that is what request handlers and sign-in get, so a person waiting on a page
  * is never parked behind a backoff. Workers pass `retries` and their run
  * `deadline` (epoch ms), past which no attempt and no wait is started.
+ * `signal` cancels the call outright, including its wait on the token mint.
  */
 export interface GraphCallOptions {
   retries?: number
   deadline?: number
+  signal?: AbortSignal
 }
 
 /** A non-2xx Graph (or token-endpoint) answer. The message keeps the `(status)`
@@ -83,14 +85,15 @@ const isGraphNotFound = (err: unknown): boolean =>
   err instanceof GraphHttpError && err.status === 404 && err.path !== 'token'
 
 function transport(call: GraphCallOptions) {
-  return { timeoutMs: GRAPH_TIMEOUT_MS, retries: call.retries ?? 0, deadline: call.deadline }
+  return { timeoutMs: GRAPH_TIMEOUT_MS, retries: call.retries ?? 0, deadline: call.deadline, signal: call.signal }
 }
 
 /*
  * The token mint's transport, fixed and independent of any caller. The mint is
  * shared (single-flight below): every concurrent caller awaits the one request,
- * so it must not carry the first caller's deadline (a worker past its deadline
- * would fail a request handler's mint) or its retry count.
+ * so it must not carry the first caller's deadline or retry count. A caller's
+ * signal ends only that caller's wait; the request is cancelled when no caller
+ * is still waiting on it.
  */
 const MINT_TRANSPORT = { timeoutMs: GRAPH_TIMEOUT_MS, retries: 1 }
 
@@ -136,8 +139,14 @@ export interface DirectoryUser {
 
 // ── App-only token cache (one shared token; app-level, like obo.ts) ──
 const REFRESH_SKEW_MS = 5 * 60 * 1000
-let cached: { token: string; expiresAtMs: number } | null = null
-let inFlight: Promise<{ token: string; expiresAtMs: number }> | null = null
+type MintedToken = { token: string; expiresAtMs: number }
+interface InFlightMint {
+  promise: Promise<MintedToken>
+  controller: AbortController
+  waiters: number
+}
+let cached: MintedToken | null = null
+let inFlight: InFlightMint | null = null
 
 /** Test seam — reset the token cache. */
 export function _resetGraphTokenCache(): void {
@@ -156,7 +165,7 @@ function jwtExpMs(token: string): number | null {
   }
 }
 
-async function mintGraphToken(): Promise<{ token: string; expiresAtMs: number }> {
+async function mintGraphToken(signal: AbortSignal): Promise<MintedToken> {
   const clientId = process.env.NUXT_OIDC_PROVIDERS_ENTRA_CLIENT_ID
   const clientSecret = process.env.NUXT_OIDC_PROVIDERS_ENTRA_CLIENT_SECRET
   const tokenUrl = process.env.NUXT_OIDC_PROVIDERS_ENTRA_TOKEN_URL
@@ -178,7 +187,7 @@ async function mintGraphToken(): Promise<{ token: string; expiresAtMs: number }>
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body,
     },
-    MINT_TRANSPORT,
+    { ...MINT_TRANSPORT, signal },
   )
   if (!res.ok) {
     // Don't leak the response body (may echo client_id); surface status only.
@@ -192,18 +201,58 @@ async function mintGraphToken(): Promise<{ token: string; expiresAtMs: number }>
   return { token: json.access_token, expiresAtMs }
 }
 
-async function getGraphToken(): Promise<string> {
+async function getGraphToken(signal?: AbortSignal): Promise<string> {
   const now = Date.now()
   if (cached && cached.expiresAtMs - REFRESH_SKEW_MS > now) return cached.token
+  if (signal?.aborted) throw abortReason(signal)
   // Single-flight: collapse concurrent cold-start mints onto one request, sent
   // on MINT_TRANSPORT whoever started it.
   if (!inFlight) {
-    inFlight = mintGraphToken().finally(() => {
-      inFlight = null
-    })
+    const controller = new AbortController()
+    const mint: InFlightMint = {
+      controller,
+      waiters: 0,
+      promise: mintGraphToken(controller.signal).finally(() => {
+        if (inFlight === mint) inFlight = null
+      }),
+    }
+    // Every waiter may have left by the time it settles.
+    mint.promise.catch(() => undefined)
+    inFlight = mint
   }
-  cached = await inFlight
+  cached = await awaitMint(inFlight, signal)
   return cached.token
+}
+
+/** Wait on the shared mint until `signal` aborts; the last waiter to leave cancels it. */
+function awaitMint(mint: InFlightMint, signal?: AbortSignal): Promise<MintedToken> {
+  mint.waiters++
+  return new Promise<MintedToken>((resolve, reject) => {
+    let left = false
+    const onAbort = () => {
+      left = true
+      if (--mint.waiters === 0) {
+        mint.controller.abort(signal!.reason)
+        if (inFlight === mint) inFlight = null
+      }
+      reject(abortReason(signal!))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    const settle = () => {
+      signal?.removeEventListener('abort', onAbort)
+      if (!left) mint.waiters--
+    }
+    mint.promise.then(
+      (v) => {
+        settle()
+        resolve(v)
+      },
+      (err: unknown) => {
+        settle()
+        reject(err)
+      },
+    )
+  })
 }
 
 async function graphGet<T>(
@@ -212,7 +261,7 @@ async function graphGet<T>(
   advanced = false,
   call: GraphCallOptions = {},
 ): Promise<T> {
-  const token = await getGraphToken()
+  const token = await getGraphToken(call.signal)
   const url = `${graphBaseUrl()}${path}?${search.toString()}`
   const headers: Record<string, string> = { authorization: `Bearer ${token}` }
   // $search / $count on /users are advanced queries → ConsistencyLevel: eventual.
@@ -355,9 +404,10 @@ export async function searchDirectory(query: string, limit = 15): Promise<Direct
   if (!q) return []
   if (!isRealGraph()) return mockSearch(q, limit)
 
-  // $search wants quoted phrases; strip embedded quotes so we can't break out
-  // of the search expression.
-  const safe = q.replace(/"/g, '')
+  // $search wants quoted phrases; strip embedded quotes and backslashes (Graph's
+  // escape character, so a trailing one would escape the closing quote) so the
+  // term cannot break out of the search expression.
+  const safe = q.replace(/["\\]/g, '')
   const mkParams = (select: string) =>
     new URLSearchParams({
       $search: `"displayName:${safe}" OR "mail:${safe}"`,
@@ -465,7 +515,7 @@ const MOCK_MANAGER_EDGES: Record<string, { oid: string; email: string }> = {
 
 /**
  * Resolve a user's manager (mig 0068 region-derivation fallback): the `/users/{id}/manager`
- * navigation. Returns `{ oid, email }` or null at the top of the org chart / when the user
+ * navigation. Returns `{ oid, email, name }` or null at the top of the org chart / when the user
  * has no manager. Rides the SAME app-only `User.Read.All` (proven app-only on the Insight
  * tenant by AEUF). 404 → null (terminate the walk cleanly); ANY OTHER error PROPAGATES so
  * the caller aborts and retries next tick — a transient miss must never be cached as a
@@ -474,13 +524,14 @@ const MOCK_MANAGER_EDGES: Record<string, { oid: string; email: string }> = {
 export async function getUserManager(
   oid: string,
   call: GraphCallOptions = {},
-): Promise<{ oid: string; email: string | null } | null> {
+): Promise<{ oid: string; email: string | null; name: string | null } | null> {
   if (!isRealGraph()) {
-    return MOCK_MANAGER_EDGES[oid] ?? null
+    const edge = MOCK_MANAGER_EDGES[oid]
+    return edge ? { ...edge, name: null } : null
   }
-  const search = new URLSearchParams({ $select: 'id,mail,userPrincipalName' })
+  const search = new URLSearchParams({ $select: 'id,mail,userPrincipalName,displayName' })
   try {
-    const u = await graphGet<{ id?: string; mail?: string | null; userPrincipalName?: string | null }>(
+    const u = await graphGet<{ id?: string; mail?: string | null; userPrincipalName?: string | null; displayName?: string | null }>(
       `/users/${encodeURIComponent(oid)}/manager`,
       search,
       false,
@@ -488,7 +539,7 @@ export async function getUserManager(
     )
     if (!u || !u.id) return null
     const email = (u.mail ?? u.userPrincipalName ?? '').toLowerCase() || null
-    return { oid: u.id, email }
+    return { oid: u.id, email, name: u.displayName || null }
   } catch (err) {
     // 404 = no manager (top of chart) or user-not-found → null. Throttle / 5xx / network
     // PROPAGATE (per-user worker isolation retries) and are NEVER cached as a real miss.

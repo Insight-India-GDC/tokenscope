@@ -11,6 +11,7 @@
  * A leader is the fallback target for placing unplaced users: an unplaced
  * user's manager chain is walked up to the nearest leader, and that leader's
  * region homes them. Soft-revoke keeps history; re-assignment is a new row.
+ * Writes are platform-admin only; region admins get the list read-only.
  */
 import { ref, watch } from 'vue'
 import UiButton from '../ui/Button.vue'
@@ -31,7 +32,7 @@ interface DirectoryHit {
   job_title: string | null
 }
 
-const props = defineProps<{ regionId: string | null; regionName: string; regionCode: string }>()
+const props = defineProps<{ regionId: string | null; regionName: string; regionCode: string; readOnly?: boolean }>()
 const emit = defineEmits<{ close: []; changed: [] }>()
 
 const leaders = ref<Leader[]>([])
@@ -49,7 +50,7 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const r = await $fetch<{ leaders: Leader[] }>(`/api/v1/admin/regions/${props.regionId}/leaders`)
+    const r = await $fetch<{ leaders: Leader[] }>(`/api/v1/admin/regions/${encodeURIComponent(props.regionId)}/leaders`)
     leaders.value = r.leaders ?? []
   } catch (e: unknown) {
     error.value = apiErrorDetail(e, 'Failed to load leaders')
@@ -83,7 +84,7 @@ async function assign(h: DirectoryHit) {
   busyId.value = h.oid
   error.value = null
   try {
-    const created = await $fetch<Leader>(`/api/v1/admin/regions/${props.regionId}/leaders`, {
+    const created = await $fetch<Leader>(`/api/v1/admin/regions/${encodeURIComponent(props.regionId)}/leaders`, {
       method: 'POST',
       body: {
         leader_oid: h.oid,
@@ -108,7 +109,7 @@ async function revoke(l: Leader) {
   busyId.value = l.id
   error.value = null
   try {
-    await $fetch(`/api/v1/admin/regions/${props.regionId}/leaders/${l.id}`, { method: 'DELETE' })
+    await $fetch(`/api/v1/admin/regions/${encodeURIComponent(props.regionId)}/leaders/${encodeURIComponent(l.id)}`, { method: 'DELETE' })
     leaders.value = leaders.value.filter((x) => x.id !== l.id)
     emit('changed')
   } catch (e: unknown) {
@@ -152,6 +153,10 @@ watch(
       <div class="px-6 py-4">
         <p v-if="error" class="text-xs text-rag-red mb-3" data-testid="region-leaders-error">{{ error }}</p>
 
+        <p v-if="readOnly" class="text-[12px] text-carbon-3" data-testid="region-leaders-readonly">
+          Region leaders are set by an Admin.
+        </p>
+        <template v-else>
         <label class="text-[12px] font-semibold text-carbon">Add a leader</label>
         <!-- C8a: what this role does AND, just as importantly, what it does not.
              A region leader looks like it should be enough to place people; it
@@ -172,13 +177,13 @@ watch(
             v-model="query"
             type="search"
             placeholder="Search the directory by name or email…"
-            class="flex-1 px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+            class="flex-1 px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
             data-testid="region-leaders-search"
             @input="search"
           >
           <select
             v-model="kind"
-            class="px-2 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+            class="px-2 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
             data-testid="region-leaders-kind"
             title="Region SVP — a geographic leader. Shared-function global — IT/HR-style global function."
           >
@@ -206,6 +211,7 @@ watch(
           </li>
         </ul>
         <p v-else-if="query.trim() && !searching" class="text-[12px] text-carbon-3 mt-2">No matching people.</p>
+        </template>
 
         <div class="mt-5">
           <p class="text-[12px] font-semibold text-carbon">Current leaders ({{ leaders.length }})</p>
@@ -219,6 +225,7 @@ watch(
                 </div>
               </div>
               <UiButton
+                v-if="!readOnly"
                 kind="ghost"
                 size="sm"
                 :disabled="busyId === l.id"

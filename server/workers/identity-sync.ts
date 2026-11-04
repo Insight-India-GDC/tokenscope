@@ -10,6 +10,7 @@
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type * as schema from '../../drizzle/schema'
 import { IDENTITY_RESOLVERS } from '../reconciliation/adapters/registry'
+import { describeError } from '../utils/redact-probe-error'
 
 type Db = PostgresJsDatabase<typeof schema>
 
@@ -30,7 +31,7 @@ export async function runIdentitySync(db: Db): Promise<IdentitySyncResult> {
       // Isolate one bad resolver so it cannot starve the others (matches the
       // per-scope isolation in reconciliation-sync); surfaced for observability.
       result.resolversErrored += 1
-      console.warn(`[identity-sync] resolver failed: ${String(err)}`)
+      console.warn(`[identity-sync] resolver failed: ${describeError(err)}`)
     }
   }
   return result

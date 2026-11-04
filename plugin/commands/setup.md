@@ -15,6 +15,14 @@ process-to-process.
 - Your sessions stopped emitting and you want to re-provision.
 - After reinstalling the plugin or moving to a new host.
 
+After a plugin update, quit and restart Claude Code before running setup: a
+session that was open during the update still runs the old version's steps.
+From this version on, the Node redeem helper checks this and stops, before using
+the one-time code, with "This session is running TokenScope <old>, but <new> is
+installed now"; if you see that, tell the user to restart Claude Code and run
+`/tokenscope:setup` again. Older versions' helpers and the PowerShell lane do
+not check, so the restart is still the rule.
+
 ## Workflow
 
 ### 0. Detect the platform and runtime (BEFORE anything else)
@@ -182,11 +190,11 @@ user, in these words or close to them (one short line each):
 Background for you (do not recite it; use it to answer questions):
 
 - Telemetry config is read at startup, which is why the restart is needed. A
-  repo with a `.tokenscope` tag keeps its own `.claude/settings.local.json` copy
-  of the enrolment, and project settings override user settings; the
-  SessionStart hook refreshes that copy *after* the session has read its env, so
-  the first relaunch repairs the file while still emitting under the previous
-  device. Untagged repos are unaffected.
+  repo with a `.tokenscope` tag keeps the instance id in its own
+  `.claude/settings.local.json`, and project settings override user settings;
+  after a re-enrol the SessionStart hook replaces the old id *after* the session
+  has read its env, so the first relaunch repairs the file while still emitting
+  under the previous device. Untagged repos are unaffected.
 - On the PowerShell lane the emit helper runs from a snapshot, so a plugin
   update does not refresh it; re-running setup does (installing Node makes that
   automatic).

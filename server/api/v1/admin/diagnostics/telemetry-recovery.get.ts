@@ -55,14 +55,14 @@ export default defineEventHandler(async (event) => {
   const session = await requireRole(event, 'admin')
   const { limit } = await getValidated(event, Query)
 
-  // No-op for platform-admin; for a region-scoped admin, only
-  // requests touching their region — mirrors attribution-gaps.get.ts /
-  // instance-telemetry.get.ts's admin-only clamp.
+  // No-op for platform-admin; for a region-scoped admin, only requests touching
+  // a device whose teammate sits in their region now — the same clamp as
+  // attribution-gaps.get.ts / instance-telemetry.get.ts.
   const regionClause =
     session.role === 'admin'
       ? sql`AND EXISTS (
-          SELECT 1 FROM instance_attestation ia
-           WHERE ia.instance_id = ANY(r.instance_ids) AND ia.region_id = ${session.regionId}::uuid
+          SELECT 1 FROM instance_attestation ia JOIN teammate t ON t.id = ia.teammate_id
+           WHERE ia.instance_id = ANY(r.instance_ids) AND t.region_id = ${session.regionId}::uuid
         )`
       : sql``
 

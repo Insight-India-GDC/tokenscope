@@ -10,7 +10,11 @@ import {
   resolvePlacementViaManagerChain,
   resolvesToSingleUnit,
   derivePlacement,
+  decidePlacement,
+  gatherPlacementEvidence,
   makeChainCaches,
+  MAX_CHAIN_HOPS,
+  type PlacementDecision,
   type GetManager,
   type ManagerEdge,
   type OwnedUnit,
@@ -64,13 +68,14 @@ describe('mapAttributesToRegion', () => {
   it('exact match, case-insensitive + trim; blank/unmapped → null', () => {
     const rules = ruleset([['companyName', 'Insight Australia', 'rg-apac']])
     expect(mapAttributesToRegion(dir({ companyName: ' Insight Australia ' }), rules))
-      .toEqual({ regionId: 'rg-apac', orgUnitId: null, attribute: 'companyName', conflict: false })
+      .toEqual({ regionId: 'rg-apac', orgUnitId: null, attribute: 'companyName', value: 'insight australia', conflict: false })
     expect(mapAttributesToRegion(dir({ companyName: 'Insight USA' }), rules)).toBeNull()
     expect(mapAttributesToRegion(dir({ companyName: null }), rules)).toBeNull()
   })
   it('prefix match — a country/state prefix maps a whole office group', () => {
     const rules = ruleset([['officeLocation', 'au-', 'rg-apac', 'prefix']])
-    expect(mapAttributesToRegion(dir({ officeLocation: 'AU-Brisbane' }), rules)?.regionId).toBe('rg-apac')
+    expect(mapAttributesToRegion(dir({ officeLocation: 'AU-Brisbane' }), rules))
+      .toMatchObject({ regionId: 'rg-apac', value: 'au-' })
     expect(mapAttributesToRegion(dir({ officeLocation: 'UK-London' }), rules)).toBeNull()
   })
   it('precedence: higher-precedence attribute wins; divergent lower match flags conflict', () => {
@@ -80,12 +85,12 @@ describe('mapAttributesToRegion', () => {
       ['department', 'Services', 'rg-emea'],
     ])
     const m = mapAttributesToRegion(dir({ companyName: 'Insight Australia', department: 'Services' }), rules)
-    expect(m).toEqual({ regionId: 'rg-apac', orgUnitId: null, attribute: 'companyName', conflict: true })
+    expect(m).toEqual({ regionId: 'rg-apac', orgUnitId: null, attribute: 'companyName', value: 'insight australia', conflict: true })
   })
   it('a UNIT rule carries its unit target through the match', () => {
     const rules = ruleset([['department', 'Sales-Solution', 'rg-emea', 'exact', 'ou-emea-core']])
     expect(mapAttributesToRegion(dir({ department: 'Sales-Solution' }), rules))
-      .toEqual({ regionId: 'rg-emea', orgUnitId: 'ou-emea-core', attribute: 'department', conflict: false })
+      .toEqual({ regionId: 'rg-emea', orgUnitId: 'ou-emea-core', attribute: 'department', value: 'sales-solution', conflict: false })
   })
   it('conflict compares the COMPLETE TARGET: two rules naming two cost centres in ONE region ARE a conflict', () => {
     // Which cost centre a person's spend charges is the decision this whole
@@ -99,7 +104,7 @@ describe('mapAttributesToRegion', () => {
     const m = mapAttributesToRegion(dir({ companyName: 'Insight Australia', department: 'Services' }), rules)
     // Highest precedence still WINS the target; the divergence is surfaced, not
     // resolved differently.
-    expect(m).toEqual({ regionId: 'rg-apac', orgUnitId: 'ou-1', attribute: 'companyName', conflict: true })
+    expect(m).toEqual({ regionId: 'rg-apac', orgUnitId: 'ou-1', attribute: 'companyName', value: 'insight australia', conflict: true })
   })
 
   it('two rules naming the SAME unit are not a conflict', () => {
@@ -184,14 +189,14 @@ describe('resolvePlacementViaManagerChain', () => {
     const owners = new Map([['kat', [unit('ou-mp'), unit('ou-data')]]])
     const leaders = new Map([['vp', 'rg-apac']])
     const r = await resolvePlacementViaManagerChain('a', { unitOwnerMap: owners, leaderMap: leaders, getManager: m.get, caches: makeChainCaches() })
-    expect(r).toEqual({ kind: 'region', regionId: 'rg-apac' })
+    expect(r).toEqual({ kind: 'region', regionId: 'rg-apac', leaderOid: 'vp' })
   })
 
   it('no owner in chain → region leader (nearest) wins', async () => {
     const m = fakeManager({ a: { oid: 'b', email: null }, b: { oid: 'c', email: null } })
     const leaders = new Map([['b', 'rg-near'], ['c', 'rg-far']])
     const r = await resolvePlacementViaManagerChain('a', { unitOwnerMap: noUnits, leaderMap: leaders, getManager: m.get, caches: makeChainCaches() })
-    expect(r).toEqual({ kind: 'region', regionId: 'rg-near' })
+    expect(r).toEqual({ kind: 'region', regionId: 'rg-near', leaderOid: 'b' })
   })
 
   it('hop cap → null', async () => {
@@ -232,7 +237,7 @@ describe('resolvePlacementViaManagerChain', () => {
     await expect(resolvePlacementViaManagerChain('a', { unitOwnerMap: noUnits, leaderMap: leaders, getManager: get, caches })).rejects.toThrow(/429/)
     expect(caches.placementCache.has('a')).toBe(false)
     const r = await resolvePlacementViaManagerChain('a', { unitOwnerMap: noUnits, leaderMap: leaders, getManager: get, caches })
-    expect(r).toEqual({ kind: 'region', regionId: 'rg-b' })
+    expect(r).toEqual({ kind: 'region', regionId: 'rg-b', leaderOid: 'b' })
   })
 })
 
@@ -281,18 +286,38 @@ describe('derivePlacement', () => {
     expect(r.via).toBe('unit')
     expect(r.orgUnitId).toBe('ou-chain')
   })
-  it('no unit → ATTRIBUTE region wins over chain region', async () => {
+  it('no unit → the chain REGION LEADER outranks a region rule', async () => {
     const m = fakeManager({ u: { oid: 'vp', email: null } })
     const r = await derivePlacement(dir({ department: 'APAC Digital', oid: 'u' }), {
       rules, unitOwnerMap: new Map(), leaderMap: new Map([['vp', 'rg-chain']]),
       getManager: m.get, caches: makeChainCaches(),
     })
-    // unitOwnerMap is empty so step 1's walk is skipped; nothing asked Graph who
-    // 'u' reports to, so `manager` is UNDEFINED ("we did not look"), not null.
+    expect(r).toEqual({ regionId: 'rg-chain', via: 'manager', manager: { oid: 'vp', email: null } })
+  })
+  it('a region rule applies when the chain reaches no leader, and reports the walked manager', async () => {
+    const m = fakeManager({ u: { oid: 'vp', email: null } })
+    const r = await derivePlacement(dir({ department: 'APAC Digital', oid: 'u' }), {
+      rules, unitOwnerMap: new Map(), leaderMap: new Map([['someone-else', 'rg-chain']]),
+      getManager: m.get, caches: makeChainCaches(),
+    })
     expect(r).toEqual({
       regionId: 'rg-dept', via: 'attribute', attribute: 'department', conflict: false,
-      manager: undefined,
+      manager: { oid: 'vp', email: null },
     })
+  })
+  it('no owners and no leaders → the region rule answers without a walk', async () => {
+    const m = fakeManager({ u: { oid: 'vp', email: null } })
+    const r = await derivePlacement(dir({ department: 'APAC Digital', oid: 'u' }), {
+      rules, unitOwnerMap: new Map(), leaderMap: new Map(), getManager: m.get, caches: makeChainCaches(),
+    })
+    expect(r).toEqual({ regionId: 'rg-dept', via: 'attribute', attribute: 'department', conflict: false, manager: undefined })
+    expect(m.calls).toEqual([])
+  })
+  it('leaders but no owners: a Graph error THROWS instead of falling through to the region rule', async () => {
+    const get: GetManager = async () => { throw new Error('Graph request failed (503)') }
+    await expect(derivePlacement(dir({ department: 'APAC Digital', oid: 'u' }), {
+      rules, unitOwnerMap: new Map(), leaderMap: new Map([['vp', 'rg-chain']]), getManager: get, caches: makeChainCaches(),
+    })).rejects.toThrow(/503/)
   })
   it('no unit, no attribute → chain REGION (manager)', async () => {
     const m = fakeManager({ u: { oid: 'vp', email: null } })
@@ -317,5 +342,166 @@ describe('derivePlacement', () => {
     })
     expect(r).toEqual({ via: null, manager: undefined })
     expect(m.calls).toEqual([])
+  })
+})
+
+describe('gatherPlacementEvidence', () => {
+  const walk = (edges: Record<string, ManagerEdge | null>, d: DirectoryUser | null = dir(), maxHops?: number) =>
+    gatherPlacementEvidence(d, { getManager: fakeManager(edges).get, managerCache: new Map(), maxHops })
+
+  it('records the person first, then each manager, and how the walk ended', async () => {
+    const e = await walk({ u: { oid: 'm', email: 'm@x.com', name: 'M' }, m: null }, dir({ department: 'Ops' }))
+    expect(e.chain).toEqual([
+      { oid: 'u', name: 'U', email: 'u@x.com' },
+      { oid: 'm', name: 'M', email: 'm@x.com' },
+    ])
+    expect(e.walkEnd).toBe('top-of-chart')
+    expect(e.attributes).toMatchObject({ department: 'Ops', companyName: null })
+  })
+  it('hop cap: the person plus maxHops managers, ended as hop-cap', async () => {
+    const e = await walk({ u: { oid: 'a', email: null }, a: { oid: 'b', email: null }, b: { oid: 'c', email: null } }, dir(), 1)
+    expect(e.chain.map((l) => l.oid)).toEqual(['u', 'a'])
+    expect(e.walkEnd).toBe('hop-cap')
+  })
+  it('cycle', async () => {
+    const e = await walk({ u: { oid: 'a', email: null }, a: { oid: 'u', email: null } })
+    expect(e.chain.map((l) => l.oid)).toEqual(['u', 'a'])
+    expect(e.walkEnd).toBe('cycle')
+  })
+  it('a Graph error keeps the links fetched before it', async () => {
+    const get: GetManager = async (oid) => {
+      if (oid === 'a') throw new Error('Graph request failed (429)')
+      return { oid: 'a', email: null }
+    }
+    const e = await gatherPlacementEvidence(dir(), { getManager: get, managerCache: new Map() })
+    expect(e.chain.map((l) => l.oid)).toEqual(['u', 'a'])
+    expect(e.walkEnd).toBe('graph-error')
+  })
+  it('no directory record → not-in-directory, no walk', async () => {
+    const e = await walk({}, null)
+    expect(e).toMatchObject({ chain: [], walkEnd: 'not-in-directory' })
+  })
+  it('the default reaches MAX_CHAIN_HOPS managers', async () => {
+    const edges: Record<string, ManagerEdge | null> = {}
+    for (let i = 0; i < 20; i++) edges[i === 0 ? 'u' : `m${i}`] = { oid: `m${i + 1}`, email: null }
+    const e = await walk(edges)
+    expect(MAX_CHAIN_HOPS).toBe(12)
+    expect(e.chain).toHaveLength(MAX_CHAIN_HOPS + 1)
+    expect(e.walkEnd).toBe('hop-cap')
+    const live = (leader: string) => resolvePlacementViaManagerChain('u', {
+      unitOwnerMap: new Map(), leaderMap: new Map([[leader, 'rg']]), getManager: fakeManager(edges).get, caches: makeChainCaches(),
+    })
+    expect(await live('m12')).toMatchObject({ regionId: 'rg' })
+    expect(await live('m13')).toBeNull()
+  })
+})
+
+describe('decidePlacement', () => {
+  const link = (oid: string) => ({ oid, name: null, email: null })
+  const evidence = (oids: string[], attrs: Partial<DirectoryUser> = {}) => ({
+    attributes: { companyName: null, country: null, officeLocation: null, state: null, department: null, ...attrs },
+    chain: oids.map(link),
+    walkEnd: 'top-of-chart' as const,
+  })
+  const base = { rules: ruleset([]), unitOwnerMap: new Map<string, OwnedUnit[]>(), leaderMap: new Map<string, string>(), maxHops: MAX_CHAIN_HOPS }
+
+  it('precedence: unit rule → chain unit → chain region → region rule', () => {
+    const rules = ruleset([['department', 'D', 'rg-rule'], ['companyName', 'UnitCo', 'rg-x', 'exact', 'ou-rule']])
+    const cfg = { ...base, rules, unitOwnerMap: new Map([['o', [unit('ou-chain', 'rg-o')]]]), leaderMap: new Map([['l', 'rg-leader']]) }
+    expect(decidePlacement(evidence(['u', 'l', 'o'], { companyName: 'UnitCo', department: 'D' }), cfg))
+      .toMatchObject({ step: 'unit-rule', orgUnitId: 'ou-rule', rule: { attribute: 'companyName', value: 'unitco' } })
+    expect(decidePlacement(evidence(['u', 'l', 'o'], { department: 'D' }), cfg))
+      .toMatchObject({ step: 'chain-unit', orgUnitId: 'ou-chain', ownerOid: 'o' })
+    expect(decidePlacement(evidence(['u', 'l'], { department: 'D' }), cfg))
+      .toEqual({ step: 'chain-region', regionId: 'rg-leader', leaderOid: 'l', ambiguousOwners: [] })
+    expect(decidePlacement(evidence(['u'], { department: 'D' }), cfg))
+      .toEqual({ step: 'region-rule', regionId: 'rg-rule', rule: { attribute: 'department', value: 'd' }, conflict: false, ambiguousOwners: [] })
+    expect(decidePlacement(evidence(['u']), cfg)).toEqual({ step: null, ambiguousOwners: [] })
+  })
+  it('names the ambiguous owners met before the first usable one, and none after', () => {
+    const cfg = { ...base, unitOwnerMap: new Map([
+      ['a', [unit('ou-1'), unit('ou-2')]], ['o', [unit('ou-o')]], ['z', [unit('ou-3'), unit('ou-4')]],
+    ]) }
+    const d = decidePlacement(evidence(['u', 'a', 'o', 'z']), cfg)
+    expect(d.step).toBe('chain-unit')
+    expect(d.ambiguousOwners).toEqual([{ oid: 'a', units: [unit('ou-1'), unit('ou-2')] }])
+  })
+  it('a chain longer than maxHops is decided on its first maxHops managers', () => {
+    const cfg = { ...base, leaderMap: new Map([['m2', 'rg']]), maxHops: 1 }
+    expect(decidePlacement(evidence(['u', 'm1', 'm2']), cfg).step).toBeNull()
+  })
+})
+
+/*
+ * The live derivation walks lazily and decides on the prefix it walked; decidePlacement
+ * decides on stored evidence. For every scenario, and for the chain cut at every length
+ * (each cut is a chain whose top is there), both must reach the same placement.
+ */
+describe('decidePlacement agrees with the live derivation', () => {
+  const CHAIN = ['p0', 'p1', 'p2', 'p3', 'p4', 'p5']
+  const VIA: Record<string, PlacementDecision['step']> = {
+    'unit-rule': 'unit-rule', unit: 'chain-unit', manager: 'chain-region', attribute: 'region-rule',
+  }
+  const scenarios: Array<{ name: string; owners?: Array<[string, OwnedUnit[]]>; leaders?: Array<[string, string]>; dept?: string }> = [
+    { name: 'nothing' },
+    { name: 'region rule only', dept: 'R' },
+    { name: 'unit rule', dept: 'U', owners: [['p2', [unit('ou-2')]]] },
+    { name: 'self owns a unit', owners: [['p0', [unit('ou-0')]]] },
+    { name: 'self is a leader, owner above', owners: [['p3', [unit('ou-3')]]], leaders: [['p0', 'rg-0']] },
+    { name: 'leader below owner', owners: [['p4', [unit('ou-4')]]], leaders: [['p1', 'rg-1']], dept: 'R' },
+    { name: 'leader vs region rule', leaders: [['p2', 'rg-2']], dept: 'R' },
+    { name: 'two leaders, nearest wins', leaders: [['p1', 'rg-1'], ['p3', 'rg-3']] },
+    { name: 'ambiguous then usable owner', owners: [['p1', [unit('a'), unit('b')]], ['p3', [unit('ou-3')]]] },
+    { name: 'ambiguous only, leader above', owners: [['p1', [unit('a'), unit('b')]]], leaders: [['p5', 'rg-5']], dept: 'R' },
+    { name: 'two owners, nearest wins', owners: [['p2', [unit('ou-2')]], ['p4', [unit('ou-4')]]] },
+  ]
+  const rules = ruleset([['department', 'R', 'rg-rule'], ['department', 'U', 'rg-u', 'exact', 'ou-rule']])
+
+  for (const sc of scenarios) {
+    for (let len = 1; len <= CHAIN.length; len++) {
+      it(`${sc.name} — chain of ${len}`, async () => {
+        const edges: Record<string, ManagerEdge | null> = {}
+        for (let i = 0; i < len; i++) edges[CHAIN[i]!] = i + 1 < len ? { oid: CHAIN[i + 1]!, email: null } : null
+        const cfg = {
+          rules,
+          unitOwnerMap: new Map(sc.owners ?? []),
+          leaderMap: new Map(sc.leaders ?? []),
+          maxHops: MAX_CHAIN_HOPS,
+        }
+        const d = dir({ oid: 'p0', department: sc.dept ?? null })
+        const live = await derivePlacement(d, { ...cfg, getManager: fakeManager(edges).get, caches: makeChainCaches() })
+        const ev = await gatherPlacementEvidence(d, { getManager: fakeManager(edges).get, managerCache: new Map() })
+        const decided = decidePlacement(ev, cfg)
+        expect(ev.walkEnd).toBe('top-of-chart')
+        expect(decided.step).toBe(live.via === null ? null : VIA[live.via])
+        expect(decided.regionId).toBe(live.regionId)
+        expect(decided.orgUnitId).toBe(live.orgUnitId)
+        expect(decided.ownerOid).toBe(live.ownerOid)
+      })
+    }
+  }
+})
+
+describe('placement cache', () => {
+  it('a person cached during someone else\'s walk keeps their OWN nearest leader', async () => {
+    // a (leader rg-a) → b → c (leader rg-c). b's own answer is rg-c, not a's rg-a.
+    const m = fakeManager({ a: { oid: 'b', email: null }, b: { oid: 'c', email: null }, c: null, s: { oid: 'b', email: null } })
+    const deps = { unitOwnerMap: new Map<string, OwnedUnit[]>(), leaderMap: new Map([['a', 'rg-a'], ['c', 'rg-c']]), getManager: m.get, caches: makeChainCaches() }
+    expect(await resolvePlacementViaManagerChain('a', deps)).toMatchObject({ regionId: 'rg-a' })
+    expect(await resolvePlacementViaManagerChain('s', deps)).toMatchObject({ regionId: 'rg-c' })
+  })
+  it('a nearer leader below a cached region answer still wins', async () => {
+    // b's cached answer is rg-c; s → x (leader rg-x) → b must answer rg-x.
+    const m = fakeManager({ b: { oid: 'c', email: null }, c: null, s: { oid: 'x', email: null }, x: { oid: 'b', email: null } })
+    const deps = { unitOwnerMap: new Map<string, OwnedUnit[]>(), leaderMap: new Map([['c', 'rg-c'], ['x', 'rg-x']]), getManager: m.get, caches: makeChainCaches() }
+    await resolvePlacementViaManagerChain('b', deps)
+    expect(await resolvePlacementViaManagerChain('s', deps)).toMatchObject({ regionId: 'rg-x' })
+  })
+  it('a hop-capped walk does not cache the people above its start', async () => {
+    const m = fakeManager({ a: { oid: 'b', email: null }, b: { oid: 'c', email: null }, c: null })
+    const caches = makeChainCaches()
+    await resolvePlacementViaManagerChain('a', { unitOwnerMap: new Map(), leaderMap: new Map([['c', 'rg-c']]), getManager: m.get, caches, maxHops: 1 })
+    expect(caches.placementCache.has('a')).toBe(true)
+    expect(caches.placementCache.has('b')).toBe(false)
   })
 })

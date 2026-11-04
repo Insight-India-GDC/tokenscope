@@ -19,7 +19,9 @@ import { recordAuditEvent } from '../../../../db/audit'
 import { isPlatformAdmin } from '../../../../../shared/auth/roles'
 import { translatePgConstraintError } from '../../../../utils/pg-constraint-error'
 import {
+  GOVERNANCE_PLATFORM_ONLY_KEYS,
   GOVERNANCE_SETTING_BOUNDS,
+  GOVERNANCE_SWITCH_KEYS,
   isGovernanceSettingKey,
 } from '../../../../utils/governance-settings'
 
@@ -67,6 +69,12 @@ export default defineEventHandler(async (event) => {
     const lower = bounds.minExclusive ? `(${bounds.min}` : `[${bounds.min}`
     badRequest(`Value ${body.value} for '${body.key}' is outside ${lower}, ${bounds.max}].`)
   }
+  if (GOVERNANCE_SWITCH_KEYS.includes(body.key) && body.value !== 0 && body.value !== 1) {
+    badRequest(`'${body.key}' is a switch: the value must be 0 or 1.`)
+  }
+  if (GOVERNANCE_PLATFORM_ONLY_KEYS.includes(body.key) && body.scope_type !== 'platform') {
+    badRequest(`'${body.key}' is platform-wide and cannot be overridden per region.`)
+  }
 
   // Scope authority: the platform baseline is not a region admin's to set.
   let regionId: string | null = null
@@ -82,7 +90,7 @@ export default defineEventHandler(async (event) => {
           type: 'https://tokenscope.example.com/errors/forbidden',
           title: 'Forbidden',
           status: 403,
-          detail: 'The platform default requires platform-admin.',
+          detail: 'The platform default requires an Admin.',
         },
       })
     }

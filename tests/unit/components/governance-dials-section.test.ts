@@ -75,6 +75,21 @@ beforeEach(() => {
 })
 
 describe('AdminGovernanceDialsSection', () => {
+  it('a switch setting’s checkbox is named by the policy, not by Yes/No', () => {
+    const base = fixture()
+    const key = 'projects.pm_own_region_only'
+    const w = mountOrgWide({
+      ...base,
+      keys: [...base.keys, key],
+      platform: [...base.platform, { key, value: 0, updated_at: '2026-06-10 00:00:00+00' }],
+      switch_keys: [key],
+      platform_only_keys: [key],
+    })
+    const box = w.find(`[data-testid="governance-input-${key}"]`)
+    expect(box.attributes('type')).toBe('checkbox')
+    expect(box.attributes('aria-label')).toBe('Project Managers create only in their own region')
+  })
+
   it('renders a row per dial with label, explanation and platform value', () => {
     const wrapper = mountRegionAdmin()
     expect(wrapper.find('[data-testid="settings-governance-dials"]').exists()).toBe(true)

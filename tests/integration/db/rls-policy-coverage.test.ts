@@ -17,11 +17,9 @@
  *     OWN region-AND-scoped arm (region_id = ... AND role IN (...)) — that
  *     arm was never the bug; only its separate unconditional bypass arm was,
  *     and that one IS covered below.
- *   - directory_exclusion_pattern_write (0083) still admits a bare 'admin'
- *     and is NOT covered here: that table has no region_id column at all, so
- *     it is not a region-scoping disjunct in the sense this story fixes — a
- *     different, narrower question, out of S11's scope, reported separately
- *     rather than fixed here (no scope creep).
+ *   (directory_exclusion_pattern_write used to be the second: 0083 admitted a
+ *   bare 'admin'. Migration 0167 narrowed it to the Admin scope (#493), so it
+ *   is covered below like the others.)
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { startTestDb, stopTestDb, type TestDb } from '../helpers/db'
@@ -59,6 +57,8 @@ const CONVERGED_POLICIES: Array<[string, string]> = [
   ['spill_record', 'spill_record_admin_only'],
   ['project', 'project_region_scope'],
   ['repo_project_map', 'repo_project_map_admin_only'],
+  // 0167: company-wide config with no region_id; writes are Admin only (#493).
+  ['directory_exclusion_pattern', 'directory_exclusion_pattern_write'],
   ['audit_event', 'audit_event_admin_only'],
   ['inbox_item', 'inbox_item_self'],
   ['insight_ack', 'insight_ack_admin'],

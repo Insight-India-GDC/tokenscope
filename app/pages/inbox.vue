@@ -8,7 +8,7 @@
  * dot + bold copy. Click opens a right-side drawer (per design-notes,
  * promoted over the prior inline panel) with a per-kind body.
  */
-import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import { consola } from 'consola'
 import InboxFilterBar, {
   type InboxCategoryFilter,
@@ -16,7 +16,8 @@ import InboxFilterBar, {
   type InboxStatusFilter,
 } from '../components/inbox/InboxFilterBar.vue'
 import InboxDrawer from '../components/inbox/InboxDrawer.vue'
-import type { InboxItem } from '../components/inbox/types'
+import { apiErrorDetail, isConfirmedRejection } from '../composables/useApiError'
+import { categoryLabel, type InboxItem } from '../components/inbox/types'
 
 const category = ref<InboxCategoryFilter>('all')
 const severity = ref<InboxSeverityFilter>('all')
@@ -38,9 +39,25 @@ const fetchUrl = computed(() => {
   return `/api/v1/me/inbox${qs ? `?${qs}` : ''}`
 })
 
-const { data, refresh, pending } = useFetch<{ items: InboxItem[]; total: number }>(fetchUrl, {
+const { data, refresh, pending, error } = useFetch<{ items: InboxItem[]; total: number }>(fetchUrl, {
   default: () => ({ items: [], total: 0 }),
 })
+
+/*
+ * Empty, refused and failed are three different answers, and only the first
+ * means "nothing is waiting". `default` fills `data` with an empty list even
+ * when the read failed, so the error is checked BEFORE the list: a failed load
+ * must never read as an empty inbox. Refused = the server answered with a 4xx
+ * and a reason (isConfirmedRejection); anything else (no answer, a 5xx) is a
+ * failure, and then we cannot know what is in the inbox.
+ */
+const loadState = computed<'refused' | 'failed' | null>(() => {
+  if (!error.value) return null
+  return isConfirmedRejection(error.value) ? 'refused' : 'failed'
+})
+const refusedDetail = computed(() =>
+  apiErrorDetail(error.value, 'none').replace(/\.$/, ''),
+)
 
 const drawerItem = computed<InboxItem | null>(() => {
   if (!drawerId.value || !data.value) return null
@@ -80,7 +97,7 @@ async function ack(id: string, newState: InboxItem['ack_state']): Promise<boolea
 }
 
 // Track the element that opened the drawer so we restore focus there on
-// close. ARIA-non-modal dialog convention: focus comes back to the row.
+// close: focus comes back to the row.
 const lastFocusedEl = ref<HTMLElement | null>(null)
 
 function openDrawer(item: InboxItem, originEl?: HTMLElement | null) {
@@ -107,19 +124,8 @@ function closeDrawer() {
   })
 }
 
-// ESC closes the drawer (modeless-dialog convention).
-function onKeydown(ev: KeyboardEvent) {
-  if (ev.key === 'Escape' && drawerId.value) {
-    ev.preventDefault()
-    closeDrawer()
-  }
-}
-onMounted(() => {
-  if (import.meta.client) document.addEventListener('keydown', onKeydown)
-})
-onBeforeUnmount(() => {
-  if (import.meta.client) document.removeEventListener('keydown', onKeydown)
-})
+// Escape and the Tab focus trap belong to the drawer (useModalA11y in
+// InboxDrawer.vue), which emits `close` into closeDrawer above.
 watch(drawerId, (v) => {
   // Defensive: if the underlying item disappears (refresh), close.
   if (v && !drawerItem.value) drawerId.value = null
@@ -142,21 +148,10 @@ async function handleSnooze(id: string) {
   if (await ack(id, 'acknowledged')) closeDrawer()
 }
 
-function categoryBadgeLabel(cat: string): string {
-  if (cat === 'over-budget') return 'Over budget'
-  if (cat === 'velocity-warning') return 'Velocity'
-  if (cat === 'sync-conflict') return 'Sync conflict'
-  if (cat === 'untagged-backlog') return 'Untagged'
-  if (cat === 'structural-conflict') return 'Structural'
-  if (cat === 'connector-health') return 'Connector'
-  if (cat === 'over-emission-escalated') return 'Over-emission'
-  return cat
-}
-
 function severityIconColor(sev: string): string {
   if (sev === 'urgent') return 'bg-[#FEE2E2] text-rag-red'
   if (sev === 'attention') return 'bg-brand-hunger-lite text-brand-heart'
-  return 'bg-brand-vision-lite text-[#1f4ea3]'
+  return 'bg-brand-vision-lite text-brand-vision-ink'
 }
 
 </script>
@@ -166,7 +161,7 @@ function severityIconColor(sev: string): string {
     <UiPageHead
       eyebrow="Inbox"
       title="What needs your attention"
-      sub="Conflicts, alerts and action requests routed to you. TokenScope never auto-routes outside this surface; you'll also see Teams / email pings if you've opted in."
+      sub="Conflicts, alerts and action requests routed to you. They appear only here: TokenScope does not send them by Teams or email."
     >
       <template #actions>
         <button
@@ -187,7 +182,7 @@ function severityIconColor(sev: string): string {
       class="mb-4 p-3 rounded-md text-sm font-medium"
       :class="toast.kind === 'ok'
         ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30'
-        : 'bg-brand-hunger/10 text-brand-hunger border border-brand-hunger/30'"
+        : 'bg-brand-hunger/10 text-brand-heart border border-brand-hunger/30'"
     >
       {{ toast.message }}
     </div>
@@ -205,10 +200,28 @@ function severityIconColor(sev: string): string {
       <div class="p-10 text-center text-carbon-3 text-sm">Loading…</div>
     </UiCard>
 
-    <UiCard v-else-if="!data || data.items.length === 0" flush>
+    <UiCard v-else-if="loadState === 'refused'" flush data-testid="inbox-refused">
+      <UiEmptyState
+        headline="The server refused to list your inbox."
+        :sub="`Reason given: ${refusedDetail}. Your items are not shown here, and none of them has been cleared.`"
+      />
+    </UiCard>
+
+    <UiCard v-else-if="loadState === 'failed'" flush data-testid="inbox-failed">
+      <UiEmptyState
+        headline="Your inbox didn't load."
+        sub="We couldn't get an answer from the server, so we can't tell whether anything is waiting for you. Nothing has been cleared."
+      >
+        <UiButton kind="secondary" size="sm" data-testid="inbox-retry" @click="refresh()">
+          Try again
+        </UiButton>
+      </UiEmptyState>
+    </UiCard>
+
+    <UiCard v-else-if="!data || data.items.length === 0" flush data-testid="inbox-empty">
       <UiEmptyState
         headline="Nothing to see here."
-        sub="We'll notify you in Teams or email if anything needs your attention. The inbox stays quiet until it doesn't."
+        sub="Alerts, conflicts and requests routed to you appear in this inbox, and only here. Check back when you want to see them."
       />
     </UiCard>
 
@@ -253,7 +266,7 @@ function severityIconColor(sev: string): string {
                 {{ item.related_entity_kind ?? '—' }} · {{ item.ack_state }}
               </div>
             </div>
-            <UiBadge kind="neutral">{{ categoryBadgeLabel(item.category) }}</UiBadge>
+            <UiBadge kind="neutral">{{ categoryLabel(item.category) }}</UiBadge>
             <span class="text-[11px] text-carbon-3 whitespace-nowrap">
               {{ fmtTimeAgo(item.created_at) }}
             </span>

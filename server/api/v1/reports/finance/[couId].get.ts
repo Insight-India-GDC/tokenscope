@@ -60,7 +60,7 @@ export default defineEventHandler(async (event) => {
   // cast in resolveFinanceCou. A structurally invalid id is a clean 400, never a 500 (L1).
   const couIdResult = z.string().uuid().safeParse(getRouterParam(event, 'couId'))
   if (!couIdResult.success) {
-    throw createError({ statusCode: 400, statusMessage: 'invalid cost-owning unit id' })
+    throw createError({ statusCode: 400, statusMessage: 'invalid Business Unit id' })
   }
   const couId = couIdResult.data
   const query = await getValidatedQuery(event, (d) => Query.parse(d))
@@ -123,8 +123,6 @@ export default defineEventHandler(async (event) => {
       providerStates: providerStatesForWindow(win, now),
       coverage: await reportCoverageMeta(tx),
       scope: 'finance',
-      // Current-org homing (D-Homing interim).
-      pointInTimeDims: false,
       // Present only in custom-range (quarter) mode so the drill discloses the window.
       ...(win.isMonth ? {} : { range: { from: win.from, to: win.to } }),
     }

@@ -22,6 +22,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+// Windows (#430): skipped on win32 because this file relies on POSIX permission bits.
+const POSIX_ONLY = process.platform === 'win32'
+
 const SCRIPT = resolve(__dirname, '../../../plugin/scripts/statusline-toggle.mjs')
 
 let home: string
@@ -55,7 +58,7 @@ const ENROLLED = {
   permissions: { allow: ['Bash(ls:*)'] },
 }
 
-describe('statusline-toggle — corrupt settings.json (PLG-1)', () => {
+describe.skipIf(POSIX_ONLY)('statusline-toggle — corrupt settings.json (PLG-1)', () => {
   const CORRUPT = '{ "env": { "TOKENSCOPE_OAUTH_REFRESH_TOKEN": "rt_secret", '
 
   it.each(['on', 'off', ''])('arg %j: exits non-zero and leaves the file byte-identical', (arg) => {
@@ -74,7 +77,7 @@ describe('statusline-toggle — corrupt settings.json (PLG-1)', () => {
   })
 })
 
-describe('statusline-toggle — happy path preserves enrolment', () => {
+describe.skipIf(POSIX_ONLY)('statusline-toggle — happy path preserves enrolment', () => {
   it("'on' installs the status line WITHOUT dropping env/permissions/otelHeadersHelper", () => {
     writeFileSync(settingsPath, JSON.stringify(ENROLLED, null, 2) + '\n')
     const r = runToggle('on')

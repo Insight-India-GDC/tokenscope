@@ -26,6 +26,11 @@
   --color-brand-vision-lite: var(--brand-vision-lite);
   --color-brand-zeal-lite: var(--brand-zeal-lite);
 
+  /* Ink: the vision and zeal hues darkened for TEXT. The base hues are fills
+   * and chart lanes (3.2:1 and 2.0:1 on white, too light for text). */
+  --color-brand-vision-ink: var(--brand-vision-ink);
+  --color-brand-zeal-ink: var(--brand-zeal-ink);
+
   --color-brand-hunger-sheer: var(--brand-hunger-sheer);
   --color-brand-harmony-sheer: var(--brand-harmony-sheer);
   --color-brand-vision-sheer: var(--brand-vision-sheer);
@@ -44,6 +49,11 @@
   --color-calm-1: var(--calm);
   --color-calm-2: var(--calm-2);
   --color-paper: var(--paper);
+
+  /* ───── Chart lanes used as utility classes ─────
+   * Only the lanes a template paints with a class; charts resolve the rest
+   * through var(--lane-*) (useChartScale). */
+  --color-lane-claude-ai: var(--lane-claude-ai);
 
   /* ───── RAG ───── */
   --color-rag-red: var(--rag-red);
@@ -100,6 +110,27 @@ body {
  * styled as a button) WIN over this default link colour. Unlayered, this rule
  * beat the utilities and rendered button-links as purple-on-purple. */
 @layer base {
+  /* Visible focus for every focusable element (WCAG 2.2 2.4.7). A 2px solid
+   * harmony outline offset 2px: harmony is 10.7:1 on white, so the ring meets
+   * 3:1 against any of the light surfaces it sits on. Keyboard focus only
+   * (:focus-visible), so a mouse click on a button draws no ring; text inputs
+   * show it on click too, which browsers treat as focus-visible by design.
+   * It sits in the base layer so an element that needs a different ring (an
+   * inset one on a full-width row) can override it with focus-visible:
+   * utilities. `focus:outline-none` would remove it and is refused by
+   * tests/unit/a11y/wcag-static.test.ts. */
+  :focus-visible {
+    outline: 2px solid var(--brand-harmony);
+    outline-offset: 2px;
+  }
+
+  /* The sticky header is 64px (h-16 in nav/AppHeader.vue). Without this, a
+   * control scrolled into view by Tab can land underneath it (WCAG 2.2
+   * 2.4.11 Focus Not Obscured). */
+  html {
+    scroll-padding-top: 5rem;
+  }
+
   a {
     color: var(--brand-harmony);
     text-decoration: none;

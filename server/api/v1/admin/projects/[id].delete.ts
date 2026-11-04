@@ -26,6 +26,7 @@ import { requireRole, requireRegionScope } from '../../../../auth/rbac'
 import { assertSameOrigin } from '../../../../auth/csrf'
 import { withRequestRls } from '../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../db/audit'
+import { lockProjectRow } from '../../../../projects/last-manager'
 
 export default defineEventHandler(async (event) => {
   const caller = await requireRole(event, 'admin')
@@ -69,6 +70,12 @@ export default defineEventHandler(async (event) => {
 
     // Region-scope check — a region admin cannot delete outside their region.
     await requireRegionScope(event, projectRow.region_id)
+
+    // Lock the project row before touching any child, in the same order as every
+    // other project write (projects/last-manager.ts). Deleting children first and
+    // the project last would deadlock against a budget-request approval, which
+    // holds this lock and then writes the project's allocation rows.
+    await lockProjectRow(tx, projectId)
 
     // Delete is allowed for a $0-SPEND project (D4, revised): the HARD blockers
     // are real spend (`attribution_record`) and an active repo tag

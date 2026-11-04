@@ -141,7 +141,7 @@ const tabModel = computed<string>({
 
     <div
       v-if="visibilityChip"
-      class="-mt-2 mb-4 inline-flex items-center gap-1.5 text-[12px] font-medium text-brand-vision bg-brand-vision-sheer border border-brand-vision/30 rounded-full px-3 py-1"
+      class="-mt-2 mb-4 inline-flex items-center gap-1.5 text-[12px] font-medium text-brand-vision-ink bg-brand-vision-sheer border border-brand-vision/30 rounded-full px-3 py-1"
       data-testid="reporting-visibility-chip"
     >
       {{ visibilityChip }}

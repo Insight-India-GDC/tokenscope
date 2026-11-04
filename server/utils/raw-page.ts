@@ -49,9 +49,10 @@ export interface RawPageErr {
 export type RawPage = RawPageOk | RawPageErr
 
 /**
- * Remove every occurrence of each secret from `text`. Exact substring removal
- * only: it makes no claim to detect a credential we were not given, it only
- * guarantees the ones we hold cannot survive verbatim.
+ * Remove every occurrence of each secret from `text`, verbatim or XML-escaped.
+ * Substring removal only: it makes no claim to detect a credential we were not
+ * given, it only guarantees the ones we hold cannot survive verbatim or as an
+ * XML error body echoes them (a signed URL's `&` comes back as `&amp;`).
  *
  * NO LENGTH FLOOR. This used to skip any secret shorter than 8 characters, on
  * the reasoning that a short value "would match everywhere and destroy the
@@ -70,9 +71,13 @@ export function scrubSecrets(text: string, secrets: ReadonlyArray<string | undef
   let out = text
   for (const s of secrets) {
     if (!s) continue
-    out = out.split(s).join('<redacted-credential>')
+    for (const form of new Set([s, xmlEscape(s)])) out = out.split(form).join('<redacted-credential>')
   }
   return out
+}
+
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
 }
 
 function cap(text: string): { text: string; truncated: boolean } {

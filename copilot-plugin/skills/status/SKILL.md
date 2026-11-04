@@ -31,7 +31,9 @@ Run the local probe script (no MCP/chat — it talks to the local emit path and 
 device's own `/health` beacon):
 
 ```bash
-node "$(ls -d "$HOME"/.copilot/installed-plugins/*/tokenscope-copilot/scripts/status.mjs | sort -V | tail -n1)"
+sh -c 's=$(ls -d "$HOME"/.copilot/installed-plugins/*/tokenscope-copilot/scripts/status.mjs 2>/dev/null | grep -v "/installed-plugins/_direct/" | sort -V | tail -n1); [ -n "$s" ] || s=$(for d in "$HOME"/.copilot/installed-plugins/_direct/*/; do [ -f "${d}scripts/status.mjs" ] && node -e "try{process.exit(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).name===\"tokenscope\"?0:1)}catch(e){process.exit(1)}" "${d}plugin.json" 2>/dev/null && echo "${d}scripts/status.mjs"; done | sort -V | tail -n1);
+  [ -n "$s" ] || { echo "status.mjs not found — is the tokenscope plugin installed?" >&2; exit 1; }
+  exec node "$s"'
 ```
 
 It prints a JSON object:
@@ -198,7 +200,9 @@ resolves to `attributed`/`unbound`:
 
 ```bash
 TOKENSCOPE_NEEDS_TAGGING_COUNT=<unallocated.needs_tagging_count from my_usage> \
-  node "$(ls -d "$HOME"/.copilot/installed-plugins/*/tokenscope-copilot/scripts/status.mjs | sort -V | tail -n1)"
+  sh -c 's=$(ls -d "$HOME"/.copilot/installed-plugins/*/tokenscope-copilot/scripts/status.mjs 2>/dev/null | grep -v "/installed-plugins/_direct/" | sort -V | tail -n1); [ -n "$s" ] || s=$(for d in "$HOME"/.copilot/installed-plugins/_direct/*/; do [ -f "${d}scripts/status.mjs" ] && node -e "try{process.exit(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).name===\"tokenscope\"?0:1)}catch(e){process.exit(1)}" "${d}plugin.json" 2>/dev/null && echo "${d}scripts/status.mjs"; done | sort -V | tail -n1);
+    [ -n "$s" ] || { echo "status.mjs not found — is the tokenscope plugin installed?" >&2; exit 1; }
+    exec node "$s"'
 ```
 
 `attribution.state` will read `attributed` (count 0), `unbound` (count > 0), `unknown`

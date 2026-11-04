@@ -26,8 +26,9 @@ import { FOLDED_LANE_ID } from './fold-lanes'
 
 /** SSR-only last-resort values. The live client path always reads the CSS var;
  *  these exist so a server render / missing token degrades to something on-brand
- *  rather than an empty string. */
-const FALLBACK: Record<string, string> = {
+ *  rather than an empty string. Every colour here must equal its brand-tokens.css value
+ *  (tests/unit/reporting/chart-theme-fallback-tokens.test.ts checks it). */
+export const FALLBACK: Record<string, string> = {
   '--brand-hunger': '#d40e8c',
   '--brand-vision': '#5990f0',
   '--brand-harmony': '#582873',
@@ -35,14 +36,14 @@ const FALLBACK: Record<string, string> = {
   '--brand-heart': '#b01c87',
   '--carbon': '#3e332d',
   '--carbon-2': '#5a4d45',
-  '--carbon-3': '#8a7e76',
+  '--carbon-3': '#6b6059',
   '--calm': '#e0e0e0',
   '--calm-2': '#ececec',
   '--paper': '#fafaf8',
   '--white': '#ffffff',
-  '--rag-red': '#dc2626',
-  '--rag-amber': '#d97706',
-  '--rag-green': '#16a34a',
+  '--rag-red': '#b91c1c',
+  '--rag-amber': '#a14a07',
+  '--rag-green': '#137336',
   // Vendor-lane tokens (brand-tokens.css §Chart vendor-lane colours) — SSR-only
   // last-resort mirrors, like every entry above. The live client path resolves
   // the CSS custom property (which aliases the brand token where one exists).

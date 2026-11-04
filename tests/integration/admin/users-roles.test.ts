@@ -359,7 +359,8 @@ describe('PATCH /api/v1/admin/users/:id — role change', () => {
     // the wrong reason when the target holds a retired role.
     await expect(handler(ev as never)).rejects.toMatchObject({
       statusCode: 403,
-      data: { detail: expect.stringContaining('global-finops') },
+      // Named by its label since #489 (roles shown by label, not raw code).
+      data: { detail: expect.stringContaining('Global finance (retired)') },
     })
 
     const rows = await t.client<{ role: string }[]>`SELECT role FROM teammate WHERE id = ${devAId}`
@@ -412,6 +413,23 @@ describe('PATCH /api/v1/admin/users/:id — role change', () => {
     expect(rows[0]!.role, 'a retired role was re-assigned').toBe('developer')
   })
 
+  it('GRANTING Region admin is refused even for platform-admin (one admin role)', async () => {
+    const handler = await loadHandler()
+    const ev = makeEvent({
+      method: 'PATCH',
+      path: `/api/v1/admin/users/${devAId}`,
+      body: { role: 'admin' },
+      routerParams: { id: devAId },
+      initialSession: orgWideSession(),
+    })
+    await expect(handler(ev as never)).rejects.toMatchObject({
+      statusCode: 403,
+      data: { type: 'https://tokenscope.example.com/errors/role-grant', detail: 'Region admin (retired) can no longer be granted.' },
+    })
+    const rows = await t.client<{ role: string }[]>`SELECT role FROM teammate WHERE id = ${devAId}`
+    expect(rows[0]!.role).toBe('developer')
+  })
+
   it('admin self-demote → 400 self-role-change-blocked + role unchanged + no audit row', async () => {
     const handler = await loadHandler()
     const ev = makeEvent({
@@ -431,8 +449,10 @@ describe('PATCH /api/v1/admin/users/:id — role change', () => {
     expect(Number(audit[0]!.count)).toBe(0)
   })
 
-  it('demoting the last admin in region B → 409 last-admin-protected + role unchanged', async () => {
-    // Region B has only adminB. platform-admin attempts demotion.
+  it('demoting the last Region admin in region B → allowed (the role can no longer be granted, so its holders must be demotable)', async () => {
+    // Region B has only adminB. Before Region admin was retired this was 409
+    // last-admin-protected, with "promote a second admin first" as the way out;
+    // that way out is gone (canAssignRole refuses `admin`), so the guard went too.
     const handler = await loadHandler()
     const ev = makeEvent({
       method: 'PATCH',
@@ -441,12 +461,10 @@ describe('PATCH /api/v1/admin/users/:id — role change', () => {
       routerParams: { id: adminBId },
       initialSession: orgWideSession(),
     })
-    await expect(handler(ev as never)).rejects.toMatchObject({
-      statusCode: 409,
-      data: { reason: 'last-admin-protected' },
-    })
+    const result = (await handler(ev as never)) as { ok: boolean; previousRole: string; newRole: string }
+    expect(result).toEqual({ ok: true, previousRole: 'admin', newRole: 'developer' })
     const rows = await t.client<{ role: string }[]>`SELECT role FROM teammate WHERE id = ${adminBId}`
-    expect(rows[0]!.role).toBe('admin')
+    expect(rows[0]!.role).toBe('developer')
   })
 
   it('demoting admin A while admin A2 is also admin → allowed (count > 1)', async () => {
@@ -689,6 +707,92 @@ describe('GET /api/v1/admin/audit', () => {
     const result = (await handler(ev as never)) as { events: { eventType: string }[]; total: number }
     expect(result.events.every((e) => e.eventType === 'alpha')).toBe(true)
     expect(result.total).toBe(1)
+  })
+  it('actorSystem filter selects system-actor events only, never a teammate event from the same system', async () => {
+    await t.db.execute(sql`
+      INSERT INTO audit_event (event_type, actor_teammate_id, actor_system, subject_kind, subject_id, payload)
+      VALUES
+        ('gamma', NULL, 'worker-x', NULL, NULL, '{}'::jsonb),
+        ('gamma', ${adminAId}::uuid, 'worker-x', 'teammate', ${adminAId}::uuid, '{}'::jsonb),
+        ('gamma', NULL, 'worker-y', NULL, NULL, '{}'::jsonb)
+    `)
+    const handler = await loadHandler()
+    const ev = makeEvent({
+      path: `/api/v1/admin/audit?actorSystem=worker-x&limit=50`,
+      initialSession: orgWideSession(),
+    })
+    const result = (await handler(ev as never)) as {
+      events: { actorSystem: string | null; actorTeammateId: string | null }[]
+      total: number
+    }
+    expect(result.total).toBe(1)
+    expect(result.events).toEqual([expect.objectContaining({ actorSystem: 'worker-x', actorTeammateId: null })])
+  })
+
+  it('actorTeammateId filter narrows to that teammate', async () => {
+    await t.db.execute(sql`
+      INSERT INTO audit_event (event_type, actor_teammate_id, actor_system, subject_kind, subject_id, payload)
+      VALUES
+        ('delta', ${adminAId}::uuid, 'admin-ui', 'teammate', ${devAId}::uuid, '{}'::jsonb),
+        ('delta', ${adminA2Id}::uuid, 'admin-ui', 'teammate', ${devAId}::uuid, '{}'::jsonb)
+    `)
+    const handler = await loadHandler()
+    const ev = makeEvent({
+      path: `/api/v1/admin/audit?actorTeammateId=${adminA2Id}&limit=50`,
+      initialSession: orgWideSession(),
+    })
+    const result = (await handler(ev as never)) as { events: { actorTeammateId: string | null }[]; total: number }
+    expect(result.total).toBe(1)
+    expect(result.events[0]!.actorTeammateId).toBe(adminA2Id)
+  })
+
+  // Nested so the enclosing beforeEach (roles reset, audit_event emptied) runs first.
+  describe('GET /api/v1/admin/audit/facets', () => {
+    async function loadFacets() {
+      return (await import('../../../server/api/v1/admin/audit/facets.get'))
+        .default as (event: unknown) => Promise<unknown>
+    }
+    interface Facets {
+      eventTypes: string[]
+      actors: { teammateId: string; email: string | null }[]
+      systems: string[]
+      truncated: boolean
+    }
+
+    beforeEach(async () => {
+      // Region A: a teammate actor; region B: another; plus a system actor on
+      // each side, visible to a region admin only through a teammate subject.
+      await t.db.execute(sql`
+        INSERT INTO audit_event (event_type, actor_teammate_id, actor_system, subject_kind, subject_id, payload)
+        VALUES
+          ('region-a-only', ${adminAId}::uuid, 'admin-ui', 'teammate', ${devAId}::uuid, '{}'::jsonb),
+          ('region-b-only', ${adminBId}::uuid, 'admin-ui', 'teammate', ${adminBId}::uuid, '{}'::jsonb),
+          ('sys-on-a', NULL, 'nightly-sync', 'teammate', ${devAId}::uuid, '{}'::jsonb),
+          ('sys-on-b', NULL, 'b-only-sync', 'teammate', ${adminBId}::uuid, '{}'::jsonb)
+      `)
+    })
+
+    it('platform-admin is offered every event type, teammate actor and system actor', async () => {
+      const res = (await (await loadFacets())(makeEvent({ path: '/api/v1/admin/audit/facets', initialSession: orgWideSession() }) as never)) as Facets
+      expect(res.eventTypes).toEqual(['region-a-only', 'region-b-only', 'sys-on-a', 'sys-on-b'])
+      expect(res.actors.map((a) => a.teammateId).sort()).toEqual([adminAId, adminBId].sort())
+      expect(res.actors.find((a) => a.teammateId === adminAId)?.email).toBe('admin-a@wvi.test')
+      expect(res.systems).toEqual(['b-only-sync', 'nightly-sync'])
+      expect(res.truncated).toBe(false)
+    })
+
+    it('a region admin is offered only options drawn from events they can read', async () => {
+      const res = (await (await loadFacets())(makeEvent({ path: '/api/v1/admin/audit/facets', initialSession: adminASession() }) as never)) as Facets
+      expect(res.eventTypes).toEqual(['region-a-only', 'sys-on-a'])
+      expect(res.actors.map((a) => a.teammateId)).toEqual([adminAId])
+      expect(res.systems).toEqual(['nightly-sync'])
+    })
+
+    it('developer caller → 403 forbidden', async () => {
+      await expect(
+        (await loadFacets())(makeEvent({ path: '/api/v1/admin/audit/facets', initialSession: devSession() }) as never),
+      ).rejects.toMatchObject({ statusCode: 403 })
+    })
   })
 })
 

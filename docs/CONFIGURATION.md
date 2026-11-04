@@ -61,13 +61,26 @@ Optional during first bring-up (dev mode); required for real sign-in.
 | `NUXT_GRAPH_DIRECTORY_MODE` | `graph` to place teammates into Business Units from Entra (directory attributes + manager chain); empty = mock. |
 | `NUXT_GRAPH_BASE_URL`       | Microsoft Graph base URL.                                                          |
 
-Placement precedence, most-specific first: a manager-chain **unit** match wins;
-otherwise a configurable **directory-attribute → region rule**; otherwise a
-manager-chain **region** leader. The attribute-rule step lets each tenant map a
+Placement precedence, highest first: a directory-attribute rule naming a
+**unit**; a manager-chain **unit** owner; a manager-chain **region** leader; a
+directory-attribute **region rule**. The chain is walked up to 12 managers. The
+attribute-rule step lets each tenant map a
 region-correlated directory field (company name, country, office location,
 state, or department) to a region, curated in the admin **Region rules**
 surface — so directories where region tracks an attribute rather than the
 manager chain still place correctly.
+
+**Placement check** (admin, platform admins only) compares every teammate's
+current region and Business Unit with what the directory derives now. "Start
+check" begins a new read of everyone's directory record and manager chain;
+each "Run another pass" reads the next batch while some remain, and "Retry failed"
+re-reads the people whose lookup failed in this check. Verdicts are worked out on each page load
+against the current rules, owners and Region leaders, so a new rule or owner
+shows without another check. Select rows and Apply to move them: a region move
+signs the person out of the web app, usage already recorded stays where it is,
+and people an admin placed by hand need a second confirmation. The Region rules
+page has a Preview that lists who a draft rule would move, based on the last
+check.
 
 ## Providers
 

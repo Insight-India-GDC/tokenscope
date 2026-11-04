@@ -174,7 +174,7 @@ describe('one implementation, not four', () => {
 
   it('the helper holds exactly the two forms of that one query', () => {
     const code = read('server/reporting/month-floor.ts')
-    const floors = code.match(/to_char\(MIN\(ts_event\), 'YYYY-MM'\)/g) ?? []
+    const floors = code.match(/to_char\(MIN\(day\), 'YYYY-MM'\)/g) ?? []
     // Scoped and whole-company. A third would be a second definition again.
     expect(floors.length).toBe(2)
   })

@@ -21,6 +21,7 @@ import {
   GOV_RECONCILIATION_LAG_BUFFER_HOURS,
   resolveGovernanceSettings,
 } from '../utils/governance-settings'
+import { describeError } from '../utils/redact-probe-error'
 
 type Db = PostgresJsDatabase<typeof schema>
 
@@ -174,7 +175,7 @@ export async function runReconciliationSync(
       // re-pull retries it next tick); surface it so a persistently-failing scope
       // is visible in logs, not a silent green run.
       result.scopesErrored += 1
-      console.warn(`[reconciliation-sync] anthropic scope ${o.external_org_id} failed: ${String(err)}`)
+      console.warn(`[reconciliation-sync] anthropic scope ${o.external_org_id} failed: ${describeError(err)}`)
     }
   }
 
@@ -215,7 +216,7 @@ export async function runReconciliationSync(
       })
     } catch (err) {
       result.scopesErrored += 1
-      console.warn(`[reconciliation-sync] github credential resolve failed for ${e.external_id}: ${String(err)}`)
+      console.warn(`[reconciliation-sync] github credential resolve failed for ${e.external_id}: ${describeError(err)}`)
       continue
     }
     if (!credential) {
@@ -274,11 +275,11 @@ export async function runReconciliationSync(
         result.copilotSeatOrgsUnavailable += bill.seatOrgsUnavailable
         if (bill.seatRosterIncomplete) result.copilotSeatRosterIncomplete += 1
       } catch (err) {
-        console.warn(`[reconciliation-sync] copilot bill writer ${e.external_id} failed: ${String(err)}`)
+        console.warn(`[reconciliation-sync] copilot bill writer ${e.external_id} failed: ${describeError(err)}`)
       }
     } catch (err) {
       result.scopesErrored += 1
-      console.warn(`[reconciliation-sync] github scope ${e.external_id} failed: ${String(err)}`)
+      console.warn(`[reconciliation-sync] github scope ${e.external_id} failed: ${describeError(err)}`)
     }
   }
 

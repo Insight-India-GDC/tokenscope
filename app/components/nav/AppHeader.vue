@@ -2,14 +2,17 @@
 /*
  * AppHeader — persistent chrome.
  *
- * Role-aware nav per chrome.jsx NAV map: each persona sees a different
- * set of links. Cookie-session-driven (useSession). Dark toggle is a
- * no-op placeholder per docs/build/mvp-lite-epic.md §Out-of-scope.
+ * Role-aware nav per the prototype's NAV map (docs/archive/ux-pilot/tokenscope-pilot-design/project/src/chrome.jsx):
+ * each persona sees a different set of links. Cookie-session-driven
+ * (useSession). Dark toggle is a no-op placeholder per
+ * docs/archive/build-plans/mvp-lite-epic.md §Out-of-scope.
  */
 
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { consola } from 'consola'
 import { withReportingEntry } from '#shared/nav/reporting-entry'
+import { isNavLinkActive } from '#shared/nav/active-link'
+import { roleLabel } from '#shared/auth/roles'
 
 const { session, devLogin, logout, stopImpersonating } = useSession()
 const router = useRouter()
@@ -83,7 +86,20 @@ function handleKeydown(ev: KeyboardEvent) {
   if (ev.key === 'Escape' && menuOpen.value) {
     menuOpen.value = false
   }
+  if (ev.key === 'Escape' && navOpen.value) {
+    navOpen.value = false
+    navToggleRef.value?.focus()
+  }
 }
+
+// Narrow screens (below md, 768px): the nav links collapse behind a Menu
+// button into a panel under the bar, so the header reflows at 320px wide
+// (WCAG 1.4.10) instead of pushing the bell and user menu off screen. It is a
+// disclosure (aria-expanded + aria-controls), not a modal: the page stays
+// usable, Escape closes it and returns focus to the button, and following a
+// link closes it.
+const navOpen = ref(false)
+const navToggleRef = ref<HTMLButtonElement | null>(null)
 
 onMounted(() => {
   if (import.meta.client) {
@@ -98,11 +114,7 @@ onBeforeUnmount(() => {
   }
 })
 
-const role = computed(() => {
-  const r = session.value?.role
-  if (!r) return 'Guest'
-  return r.charAt(0).toUpperCase() + r.slice(1)
-})
+const role = computed(() => (session.value?.role ? roleLabel(session.value.role) : 'Guest'))
 const userInitials = computed(() => {
   const name = session.value?.displayName ?? session.value?.email ?? '?'
   const parts = name.split(/[\s.@]+/).filter(Boolean)
@@ -132,7 +144,12 @@ const unreadCount = computed(() => inbox.value?.total ?? 0)
 const route = useRoute()
 watch(() => route.fullPath, () => {
   refreshInboxCount()
+  navOpen.value = false
 })
+
+// The current section by PATH (shared/nav/active-link.ts): router active-class
+// cannot see that /admin/users belongs to the Admin tab.
+const isActive = (to: string) => isNavLinkActive(route.path, to)
 
 // Developer-first ordering; Admin always last. Inbox lives in the bell, not the
 // nav. `disabled` marks signposted-but-unbuilt items per the
@@ -220,9 +237,9 @@ const navLinks = computed(() => {
   <header
     class="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-brand-harmony/10"
   >
-    <div class="max-w-[1600px] mx-auto px-10 h-16 flex items-center gap-8">
+    <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-10 h-16 flex items-center gap-2 sm:gap-4 lg:gap-8">
       <!-- Logo lockup -->
-      <NuxtLink to="/" class="flex items-center gap-3 group">
+      <NuxtLink to="/" class="flex items-center gap-3 group shrink-0">
         <div
           class="w-8 h-8 rounded-lg flex items-center justify-center text-white font-extrabold text-sm tracking-tight shadow-[inset_0_-2px_8px_rgba(0,0,0,0.15)]"
           style="
@@ -235,15 +252,15 @@ const navLinks = computed(() => {
           <span class="font-sans font-extrabold text-base tracking-tight text-carbon"
             >TokenScope</span
           >
-          <span class="font-slab italic text-[11px] text-carbon-3 tracking-[0.2px]"
+          <span class="hidden sm:inline font-slab italic text-[11px] text-carbon-3 tracking-[0.2px]"
             >an open-source tool</span
           >
         </div>
       </NuxtLink>
 
-      <!-- Nav links. Use exact-active-class on the root '/' link so it doesn't
-           prefix-match every other route (Vue Router default). -->
-      <nav class="flex gap-1 flex-1">
+      <!-- Nav links (md and up). The active section is decided by path
+           (isActive), and marked with aria-current for screen readers. -->
+      <nav class="hidden md:flex gap-1 flex-1 min-w-0" aria-label="Main">
         <template v-for="link in navLinks" :key="link.to">
           <span
             v-if="link.disabled"
@@ -256,14 +273,34 @@ const navLinks = computed(() => {
           <NuxtLink
             v-else
             :to="link.to"
-            class="px-3.5 py-2 rounded-lg text-sm font-semibold text-carbon-2 tracking-tight hover:bg-brand-harmony-sheer hover:text-brand-harmony transition-colors"
-            :active-class="link.to === '/' ? '' : 'bg-brand-harmony-sheer text-brand-harmony'"
-            exact-active-class="bg-brand-harmony-sheer text-brand-harmony"
+            class="px-3.5 py-2 rounded-lg text-sm font-semibold tracking-tight whitespace-nowrap hover:bg-brand-harmony-sheer hover:text-brand-harmony transition-colors"
+            :class="isActive(link.to) ? 'bg-brand-harmony-sheer text-brand-harmony' : 'text-carbon-2'"
+            :aria-current="isActive(link.to) ? 'page' : undefined"
+            active-class=""
+            exact-active-class=""
           >
             {{ link.label }}
           </NuxtLink>
         </template>
       </nav>
+
+      <!-- Below md the links live behind this button (panel at the end of the header). -->
+      <div class="flex-1 md:hidden" />
+      <button
+        ref="navToggleRef"
+        type="button"
+        class="md:hidden w-9 h-9 inline-flex items-center justify-center rounded-lg text-carbon-2 hover:bg-brand-harmony-sheer hover:text-brand-harmony transition-colors"
+        :aria-expanded="navOpen"
+        aria-controls="app-nav-mobile"
+        aria-label="Menu"
+        data-testid="app-nav-toggle"
+        @click="navOpen = !navOpen"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path v-if="navOpen" d="M6 6l12 12M18 6 6 18" />
+          <path v-else d="M4 7h16M4 12h16M4 17h16" />
+        </svg>
+      </button>
 
       <!-- Icon buttons. Dark toggle is an explicit placeholder per
            design-notes §0 (no-op icon for v1). Search is deferred until
@@ -275,7 +312,7 @@ const navLinks = computed(() => {
         aria-label="Toggle theme (placeholder for v1)"
         disabled
         data-testid="dark-toggle"
-        class="w-9 h-9 inline-flex items-center justify-center rounded-lg text-carbon-3 cursor-not-allowed opacity-60"
+        class="hidden sm:inline-flex w-9 h-9 items-center justify-center rounded-lg text-carbon-3 cursor-not-allowed opacity-60"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
@@ -287,7 +324,7 @@ const navLinks = computed(() => {
         title="Open inbox"
         aria-label="Open inbox"
         data-testid="inbox-bell"
-        class="relative w-9 h-9 inline-flex items-center justify-center rounded-lg text-carbon-2 hover:bg-brand-harmony-sheer hover:text-brand-harmony transition-colors"
+        class="relative shrink-0 w-9 h-9 inline-flex items-center justify-center rounded-lg text-carbon-2 hover:bg-brand-harmony-sheer hover:text-brand-harmony transition-colors"
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
@@ -307,7 +344,7 @@ const navLinks = computed(() => {
         targets the same shape as the prior static badge — a logged-in
         user sees no visual diff at rest.
       -->
-      <div ref="menuRef" class="relative">
+      <div ref="menuRef" class="relative shrink-0">
         <button
           type="button"
           data-testid="role-badge"
@@ -323,7 +360,7 @@ const navLinks = computed(() => {
           >
             {{ userInitials }}
           </div>
-          <div class="leading-tight text-left">
+          <div class="hidden sm:block leading-tight text-left">
             <div class="text-[13px] font-bold text-carbon">{{ role }}</div>
             <div
               v-if="isImpersonating"
@@ -354,7 +391,7 @@ const navLinks = computed(() => {
           v-if="menuOpen"
           role="menu"
           data-testid="user-menu"
-          class="absolute right-0 mt-2 w-64 bg-white border border-calm rounded-lg shadow-lg z-50 py-2"
+          class="absolute right-0 mt-2 w-64 max-w-[calc(100vw-2rem)] bg-white border border-calm rounded-lg shadow-lg z-50 py-2"
         >
           <!-- Persona switcher — demo-capable envs only (local/sandbox). Never
                renders on dev/staging/prod; the server refuses regardless. -->
@@ -420,5 +457,35 @@ const navLinks = computed(() => {
         </div>
       </div>
     </div>
+
+    <nav
+      v-if="navOpen"
+      id="app-nav-mobile"
+      aria-label="Main"
+      class="md:hidden border-t border-calm-2 bg-white px-4 py-2 flex flex-col"
+      data-testid="app-nav-mobile"
+    >
+      <template v-for="link in navLinks" :key="link.to">
+        <span
+          v-if="link.disabled"
+          class="px-3 py-2.5 rounded-lg text-sm font-semibold text-carbon-3/50 cursor-not-allowed select-none"
+          aria-disabled="true"
+        >
+          {{ link.label }} <span class="sr-only">(coming soon)</span>
+        </span>
+        <NuxtLink
+          v-else
+          :to="link.to"
+          class="px-3 py-2.5 rounded-lg text-sm font-semibold hover:bg-brand-harmony-sheer hover:text-brand-harmony transition-colors"
+          :class="isActive(link.to) ? 'bg-brand-harmony-sheer text-brand-harmony' : 'text-carbon-2'"
+          :aria-current="isActive(link.to) ? 'page' : undefined"
+          active-class=""
+          exact-active-class=""
+          @click="navOpen = false"
+        >
+          {{ link.label }}
+        </NuxtLink>
+      </template>
+    </nav>
   </header>
 </template>

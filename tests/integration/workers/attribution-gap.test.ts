@@ -258,6 +258,31 @@ describe('runAttributionGap — alerting lifecycle', () => {
     expect(await openAlerts()).toBe(1)
   })
 
+  it('past the dispatch cap: still-gapped instances stay open and the cap hit is reported', async () => {
+    const ids = [
+      // seed() keys oid/token on the first 8 chars, so those must differ.
+      '9a1e00a1-0000-4000-8000-000000000001',
+      '9a1e00a2-0000-4000-8000-000000000002',
+      '9a1e00a3-0000-4000-8000-000000000003',
+    ]
+    // Distinct gaps so the cap keeps a deterministic pair: ids[2] has the smallest.
+    await seed({ id: ids[0]!, bearerHoursAgo: 1, attributedHoursAgo: 30 * 24 })
+    await seed({ id: ids[1]!, bearerHoursAgo: 1, attributedHoursAgo: 20 * 24 })
+    await seed({ id: ids[2]!, bearerHoursAgo: 1, attributedHoursAgo: 10 * 24 })
+
+    const first = await runAttributionGap(t.db)
+    expect(first.capHit).toBeNull()
+    expect(await openAlerts()).toBe(3)
+    expect(await openHealth()).toBe(3)
+
+    const capped = await runAttributionGap(t.db, { limit: 2 })
+    expect(capped.capHit).toBe(2)
+    expect(capped.instances.map((i) => i.instanceId)).toEqual([ids[0], ids[1]])
+    expect(capped.autoResolved).toBe(0)
+    expect(await openAlerts()).toBe(3)
+    expect(await openHealth()).toBe(3)
+  })
+
   it('a clean fleet raises nothing', async () => {
     await seed({ id: randomUUID(), bearerHoursAgo: 1, attributedHoursAgo: 1 })
     const res = await runAttributionGap(t.db)

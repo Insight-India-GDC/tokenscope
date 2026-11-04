@@ -75,9 +75,12 @@ param tags object = {}
 
 var skuName = '${sku}_AzureFrontDoor'
 var usePrivateLink = sku == 'Premium' && !empty(privateLinkResourceId)
-// Front Door's private endpoint request carries this message; the approval
-// step matches on it (Front Door can file duplicate requests).
-var privateLinkRequestMessage = 'TokenScope Front Door fd-${name}'
+// Front Door's private endpoint request carries this message. It is not
+// secret: frontDoorId is a deployment output and often sits in a committed
+// parameter file. The approval script also requires the request's private
+// endpoint to be in a Front Door managed group, and approves it only when it
+// is the one such request (one origin files one request) and none is approved.
+var privateLinkRequestMessage = 'TokenScope Front Door fd-${name} ${uniqueString(frontDoorProfile.id, frontDoorProfile.properties.frontDoorId)}'
 var premiumManagedRuleSets = [
   {
     ruleSetType: 'Microsoft_DefaultRuleSet'

@@ -26,6 +26,7 @@ import type { Session } from '../../../server/utils/auth'
 import meInstances from '../../../server/api/v1/me/instances.get'
 import meRevoke from '../../../server/api/v1/me/instances/[instanceId]/revoke.post'
 import adminInstances from '../../../server/api/v1/admin/instances.get'
+import adminDelete from '../../../server/api/v1/instances/[instanceId].delete'
 
 let t: TestDb
 let regionAId: string
@@ -227,5 +228,71 @@ describe('3. admin/instances — region-scoping', () => {
     await expect(
       call(adminInstances, ev({ query: { region: regionBId }, session: adminA() })),
     ).rejects.toMatchObject({ statusCode: 403 })
+  })
+})
+
+describe('4. admin force-end — a region admin cannot end a higher-role holder\'s device', () => {
+  const PLATFORM_ID = '9a1e0000-0000-4000-8000-0000000000f1'
+  const platform = (): Session =>
+    ({ teammateId: PLATFORM_ID, email: 'plat@example.com', displayName: 'Platform', role: 'platform-admin', regionId: regionAId, orgPath: 'a.svc' }) as Session
+
+  async function liveInstance(teammateId: string): Promise<string> {
+    const id = randomUUID()
+    await t.db.insert(schema.instanceAttestation).values({
+      instanceId: id, principalOid: `oid-${id}`, teammateId, tool: 'claude-code', sessionTokenHash: `h-${id}`,
+      regionId: regionAId, orgUnitId: ouAId, attestationState: 'unassigned',
+    })
+    return id
+  }
+  async function ended(id: string): Promise<boolean> {
+    const rows = await t.db.execute<{ ended: boolean }>(sql`
+      SELECT ts_actual_end IS NOT NULL AS ended FROM instance_attestation WHERE instance_id = ${id}::uuid`)
+    return [...rows][0]!.ended
+  }
+
+  it('region admin → 403 on a same-region platform-admin\'s device, which stays live; platform-admin may; a developer\'s device still ends', async () => {
+    await t.db.insert(schema.teammate).values({
+      id: PLATFORM_ID, entraOid: 'inst-oid-plat', email: 'plat@example.com', displayName: 'Platform', role: 'platform-admin', regionId: regionAId, orgUnitId: ouAId,
+    })
+    const platInst = await liveInstance(PLATFORM_ID)
+
+    await expect(call(adminDelete, ev({ params: { instanceId: platInst }, session: adminA() }))).rejects.toMatchObject({ statusCode: 403 })
+    expect(await ended(platInst)).toBe(false)
+
+    await call(adminDelete, ev({ params: { instanceId: platInst }, session: platform() }))
+    expect(await ended(platInst)).toBe(true)
+
+    const devInst = await liveInstance(devA2Id)
+    await call(adminDelete, ev({ params: { instanceId: devInst }, session: adminA() }))
+    expect(await ended(devInst)).toBe(true)
+  })
+})
+
+describe('5. both the list and force-end follow the region the teammate sits in now', () => {
+  const MOVER_ID = '9a1e0000-0000-4000-8000-0000000000c1'
+  const adminB = (): Session =>
+    ({ teammateId: '00000000-0000-4000-8000-0000000000b1', email: 'admin-b@example.com', displayName: 'Admin B', role: 'admin', regionId: regionBId, orgPath: 'b.svc' }) as Session
+
+  it('a device stamped A whose owner now sits in B is listed and ended by B, not A', async () => {
+    await t.db.insert(schema.teammate).values({
+      id: MOVER_ID, entraOid: 'inst-oid-mover', email: 'mover@example.com', displayName: 'Mover', role: 'developer', regionId: regionBId, orgUnitId: ouBId,
+    })
+    const inst = randomUUID()
+    await t.db.insert(schema.instanceAttestation).values({
+      instanceId: inst, principalOid: 'inst-oid-mover', teammateId: MOVER_ID, tool: 'claude-code', sessionTokenHash: `h-${inst}`,
+      regionId: regionAId, orgUnitId: ouAId, attestationState: 'unassigned',
+    })
+    type List = { instances: { instance_id: string }[]; total: number }
+    const a = await call<List>(adminInstances, ev({ session: adminA() }))
+    const b = await call<List>(adminInstances, ev({ session: adminB() }))
+    expect(a.instances.map((i) => i.instance_id)).not.toContain(inst)
+    expect(b.instances.map((i) => i.instance_id)).toContain(inst)
+    expect(b.total).toBe(b.instances.length)
+
+    await expect(call(adminDelete, ev({ params: { instanceId: inst }, session: adminA() }))).rejects.toMatchObject({ statusCode: 403 })
+    await call(adminDelete, ev({ params: { instanceId: inst }, session: adminB() }))
+    const rows = await t.db.execute<{ ended: boolean }>(sql`
+      SELECT ts_actual_end IS NOT NULL AS ended FROM instance_attestation WHERE instance_id = ${inst}::uuid`)
+    expect([...rows][0]!.ended).toBe(true)
   })
 })

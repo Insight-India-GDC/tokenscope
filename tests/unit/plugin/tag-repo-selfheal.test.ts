@@ -3,9 +3,9 @@
  * client state.
  *
  * Direct unit tests pin writeRepoTag's change-detection (idempotent no-op,
- * helper-path heal, instance heal, credential refresh). Child-process tests
+ * removal of copied keys, instance heal). Child-process tests
  * exercise the SessionStart hook end-to-end against a fake global enrolment to
- * prove it (a) REWRITES on a helper-path/instance change even when the
+ * prove it (a) REWRITES on a copied helper or an instance change even when the
  * project.code_hash is unchanged, (b) is a TRUE no-op (stable mtime) when the
  * repo already matches current-global, and (c) fails OPEN (swallows a throw,
  * exits 0) so a hook can never break the session.
@@ -13,10 +13,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, chmodSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { writeRepoTag, computeCodeHash } from '../../../plugin/scripts/tag-repo.mjs'
+import { buildHelperCommand } from '../../../plugin/scripts/env-builder.mjs'
 import { materialiseSandboxedPlugin } from './helpers/sandboxed-plugin.js'
+
+// Windows (#430): skipped on win32 because this file expects the .sh helper; on win32 the helper is the .ps1.
+const POSIX_ONLY = process.platform === 'win32'
 
 // --- fixtures ------------------------------------------------------------
 
@@ -71,8 +75,9 @@ function enrolment({ instance = 'inst-A', helper = pinned('0.1.3'), env } = {}) 
   }
 }
 
-/** The command buildHelperCommand writes for a POSIX helper script with no state dir. */
-const cmd = (script: string) => `"${script}" --tool claude-code`
+/** The helper command for `script` on the running platform, as setup writes it. */
+const helperCmd = (script: string) =>
+  buildHelperCommand({ tool: 'claude-code', platform: process.platform }, { scriptsDir: dirname(script) })
 
 function readRepo(cwd: string) {
   return JSON.parse(readFileSync(join(cwd, '.claude', 'settings.local.json'), 'utf8'))
@@ -104,20 +109,7 @@ const REFUSED = [
   'OTEL_EXPORTER_OTLP_LOGS_PROTOCOL',
 ]
 
-describe('writeRepoTag change-detection', () => {
-  // The active-version helper resolution reads process.env.CLAUDE_PLUGIN_ROOT.
-  // Neutralise it here so these tests deterministically exercise the
-  // enrolment.helperCommand fallback they assert (the active-version preference has
-  // its own tests below).
-  const savedPluginRoot = process.env.CLAUDE_PLUGIN_ROOT
-  beforeEach(() => {
-    delete process.env.CLAUDE_PLUGIN_ROOT
-  })
-  afterEach(() => {
-    if (savedPluginRoot === undefined) delete process.env.CLAUDE_PLUGIN_ROOT
-    else process.env.CLAUDE_PLUGIN_ROOT = savedPluginRoot
-  })
-
+describe.skipIf(POSIX_ONLY)('writeRepoTag change-detection', () => {
   it("never copies the removed forwarder's saved endpoint into a repo file", () => {
     const e = enrolment()
     writeRepoTag({ cwd, enrolment: { ...e, env: { ...e.env, TOKENSCOPE_DCE_LOGS_ENDPOINT: 'https://dce/logs' } }, codeHash: CODE_HASH })
@@ -145,7 +137,8 @@ describe('writeRepoTag change-detection', () => {
     // SS-CP-2: the env block is an allowlist; every other key applies from the
     // user-level file (per-key merge), and the helper reads its own store.
     expect(Object.keys(s.env)).toEqual(['OTEL_RESOURCE_ATTRIBUTES'])
-    expect(s.otelHeadersHelper).toContain('0.1.3')
+    // Each install runs its own global helper: a repo value would override it.
+    expect(s).not.toHaveProperty('otelHeadersHelper')
   })
 
   it('is a TRUE no-op when the repo already equals current-global + hash (changed=false, stable mtime)', () => {
@@ -157,22 +150,21 @@ describe('writeRepoTag change-detection', () => {
     expect(after).toBe(before) // file untouched
   })
 
-  it('REWRITES + heals when the global helper path changed (e.g. 0.1.1 -> 0.1.3), hash unchanged', () => {
-    // Pin under the OLD helper path (the frozen-snapshot incident).
-    writeRepoTag({
-      cwd,
-      enrolment: enrolment({ helper: pinned('0.1.1') }),
-      codeHash: CODE_HASH,
-    })
-    // Plugin upgraded — global now points at 0.1.3. Same project code_hash.
-    const r = writeRepoTag({ cwd, enrolment: enrolment({ helper: pinned('0.1.3') }), codeHash: CODE_HASH })
+  it("removes the helper an earlier tag pinned: healed, but no instance drift", () => {
+    mkdirSync(join(cwd, '.claude'), { recursive: true })
+    writeFileSync(
+      join(cwd, '.claude', 'settings.local.json'),
+      JSON.stringify({
+        otelHeadersHelper: helperCmd(pinned('0.1.1')),
+        env: { OTEL_RESOURCE_ATTRIBUTES: `tokenscope.instance_id=inst-A,project.code_hash=${CODE_HASH},tool=claude-code` },
+      }),
+    )
+    const r = writeRepoTag({ cwd, enrolment: enrolment(), codeHash: CODE_HASH })
     expect(r.changed).toBe(true)
     expect(r.healed).toBe(true)
-    // A helper-path move does NOT change which instance records land against, so
-    // it must NOT set instanceDrifted — the SessionStart warning keys off that
-    // field alone, and firing it on every plugin upgrade would cry wolf.
+    // Which helper runs does not change which instance records land against.
     expect(r.instanceDrifted).toBe(false)
-    expect(readRepo(cwd).otelHeadersHelper).toContain('0.1.3')
+    expect(readRepo(cwd)).not.toHaveProperty('otelHeadersHelper')
   })
 
   it('REWRITES + heals when the global instance changed (re-enrol), hash unchanged', () => {
@@ -202,7 +194,7 @@ describe('writeRepoTag change-detection', () => {
     expect(r.instanceDrifted).toBe(false)
   })
 
-  it('REPLACES the repo env wholesale: a key an earlier full copy left behind is ABSENT after re-derive (MEDIUM-1)', () => {
+  it('a credential key an earlier full copy left behind is ABSENT after re-derive (MEDIUM-1)', () => {
     mkdirSync(join(cwd, '.claude'), { recursive: true })
     writeFileSync(
       join(cwd, '.claude', 'settings.local.json'),
@@ -245,8 +237,8 @@ describe('writeRepoTag change-detection', () => {
         2,
       ) + '\n',
     )
-    // replaceEnv:true rewrites the whole block on the NEXT SessionStart in
-    // every tagged repo on every enrolled device — this is that rewrite.
+    // The NEXT SessionStart in every tagged repo on every enrolled device drops
+    // the copied keys — this is that rewrite.
     const r = writeRepoTag({ cwd, enrolment: enrolment(), codeHash: CODE_HASH })
     expect(r.changed).toBe(true)
     const s = readRepo(cwd)
@@ -306,107 +298,6 @@ describe('writeRepoTag change-detection', () => {
     expect(existsSync(join(cwd, '.claude'))).toBe(false)
   })
 
-  it('prefers the ACTIVE plugin helper (CLAUDE_PLUGIN_ROOT) over the version-pinned global one — upgrade auto-follow, no re-enrol', () => {
-    /*
-     * The active root must be INSIDE our own install for this to apply — see
-     * resolveHelperScriptsDir's confinement note (MDASH §2.6). In production the new
-     * version is a sibling directory under the same versions dir, so it
-     * qualifies; here the shipped bundle itself stands in for it, which is the
-     * only in-install path a test can point at without inventing one.
-     */
-    const activeRoot = resolve(__dirname, '../../../plugin')
-    process.env.CLAUDE_PLUGIN_ROOT = activeRoot
-    // Global still pins an OLD version path; the active version must win.
-    const r = writeRepoTag({
-      cwd,
-      enrolment: enrolment({ helper: pinned('0.1.1') }),
-      codeHash: CODE_HASH,
-    })
-    expect(r.changed).toBe(true)
-    expect(readRepo(cwd).otelHeadersHelper).toBe(cmd(join(activeRoot, 'scripts', 'otel-headers-helper.sh')))
-  })
-
-  it('REFUSES a CLAUDE_PLUGIN_ROOT outside our own install, falling back to the pinned path (MDASH §2.6)', () => {
-    /*
-     * Claude Code is measured to refuse a repo-set CLAUDE_PLUGIN_ROOT today
-     * (probe 2026-08-21), but the variable is absent from its published
-     * protected list, so that guarantee is borrowed. This makes it ours: an
-     * out-of-install root is not accepted even when it holds a real helper.
-     */
-    const evilRoot = join(cwd, 'active-plugin')
-    mkdirSync(join(evilRoot, 'scripts'), { recursive: true })
-    writeFileSync(join(evilRoot, 'scripts', 'otel-headers-helper.sh'), '#!/bin/sh\n')
-    process.env.CLAUDE_PLUGIN_ROOT = evilRoot
-    const pinnedPath = pinned('0.1.1')
-    writeRepoTag({ cwd, enrolment: enrolment({ helper: pinnedPath }), codeHash: CODE_HASH })
-    expect(readRepo(cwd).otelHeadersHelper).toBe(cmd(pinnedPath))
-    expect(readRepo(cwd).otelHeadersHelper).not.toContain(evilRoot)
-  })
-
-  it('active-version pin is a stable no-op on a same-version relaunch (no spurious heal / mtime churn)', () => {
-    const activeRoot = join(cwd, 'active-plugin')
-    mkdirSync(join(activeRoot, 'scripts'), { recursive: true })
-    writeFileSync(join(activeRoot, 'scripts', 'otel-headers-helper.sh'), '#!/bin/sh\n')
-    process.env.CLAUDE_PLUGIN_ROOT = activeRoot
-    writeRepoTag({ cwd, enrolment: enrolment(), codeHash: CODE_HASH })
-    const before = statSync(join(cwd, '.claude', 'settings.local.json')).mtimeMs
-    const r = writeRepoTag({ cwd, enrolment: enrolment(), codeHash: CODE_HASH })
-    const after = statSync(join(cwd, '.claude', 'settings.local.json')).mtimeMs
-    expect(r.changed).toBe(false)
-    expect(r.healed).toBe(false)
-    expect(after).toBe(before)
-  })
-
-  it('falls back to the global-pinned helper when CLAUDE_PLUGIN_ROOT has no helper (partial/absent install)', () => {
-    process.env.CLAUDE_PLUGIN_ROOT = join(cwd, 'no-plugin')
-    writeRepoTag({
-      cwd,
-      enrolment: enrolment({ helper: pinned('0.1.3') }),
-      codeHash: CODE_HASH,
-    })
-    expect(readRepo(cwd).otelHeadersHelper).toBe(cmd(pinned('0.1.3')))
-  })
-
-  /*
-   * S1/S8 of #408 (#410). The global value is a COMMAND now. On 8f5d8293 it was
-   * existsSync'd as a path, so any value with arguments failed the check, the
-   * pin fell back to this module's own dir, and the state dir was dropped.
-   */
-  it('builds the repo pin from the same record as the global command, --state-dir included', () => {
-    const global = `${cmd(pinned('0.1.3'))} --state-dir /srv/ts-sandbox`
-    writeRepoTag({ cwd, enrolment: enrolment({ helper: global }), codeHash: CODE_HASH, storeDir: join(cwd, 'state') })
-    expect(readRepo(cwd).otelHeadersHelper).toBe(global)
-  })
-
-  it('a pre-sprint bare path with a hand-added --state-dir keeps it in the repo pin', () => {
-    writeRepoTag({
-      cwd,
-      enrolment: enrolment({ helper: `${pinned('0.1.3')} --state-dir /srv/ts-sandbox` }),
-      codeHash: CODE_HASH,
-      storeDir: join(cwd, 'state'),
-    })
-    expect(readRepo(cwd).otelHeadersHelper).toBe(`${cmd(pinned('0.1.3'))} --state-dir /srv/ts-sandbox`)
-  })
-
-  it('platform win32 pins the PowerShell helper', () => {
-    const ps1 = pinned('0.1.3').replace(/\.sh$/, '.ps1')
-    writeFileSync(ps1, '# stub\n')
-    try {
-      writeRepoTag({
-        cwd,
-        enrolment: enrolment({ helper: pinned('0.1.3') }),
-        codeHash: CODE_HASH,
-        platform: 'win32',
-        storeDir: join(cwd, 'state'),
-      })
-      const pin = readRepo(cwd).otelHeadersHelper
-      expect(pin).toMatch(/^"C:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ".*otel-headers-helper\.ps1" --tool claude-code$/)
-      expect(pin).toContain('0.1.3')
-    } finally {
-      rmSync(ps1, { force: true })
-    }
-  })
-
   it('preserves the 0o600 mode and merges unrelated local settings keys', () => {
     mkdirSync(join(cwd, '.claude'), { recursive: true })
     writeFileSync(
@@ -458,7 +349,7 @@ function writeGlobal(home: string, { instance = 'inst-A', helper = pinned('0.1.3
  * is a no-op in the self-heal tests (it runs the REAL emit path otherwise); the
  * dedicated health-warning tests below drive that path via the sentinel instead.
  */
-describe('writeRepoTag — refuses a git-tracked settings.local.json (SS-CP-2)', () => {
+describe.skipIf(POSIX_ONLY)('writeRepoTag — refuses a git-tracked settings.local.json (SS-CP-2)', () => {
   const savedPluginRoot = process.env.CLAUDE_PLUGIN_ROOT
   beforeEach(() => {
     delete process.env.CLAUDE_PLUGIN_ROOT
@@ -530,7 +421,7 @@ function stubHelperRoot(_unusedDir: string, body: string): string {
   return dir
 }
 
-describe('session-start hook (end-to-end)', () => {
+describe.skipIf(POSIX_ONLY)('session-start hook (end-to-end)', () => {
   let home: string
   let repo: string
 
@@ -546,24 +437,17 @@ describe('session-start hook (end-to-end)', () => {
     rmSync(repo, { recursive: true, force: true })
   })
 
-  it('REWRITES the repo pin when global helper path changed, project.code_hash unchanged', () => {
-    // Initial pin under 0.1.1.
-    writeGlobal(home, { helper: pinnedInstalled('0.1.1') })
+  it('the real hook drops the helper an earlier repo tag pinned, keeping the project tag', () => {
+    writeGlobal(home, { helper: helperCmd(pinnedInstalled('0.1.3')) })
+    mkdirSync(join(repo, '.claude'), { recursive: true })
+    writeFileSync(
+      join(repo, '.claude', 'settings.local.json'),
+      JSON.stringify({ otelHeadersHelper: helperCmd(pinnedInstalled('0.1.1')), env: {} }),
+    )
     runHook(home, repo)
-    expect(readRepo(repo).otelHeadersHelper).toContain('0.1.1')
-
-    // Plugin upgraded to 0.1.3 in global only. Hash is identical.
-    writeGlobal(home, { helper: pinnedInstalled('0.1.3') })
-    runHook(home, repo)
-    expect(readRepo(repo).otelHeadersHelper).toContain('0.1.3') // healed, not skipped
-  })
-
-  it('the real hook rebuilds the repo pin from the same record as the global one (S8)', () => {
-    // A pre-sprint global: the bare path plus a hand-added state dir.
-    const sandbox = join(home, 'ts sandbox')
-    writeGlobal(home, { helper: `${pinnedInstalled('0.1.1')} --state-dir ${JSON.stringify(sandbox)}` })
-    runHook(home, repo)
-    expect(readRepo(repo).otelHeadersHelper).toBe(`${cmd(pinnedInstalled('0.1.1'))} --state-dir "${sandbox}"`)
+    const s = readRepo(repo)
+    expect(s).not.toHaveProperty('otelHeadersHelper')
+    expect(s.env.OTEL_RESOURCE_ATTRIBUTES).toContain(`project.code_hash=${CODE_HASH}`)
   })
 
   it('the real hook leaves a git-tracked repo file untouched and says why', () => {
@@ -647,6 +531,37 @@ exit 1
     expect(parsed.systemMessage).toMatch(/NOT emitting/i)
     expect(parsed.systemMessage).toMatch(/401/)
     expect(parsed.hookSpecificOutput.hookEventName).toBe('SessionStart')
+  })
+
+  it('emission-health: a device whose refresh token is only in the store is still probed and warned for', () => {
+    // The current redeem shape: settings carries the endpoints, the store the credential.
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    const e = enrolment({})
+    const { TOKENSCOPE_OAUTH_REFRESH_TOKEN: rt, ...settingsEnv } = e.env as Record<string, string>
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ otelHeadersHelper: e.helperCommand, env: settingsEnv }))
+    mkdirSync(join(home, '.tokenscope'), { recursive: true })
+    writeFileSync(
+      join(home, '.tokenscope', 'config.claude-code.json'),
+      JSON.stringify({
+        version: 2,
+        tool: 'claude-code',
+        instance_id: 'inst-A',
+        bearer_endpoint: settingsEnv.TOKENSCOPE_BEARER_ENDPOINT,
+        oauth_token_endpoint: 'https://login/token',
+        oauth_client_id: 'cid',
+        oauth_refresh_token: rt,
+        otel_resource_attributes: settingsEnv.OTEL_RESOURCE_ATTRIBUTES,
+      }),
+    )
+    const stub = stubHelperRoot(
+      join(home, 'fail-plugin'),
+      `mkdir -p "$HOME/.tokenscope"
+printf '{"ts":"t","http_status":401,"message":"revoked"}' > "$HOME/.tokenscope/emit-failure.claude-code.json"
+exit 1
+`,
+    )
+    const parsed = JSON.parse(runHook(home, repo, stub))
+    expect(parsed.systemMessage).toMatch(/NOT emitting/i)
   })
 
   it('emission-health: does NOT warn from a STALE sentinel — runs the live (self-healing) helper instead', () => {

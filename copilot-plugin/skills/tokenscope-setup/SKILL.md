@@ -32,7 +32,7 @@ the **same deployment** rotates that device's credential rather than minting a n
 one. Ask the device-identity helper, which prints only non-secret fields:
 
 ```bash
-sh -c 's=$(ls -d "$HOME"/.copilot/installed-plugins/*/tokenscope-copilot/scripts/device-id.mjs 2>/dev/null | sort -V | tail -n1);
+sh -c 's=$(ls -d "$HOME"/.copilot/installed-plugins/*/tokenscope-copilot/scripts/device-id.mjs 2>/dev/null | grep -v "/installed-plugins/_direct/" | sort -V | tail -n1); [ -n "$s" ] || s=$(for d in "$HOME"/.copilot/installed-plugins/_direct/*/; do [ -f "${d}scripts/device-id.mjs" ] && node -e "try{process.exit(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).name===\"tokenscope\"?0:1)}catch(e){process.exit(1)}" "${d}plugin.json" 2>/dev/null && echo "${d}scripts/device-id.mjs"; done | sort -V | tail -n1);
   [ -n "$s" ] || { echo "device-id.mjs not found — is the tokenscope plugin installed?" >&2; exit 1; }
   exec node "$s" --tool copilot-cli'
 ```
@@ -94,7 +94,10 @@ Run the local redeem helper **exactly as `provision_emit` instructs** — it ret
 ready-to-run `redeem_command` that locates the script itself. Prefer that verbatim.
 
 If you need to run it by hand, do **not** guess the path: the plugin lives under
-`~/.copilot/installed-plugins/<marketplace>/tokenscope-copilot/scripts/`. The
+`~/.copilot/installed-plugins/<marketplace>/tokenscope-copilot/scripts/` (a direct
+(path) install: `~/.copilot/installed-plugins/_direct/<folder>/scripts/`, counted only
+when that folder's `plugin.json` has the top-level `name` `tokenscope`, and only
+when there is no marketplace install). The
 MARKETPLACE segment varies by how the marketplace was added, so it is globbed; the
 plugin segment is the literal marketplace entry name, so it is NOT. Globbing it too
 would also match a different installed plugin that happens to ship a file of the same
@@ -103,7 +106,7 @@ name, and hand it your one-time handoff code as an argument. (There is no
 it may begin with `-`:
 
 ```bash
-sh -c 's=$(ls -d "$HOME"/.copilot/installed-plugins/*/tokenscope-copilot/scripts/copilot-redeem.mjs 2>/dev/null | sort -V | tail -n1);
+sh -c 's=$(ls -d "$HOME"/.copilot/installed-plugins/*/tokenscope-copilot/scripts/copilot-redeem.mjs 2>/dev/null | grep -v "/installed-plugins/_direct/" | sort -V | tail -n1); [ -n "$s" ] || s=$(for d in "$HOME"/.copilot/installed-plugins/_direct/*/; do [ -f "${d}scripts/copilot-redeem.mjs" ] && node -e "try{process.exit(JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).name===\"tokenscope\"?0:1)}catch(e){process.exit(1)}" "${d}plugin.json" 2>/dev/null && echo "${d}scripts/copilot-redeem.mjs"; done | sort -V | tail -n1);
   [ -n "$s" ] || { echo "copilot-redeem.mjs not found — is the tokenscope plugin installed?" >&2; exit 1; }
   exec node "$s" --handoff-code "$1"' tokenscope-redeem '<handoff_code>'
 ```

@@ -7,8 +7,10 @@
  * cache). Tests bypass OIDC + DB by injecting directly into that cache
  * via injectTestSession.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { consola } from 'consola'
 import { requireAuth, requireRole, requireRegionScope } from '../../../server/auth/rbac'
+import recordsGet from '../../../server/api/v1/admin/reconciliation/records.get'
 import { assertProjectScope } from '../../../server/auth/project-scope'
 import type { Session } from '../../../server/utils/auth'
 import { injectTestSession } from '../../helpers/auth'
@@ -212,5 +214,44 @@ describe('assertProjectScope — explicit allowlist, 403 default (CORE-3)', () =
         ),
       ).rejects.toMatchObject({ statusCode: 403 })
     }
+  })
+})
+
+describe('a denial writes one authz-denied log line', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  const denials = (spy: ReturnType<typeof vi.spyOn>) =>
+    spy.mock.calls.filter((c) => (c[1] as { event?: string } | undefined)?.event === 'authz-denied')
+
+  it('a developer calling an admin route gets 403 and one role-gate line naming them', async () => {
+    const warn = vi.spyOn(consola, 'warn').mockImplementation(() => {})
+    const ev = makeEvent(DEV) as unknown as Record<string, unknown>
+    ev.path = '/api/v1/admin/reconciliation/records'
+    await expect(recordsGet(ev as never)).rejects.toMatchObject({ statusCode: 403 })
+    const lines = denials(warn)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]![1]).toMatchObject({
+      teammateId: DEV.teammateId,
+      role: 'developer',
+      gate: 'role',
+      path: '/api/v1/admin/reconciliation/records',
+    })
+  })
+
+  it('a region admin outside their region gets 403 and one region-gate line', async () => {
+    const warn = vi.spyOn(consola, 'warn').mockImplementation(() => {})
+    const other = '9a1e0000-0000-4000-8000-0000000000f1'
+    await expect(
+      requireRegionScope(makeEvent(ADMIN) as unknown as Parameters<typeof requireRegionScope>[0], other),
+    ).rejects.toMatchObject({ statusCode: 403 })
+    const lines = denials(warn)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]![1]).toMatchObject({ teammateId: ADMIN.teammateId, gate: 'region', need: other })
+  })
+
+  it('an allowed call logs nothing', async () => {
+    const warn = vi.spyOn(consola, 'warn').mockImplementation(() => {})
+    await requireRole(makeEvent(ADMIN) as unknown as Parameters<typeof requireRole>[0], 'admin')
+    expect(denials(warn)).toHaveLength(0)
   })
 })

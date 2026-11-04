@@ -43,16 +43,11 @@ export const actualSpend = pgTable(
     chargebackExempt: boolean('chargeback_exempt').notNull().default(false),
     pulledAt: timestamp('pulled_at', { withTimezone: true }).notNull().defaultNow(),
     rawPayload: jsonb('raw_payload'),
-    // Historical-homing dimension snapshot (mig 0101, Workstream A §3.1
-    // "Historical homing uses source snapshots"). Nullable + independent of
-    // teammate's CURRENT placement: a writer stamps these at write/replay
-    // time (dimensionSource='ingest-snapshot') and NEVER updates them on a
-    // later re-poll of the same row, so a teammate reorg cannot move a
-    // historical day's homing. Migration 0101's one-time backfill of
-    // pre-existing rows labels them 'legacy-current-placement' instead (no
-    // point-in-time evidence exists for them). v_teammate_usage_daily's arm 1
-    // carries these through so v_complete_usage's third (ingest-only) union
-    // arm can home usage AS AT THE USAGE DATE rather than re-deriving it live.
+    // Recorded placement (mig 0101): stamped at write/replay time
+    // (dimensionSource='ingest-snapshot') and never updated on a re-poll;
+    // 0101's backfill labels older rows 'legacy-current-placement'. Reports do
+    // not read it — they group by the teammate's CURRENT placement through the
+    // current-lens views (mig 0162, docs/design/current-org-lens).
     regionId: uuid('region_id').references(() => region.id),
     orgUnitId: uuid('org_unit_id').references(() => orgUnit.id),
     costOwningUnitId: uuid('cost_owning_unit_id').references(() => orgUnit.id),

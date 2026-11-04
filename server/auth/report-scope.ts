@@ -34,7 +34,6 @@ import {
   effectiveReportGrants,
   regionScopeGrant,
   REPORT_ACCESS_PERMISSIONS,
-  REPORT_ACCESS_REVOKE,
   type ReportAccessPermission,
   type ReportScopeGrants,
 } from '../../shared/auth/report-visibility'
@@ -106,60 +105,6 @@ export async function resolveReportPermissions(
   return permissions
 }
 
-const REVOKED_CTX_KEY = '__tokenscope_report_access_revoked'
-
-/**
- * True iff this teammate holds an ACTIVE report-access REVOKE (mig 0130,
- * `permission = 'revoke-all'`). Memoised on the event alongside
- * {@link resolveReportPermissions}, and fail-closed the SAME way: a missing
- * table degrades to `false` (never throw, never a phantom revoke that would
- * strand a legitimate reader). DENY-WINS is applied in `effectiveReportGrants`,
- * never here — this function only reports the fact.
- */
-export async function resolveReportAccessRevoked(
-  event: H3Event,
-  tx: Tx,
-  teammateId: string,
-): Promise<boolean> {
-  if (!event.context) event.context = {} as H3Event['context']
-  const cached = event.context[REVOKED_CTX_KEY] as boolean | undefined
-  if (cached !== undefined) return cached
-
-  let revoked = false
-  const [present] = [
-    ...(await tx.execute<{ present: boolean }>(sql`
-      SELECT to_regclass('report_access_grant') IS NOT NULL AS present`)),
-  ]
-  if (present?.present) {
-    const [row] = [
-      ...(await tx.execute<{ revoked: boolean }>(sql`
-        SELECT EXISTS (
-          SELECT 1 FROM report_access_grant
-          WHERE teammate_id = ${teammateId}::uuid
-            AND permission = ${REPORT_ACCESS_REVOKE}
-            AND revoked_at IS NULL
-            AND (expires_at IS NULL OR expires_at > now())
-        ) AS revoked`)),
-    ]
-    revoked = row?.revoked === true
-  } else {
-    // The table is GONE. Per sg-L11 we degrade to the role baseline rather than
-    // stranding every reader — but with the full-access org-wide baseline that
-    // means any REVOKE that existed is silently not applied. A missing
-    // authorization table is a schema-integrity event, never a normal runtime
-    // path (the app never drops it), so make it LOUD and alertable rather than
-    // silent: whoever owns ops should see this and restore the schema. The
-    // deny's durability is otherwise a deployment-discipline property (mig 0130
-    // rollout notes), not something the read path can reconstruct from nothing.
-    consola.warn(
-      '[SECURITY-REPORT-ACCESS] report_access_grant table absent — report-access REVOKES are NOT being enforced this request; degrading to role baseline (sg-L11). Restore the schema.',
-    )
-  }
-
-  event.context[REVOKED_CTX_KEY] = revoked
-  return revoked
-}
-
 /**
  * True iff the caller holds an ACTIVE cost-centre ownership row (revoked_at IS NULL,
  * non-retired unit). Byte-identical to the meta.get.ts cou_owner check — a revoked /
@@ -184,8 +129,7 @@ export async function resolveReportGrants(
 ): Promise<ReportScopeGrants> {
   const ownsCostCentre = await computeOwnsCostCentre(tx, session.teammateId)
   const permissions = await resolveReportPermissions(event, tx, session.teammateId)
-  const revoked = await resolveReportAccessRevoked(event, tx, session.teammateId)
-  return effectiveReportGrants({ role: session.role, ownsCostCentre, permissions, revoked })
+  return effectiveReportGrants({ role: session.role, ownsCostCentre, permissions })
 }
 
 /**
@@ -265,8 +209,7 @@ export async function requireReportScope(
   const session = await requireAuth(event)
   const ownsCostCentre = await computeOwnsCostCentre(tx, session.teammateId)
   const permissions = await resolveReportPermissions(event, tx, session.teammateId)
-  const revoked = await resolveReportAccessRevoked(event, tx, session.teammateId)
-  const grants = effectiveReportGrants({ role: session.role, ownsCostCentre, permissions, revoked })
+  const grants = effectiveReportGrants({ role: session.role, ownsCostCentre, permissions })
 
   if (!scopePermitted(scope, grants, opts)) {
     if (isUnclampedRequest(scope, opts)) {

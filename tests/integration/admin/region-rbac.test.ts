@@ -233,6 +233,23 @@ describe('github/map region clamp — both ends (server-api-app:idor:0004 / T3-x
     expect(await boundTeammateId('octo-bound-b')).toBe(teammateOneBId)
   })
 
+  it('region-A admin binds a login SELF-linked by a region-B teammate → 403, no enterprise-lane row', async () => {
+    await t.db.insert(schema.teammateIdentityMap).values({
+      teammateId: teammateOneBId,
+      system: 'github',
+      identifier: 'octo-self-b',
+      identifierKind: 'username',
+      source: 'self',
+    })
+    await expect(
+      mapPost(ev({
+        session: adminASession(),
+        body: { enterpriseId: ghEnterpriseId, teammateId: teammateOneAId, login: 'octo-self-b' },
+      })),
+    ).rejects.toMatchObject({ statusCode: 403 })
+    expect(await boundTeammateId('octo-self-b')).toBeNull()
+  })
+
   it('platform-admin maps a login to a region-B teammate → succeeds (region-unbounded)', async () => {
     const res = (await mapPost(ev({
       session: orgWideSession(),

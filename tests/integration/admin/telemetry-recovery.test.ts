@@ -615,3 +615,32 @@ describe('status endpoint', () => {
     await expect(recoveryGet(ev({ method: 'GET', session: dev() }))).rejects.toMatchObject({ statusCode: 403 })
   })
 })
+
+// Current-org lens (§3.2): a region admin sees recoveries of devices whose teammate sits in
+// their region NOW, whatever region the attestation was stamped with.
+describe('status endpoint — region clamp follows the teammate', () => {
+  it('a recovery of a device stamped region A whose teammate moved to B is listed for B, not A', async () => {
+    const [rb] = await t.db.insert(schema.region).values({ code: 'tr-r-b', displayName: 'TR B' }).returning()
+    const [ob] = await t.db
+      .insert(schema.orgUnit)
+      .values({ regionId: rb!.id, path: 'tr_b.svc', code: 'tr-b-svc', displayName: 'Svc B', unitType: 'bu', isCostOwningUnit: true })
+      .returning()
+    const [mover] = await t.db.insert(schema.teammate).values({ entraOid: 'oid-tr-mover', email: 'tr-mover@x.test', role: 'developer', regionId: rb!.id, orgUnitId: ob!.id }).returning()
+    const [adminB] = await t.db.insert(schema.teammate).values({ entraOid: 'oid-tr-admin-b', email: 'tr-admin-b@x.test', role: 'admin', regionId: rb!.id, orgUnitId: ob!.id }).returning()
+    const instanceId = randomUUID()
+    await t.client.unsafe(`
+      INSERT INTO instance_attestation
+        (instance_id, principal_oid, principal_email, teammate_id, project_code_hash, raw_project_code,
+         tool, ts_start, last_bearer_at, attestation_state, region_id, org_unit_id, cost_owning_unit_id)
+      VALUES ('${instanceId}','oid-tr-mover','tr-mover@x.test','${mover!.id}','h-tr','TR',
+         'claude-code', NOW() - INTERVAL '60 days', NOW(), 'attested','${regionId}','${ouId}','${ouId}')`)
+    await t.client`INSERT INTO telemetry_recovery_request (kind, instance_ids, lookback_days, status)
+                   VALUES ('operator', ARRAY[${instanceId}::uuid], 7, 'succeeded')`
+
+    const asA = (await recoveryGet(ev({ method: 'GET', session: admin() }))) as { requests: unknown[] }
+    expect(asA.requests).toHaveLength(0)
+    const adminBSession: Session = { teammateId: adminB!.id, email: 'tr-admin-b@x.test', displayName: 'Admin B', role: 'admin', regionId: rb!.id, orgPath: 'tr_b.svc' }
+    const asB = (await recoveryGet(ev({ method: 'GET', session: adminBSession }))) as { requests: unknown[] }
+    expect(asB.requests).toHaveLength(1)
+  })
+})

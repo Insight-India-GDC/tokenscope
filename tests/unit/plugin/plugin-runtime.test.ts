@@ -18,6 +18,9 @@ import {
   runEmitHelper,
 } from '../../../plugin/scripts/plugin-runtime.mjs'
 
+// Windows (#430): skipped on win32 because this file expects the .sh helper; on win32 the helper is the .ps1.
+const POSIX_ONLY = process.platform === 'win32'
+
 let tmp: string
 const savedEnv = { ...process.env }
 
@@ -29,7 +32,7 @@ afterEach(() => {
   process.env = { ...savedEnv }
 })
 
-describe('resolveScriptsDir / resolveHelperPath', () => {
+describe.skipIf(POSIX_ONLY)('resolveScriptsDir / resolveHelperPath', () => {
   it('REFUSES a CLAUDE_PLUGIN_ROOT outside our own install', () => {
     process.env.CLAUDE_PLUGIN_ROOT = '/opt/plugin'
     // Confined: a CLAUDE_PLUGIN_ROOT outside our own install is refused and we
@@ -39,7 +42,7 @@ describe('resolveScriptsDir / resolveHelperPath', () => {
   })
 })
 
-describe('stateDir', () => {
+describe.skipIf(POSIX_ONLY)('stateDir', () => {
   // S1 hardening: TOKENSCOPE_STATE_DIR is resolved from process.env ONLY — a
   // PASSED `env` object (readEmitSentinel's argument, or any settings-derived
   // object) is IGNORED for this key, because nothing legitimately writes
@@ -82,7 +85,7 @@ describe('stateDir', () => {
   })
 })
 
-describe('readSettingsEnv', () => {
+describe.skipIf(POSIX_ONLY)('readSettingsEnv', () => {
   it('returns the env block from a settings file', () => {
     const p = join(tmp, 'settings.json')
     writeFileSync(p, JSON.stringify({ env: { A: '1' }, otelHeadersHelper: '/h.sh' }))
@@ -95,7 +98,7 @@ describe('readSettingsEnv', () => {
   })
 })
 
-describe('readEmitSentinel', () => {
+describe.skipIf(POSIX_ONLY)('readEmitSentinel', () => {
   // readEmitSentinel(env) resolves its dir via stateDir(env) — which (S1
   // hardening) reads TOKENSCOPE_STATE_DIR from process.env only, never from
   // the passed `env` object. Pin the dir via process.env here, matching how
@@ -150,7 +153,7 @@ describe('readEmitSentinel', () => {
   })
 })
 
-describe('runEmitHelper', () => {
+describe.skipIf(POSIX_ONLY)('runEmitHelper', () => {
   function stubHelper(body: string) {
     const dir = join(tmp, 'scripts')
     mkdirSync(dir, { recursive: true })

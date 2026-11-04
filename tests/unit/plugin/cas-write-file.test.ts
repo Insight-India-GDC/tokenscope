@@ -21,6 +21,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { casWriteFile } from '../../../plugin/scripts/plugin-runtime.mjs'
 
+// Windows (#430): skipped on win32 because this file asserts POSIX file mode 0600; Windows reports 0666.
+const POSIX_ONLY = process.platform === 'win32'
+
 let dir: string
 let target: string
 beforeEach(() => {
@@ -31,7 +34,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const temps = () => readdirSync(dir).filter((f) => f.includes('.tmp.'))
 
-describe('casWriteFile', () => {
+describe.skipIf(POSIX_ONLY)('casWriteFile', () => {
   it('writes when nothing else is competing', () => {
     writeFileSync(target, 'v1')
     expect(casWriteFile(target, () => 'v2')).toEqual({ changed: true })

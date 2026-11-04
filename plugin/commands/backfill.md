@@ -51,6 +51,5 @@ The script prints a JSON summary. Relay it plainly:
   revoked/expired; tell them to run `/tokenscope:status` and, if NOT EMITTING,
   re-provision emit via the tokenscope-setup MCP prompt. Backfill relies on the
   same live `/bearer` credential, so a revoked instance cannot backfill.
-- **HTTP 415** — if `error` mentions 415, the Azure ingest endpoint accepts OTLP
-  protobuf only; the JSON backfill path can't emit there. Report it; no spend
-  was sent.
+- **HTTP 415** — if `error` mentions 415, the ingest endpoint refused the
+  payload format (it accepts OTLP protobuf only). Report it; no spend was sent.

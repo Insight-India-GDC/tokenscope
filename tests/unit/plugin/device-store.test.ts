@@ -27,13 +27,16 @@ import {
   assertStoreConsistent,
 } from '../../../plugin/scripts/device-store.mjs'
 
+// Windows (#430): skipped on win32 because this file compares the store with the POSIX .sh helper, which Windows does not run.
+const POSIX_ONLY = process.platform === 'win32'
+
 let dir: string
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'ts-devstore-'))
 })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-describe('paths are per tool and never collide', () => {
+describe.skipIf(POSIX_ONLY)('paths are per tool and never collide', () => {
   it('names one store and one access cache per tool', () => {
     expect(deviceStorePath('claude-code', dir)).toBe(join(dir, 'config.claude-code.json'))
     expect(deviceStorePath('copilot-cli', dir)).toBe(join(dir, 'config.copilot-cli.json'))
@@ -55,7 +58,7 @@ describe('paths are per tool and never collide', () => {
   })
 })
 
-describe('resolveStorePath — own file first, legacy only as a bridge', () => {
+describe.skipIf(POSIX_ONLY)('resolveStorePath — own file first, legacy only as a bridge', () => {
   it('prefers this lane own file when both exist', () => {
     writeFileSync(legacyStorePath(dir), '{}')
     writeFileSync(deviceStorePath('claude-code', dir), '{}')
@@ -77,7 +80,7 @@ describe('resolveStorePath — own file first, legacy only as a bridge', () => {
   })
 })
 
-describe('correlation helpers', () => {
+describe.skipIf(POSIX_ONLY)('correlation helpers', () => {
   it('extracts the instance an endpoint addresses', () => {
     expect(bearerInstance('https://h/api/v1/instances/abc-123/bearer')).toBe('abc-123')
   })
@@ -138,7 +141,7 @@ describe('correlation helpers', () => {
   })
 })
 
-describe('assertStoreConsistent — the writer-side mirror of what the helper refuses', () => {
+describe.skipIf(POSIX_ONLY)('assertStoreConsistent — the writer-side mirror of what the helper refuses', () => {
   const ok = () => ({
     version: 2,
     tool: 'claude-code',

@@ -158,6 +158,16 @@ describe('fair rotation (mig 0149)', () => {
     expect(sel.capHit).toBe(3) // the flood alone exceeds the cap
     expect(sel.ids[0]).toBe(confirmed)
   })
+
+  it("one teammate's never-read churn does not displace another teammate's already-read device", async () => {
+    const churn = [70, 71, 72, 73, 74, 75].map(dev)
+    const other = dev(76)
+    await insertDevices(churn)
+    await insertDevices([other], { teammate: MATE_B, readAgo: '1 minute' })
+    const sel = await selectJoinableInstances(t.db, { limit: 3 })
+    expect(sel.capHit).toBe(3)
+    expect(sel.ids).toContain(other)
+  })
 })
 
 describe('watermark bound', () => {

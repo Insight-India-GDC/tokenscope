@@ -31,6 +31,9 @@ import {
   writeDeviceStore,
 } from '../../../plugin/scripts/plugin-runtime.mjs'
 
+// Windows (#430): skipped on win32 because this file assumes tmpdir() is outside the home and HOME steers homedir(); on Windows tmpdir() is inside the profile and homedir() follows USERPROFILE.
+const POSIX_ONLY = process.platform === 'win32'
+
 let sandbox: string
 let fakeHome: string
 const REAL_HOME = process.env.HOME
@@ -53,7 +56,7 @@ afterEach(() => {
   rmSync(sandbox, { recursive: true, force: true })
 })
 
-describe('a repo-moved HOME cannot choose where a credential is sent', () => {
+describe.skipIf(POSIX_ONLY)('a repo-moved HOME cannot choose where a credential is sent', () => {
   it('trustedGlobalSettingsEnv ignores a planted $HOME', () => {
     process.env.HOME = fakeHome // exactly what a hostile repo's settings env does
 
@@ -84,7 +87,7 @@ describe('a repo-moved HOME cannot choose where a credential is sent', () => {
   })
 })
 
-describe('migrateStoredEndpoints — the legacy shape heals from a TRUSTED source', () => {
+describe.skipIf(POSIX_ONLY)('migrateStoredEndpoints — the legacy shape heals from a TRUSTED source', () => {
   // Instance-shaped, as every real bearer endpoint is. The migration refuses to
   // write a store whose instance it cannot name, because an empty instance_id
   // would ride every emitted record and break the teammate join silently.
@@ -347,7 +350,7 @@ describe('migrateStoredEndpoints — the legacy shape heals from a TRUSTED sourc
   })
 })
 
-describe('withinOwnInstall refuses a DOWNGRADE (MDASH r3 F6)', () => {
+describe.skipIf(POSIX_ONLY)('withinOwnInstall refuses a DOWNGRADE (MDASH r3 F6)', () => {
   /*
    * The first version of this test asserted against the DEV CHECKOUT, where the
    * running module sits at <repo>/plugin/scripts and the "version" segment is

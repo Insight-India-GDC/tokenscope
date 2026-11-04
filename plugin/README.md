@@ -188,6 +188,37 @@ claude plugin install tokenscope@tokenscope
 ```
 
 From a local checkout you can instead `claude plugin marketplace add .`.
+A plugin installed that way runs from the checkout itself, so setup writes the
+checkout's path into `settings.json`. Once you switch back to a normal install,
+the next session start moves it to the installed copy. On a host whose
+`~/.claude` is shared with containers, the checkout path must exist inside the
+containers too (mount the checkout at the same path), or test from the
+marketplace instead.
+
+### One `~/.claude` shared with containers
+
+Some setups share one `~/.claude` between a host and its containers (dev
+containers, launchers that bind-mount the host's `~/.claude`). Each side then
+sees the plugin under its own home, for example `/home/you/.claude/...` on the
+host and `/home/claude/.claude/...` in a container, while `settings.json` can
+hold only one path for the telemetry helper.
+
+TokenScope does not rewrite a path that the other side wrote (it used to, and
+each side's sessions then broke the other's). Each side notes itself in
+`tokenscope-sides.json` next to `settings.json` when a session starts; a side
+not seen for two weeks (a home that was renamed, say) is forgotten, and its old
+paths are repaired as usual. Instead, a session on the side
+the path does not suit says so when it starts: "...shared with another computer
+or container... this session's usage is NOT being sent". To fix it, make both
+paths valid on both sides, then restart Claude Code:
+
+- on the host, link the container's folder to yours, for example
+  `sudo ln -s /home/you/.claude /home/claude/.claude` (create `/home/claude`
+  first, and only if that path is free: not when `/home/claude` is a real
+  account's home);
+- in each container, link or mount the host's path to the same folder, for
+  example mount the host's `~/.claude` at both `/home/claude/.claude` and
+  `/home/you/.claude`.
 
 ## Point the plugins at your deployment
 
@@ -319,17 +350,19 @@ you pick one, and it:
 
 - writes a committable `./.tokenscope` (`project.code: <code>`, preserving any
   existing fields) so the tag travels with the repo, then
-- writes the **repo-local** `./.claude/settings.local.json` (mode 0600 on POSIX) with the
-  `otelHeadersHelper` path and ONE env key, `OTEL_RESOURCE_ATTRIBUTES`:
+- writes the **repo-local** `./.claude/settings.local.json` (mode 0600 on POSIX) with
+  ONE env key, `OTEL_RESOURCE_ATTRIBUTES`:
   `tokenscope.instance_id=<DEVICE_SID>,project.code_hash=<sha256(code)>,tool=claude-code`.
-  Claude Code merges the `env` blocks **per key**, so every other key (exporter,
-  endpoints, credentials, and anything else you keep there) applies from your
-  user settings and is never copied into the repo. If that file is tracked by
-  git, nothing is written and the session start says so.
+  Claude Code merges the `env` blocks **per key**, so the helper, exporter,
+  endpoints and credentials apply from your install's own settings and are never
+  copied into the repo; any other key you keep in that file is left alone. If that
+  file is tracked by git, nothing is written and the session start says so.
 
-The device session id and helper path are restated from the global config on
-**every** `claude` launch in that repo, which is what lets a plugin upgrade or
-re-enrol reach every tagged repo automatically.
+The tag is checked on **every** `claude` launch in that repo. Its instance id is
+kept while another Claude install on this computer (the CLI, Claude Desktop) is
+enrolled with it against the same TokenScope server, so installs sharing a repo
+do not rewrite it in turn; any other instance (after a re-enrol, or one enrolled
+with a different server) is replaced.
 Commit the `.tokenscope`; teammates who clone it just run the `project` prompt
 with no project (or let the SessionStart hook auto-apply it). Restart `claude`
 in the repo — OTel resource attrs are read at startup, so the **next** session
@@ -358,6 +391,45 @@ pm: "Alex Example"
 
 The `project` prompt + the SessionStart hook use `project.code` (the canonical
 code) to compute the hash. `id` / `name` are informational.
+
+## Session activity (`/tokenscope:activity`)
+
+A session's **activity** says what the work was (research, development,
+testing, ...). Set it from inside the session:
+
+```
+/tokenscope:activity research     # tag this session
+/tokenscope:activity              # list the suggestions and pick one
+/tokenscope:activity clear        # remove this session's own tag
+```
+
+The command tags the session it runs in: no session id to find or paste. The
+last choice wins, and it re-tags the usage the session has already recorded.
+`clear` removes the session's own tag: usage already recorded keeps no
+activity, and new usage gets the folder default, if the folder has one.
+In Copilot CLI the `activity` skill does the same for the session that last
+sent usage from the folder.
+
+**A default for a folder.** To tag every new session started in a folder, add
+it to that folder's `.claude/settings.local.json` (the personal file Claude
+Code keeps out of git; never the shared `.claude/settings.json` or
+`.tokenscope`):
+
+```json
+{ "tokenscope": { "activity": "research" } }
+```
+
+- It applies from the next session.
+- TokenScope keeps it only when it is one of your region's activity types.
+  Anything else (a client or bid name, say) is not stored in TokenScope's
+  usage records. It is still sent with the session's telemetry, so put only an
+  activity name here.
+- A tag set with the command, the tag prompt or the web Tag dialog always wins
+  over it.
+
+The status line shows the project and activity after its health label, for
+example `TokenScope ✓ landed · HBR-2041 · Research #c3f1a2e0`, and
+`/tokenscope:status` says where each came from.
 
 ## Zero-touch tagging (SessionStart hook)
 
@@ -409,8 +481,9 @@ Claude-specific surface.
 
 ## What this plugin does NOT do
 
-- Block Claude — TokenScope never enforces. Over-budget yields an off-channel
-  notification (Teams / email), not a hard stop.
+- Block Claude — TokenScope never enforces. Going over budget raises an item in
+  your TokenScope inbox (in the web app), not a hard stop. TokenScope does not
+  send Teams messages or email.
 - Send your project name to any AI coach — the project name/code is not
   emitted; the hash is a stable identifier, not a secret.
 - The durable OAuth emit **refresh token** lives in `~/.claude/settings.json` on

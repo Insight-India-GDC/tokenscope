@@ -3,11 +3,11 @@
  * (admin-region-lifecycle).
  *
  * platform-admin ONLY. A hard DELETE is only permitted when the region is
- * EMPTY — no org_unit, teammate, or project references it. Those tables FK
- * onto region.id, so deleting a referenced region would either fail at the
- * constraint or (worse) orphan attributed spend. We refuse with a 409 that
- * names the counts so the operator knows exactly what to reassign/remove
- * first. Unlike org_unit (soft-retire via retired_at), region has no
+ * EMPTY: no teammate, project or other row references it, and its only units
+ * are the two every region gets (the parentless `default` root and the
+ * `__UNPLACED__` holding node), which are deleted with it. Otherwise we refuse
+ * with a 409 that names the counts so the operator knows exactly what to
+ * reassign/remove first. Unlike org_unit (soft-retire via retired_at), region has no
  * retire path — it's either empty-and-deletable or it stays.
  */
 import { defineEventHandler, createError, getRequestIP, getHeader } from 'h3'
@@ -18,6 +18,8 @@ import { withRequestRls } from '../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../db/audit'
 import { requireUuidParam } from '../../../../utils/require-uuid-param'
 import { translatePgConstraintError } from '../../../../utils/pg-constraint-error'
+import { pgErrorTable } from '../../../../db/pg-error'
+import { UNPLACED_UNIT_CODE } from '../../../../../shared/placement/holding-nodes'
 
 export default defineEventHandler(async (event) => {
   const caller = await requireRole(event, 'platform-admin')
@@ -66,16 +68,23 @@ export default defineEventHandler(async (event) => {
       instance_attestations: string
       region_rules: string
       region_leaders: string
+      allocations: string
     }>(sql`
       SELECT
-        (SELECT COUNT(*) FROM org_unit WHERE region_id = ${regionId}::uuid)::text AS org_units,
+        (SELECT COUNT(*) FROM org_unit WHERE region_id = ${regionId}::uuid
+           AND NOT (code = ${UNPLACED_UNIT_CODE} OR (code = 'default' AND parent_id IS NULL)))::text AS org_units,
         (SELECT COUNT(*) FROM teammate WHERE region_id = ${regionId}::uuid)::text AS teammates,
         (SELECT COUNT(*) FROM project WHERE region_id = ${regionId}::uuid)::text AS projects,
         (SELECT COUNT(*) FROM activity_type WHERE region_id = ${regionId}::uuid)::text AS activity_types,
         (SELECT COUNT(*) FROM attribution_record WHERE region_id = ${regionId}::uuid)::text AS attribution_records,
         (SELECT COUNT(*) FROM instance_attestation WHERE region_id = ${regionId}::uuid)::text AS instance_attestations,
         (SELECT COUNT(*) FROM directory_region_rule WHERE region_id = ${regionId}::uuid)::text AS region_rules,
-        (SELECT COUNT(*) FROM region_leader WHERE region_id = ${regionId}::uuid)::text AS region_leaders
+        (SELECT COUNT(*) FROM region_leader WHERE region_id = ${regionId}::uuid)::text AS region_leaders,
+        -- allocation.scope_id has no FK (it is polymorphic), so no constraint
+        -- would stop the delete orphaning a budget on the region or its units.
+        (SELECT COUNT(*) FROM allocation
+          WHERE (scope_type = 'region' AND scope_id = ${regionId}::uuid)
+             OR (scope_type = 'cou' AND scope_id IN (SELECT id FROM org_unit WHERE region_id = ${regionId}::uuid)))::text AS allocations
     `)
     const c = [...counts][0]!
     const orgUnits = Number(c.org_units)
@@ -86,6 +95,7 @@ export default defineEventHandler(async (event) => {
     const instanceAttestations = Number(c.instance_attestations)
     const regionRules = Number(c.region_rules)
     const regionLeaders = Number(c.region_leaders)
+    const allocations = Number(c.allocations)
     const total =
       orgUnits +
       teammates +
@@ -94,7 +104,8 @@ export default defineEventHandler(async (event) => {
       attributionRecords +
       instanceAttestations +
       regionRules +
-      regionLeaders
+      regionLeaders +
+      allocations
 
     if (total > 0) {
       throw createError({
@@ -108,7 +119,7 @@ export default defineEventHandler(async (event) => {
             `Region has ${orgUnits} org units, ${teammates} teammates, ${projects} projects, ` +
             `${activityTypes} activity types, ${attributionRecords} attribution records, ` +
             `${instanceAttestations} instances, ${regionRules} region rules, ` +
-            `${regionLeaders} region leaders — reassign or remove them first.`,
+            `${regionLeaders} region leaders, ${allocations} budgets — reassign or remove them first.`,
         },
       })
     }
@@ -117,14 +128,21 @@ export default defineEventHandler(async (event) => {
     // emptiness counts above and this DELETE. The NO-ACTION FKs then
     // reject the delete with 23503 — translate to the same clean 409 the
     // pre-check gives (the projects/[id].delete house pattern).
+    // The region's own two units go first, children before the root. No FK onto
+    // org_unit cascades, so anything still pointing at either one fails with
+    // 23503 and gets the same 409.
     try {
+      await tx.execute(sql`DELETE FROM org_unit WHERE region_id = ${regionId}::uuid AND parent_id IS NOT NULL`)
+      await tx.execute(sql`DELETE FROM org_unit WHERE region_id = ${regionId}::uuid`)
       await tx.execute(sql`DELETE FROM region WHERE id = ${regionId}::uuid`)
     } catch (err: unknown) {
+      // Name the table that still points here: the counts above cover the common
+      // references, not every FK (rate cards, provider orgs, …).
+      const table = pgErrorTable(err)
       translatePgConstraintError(err, {
         '23503': {
-          title: 'Region gained references concurrently',
-          detail:
-            'A row referencing this region was created while deleting. Reassign or remove it first, then retry.',
+          title: 'Region is still referenced',
+          detail: `${table ? `A ${table} row` : 'Something'} still points at this region or one of its own units. Reassign or remove it first, then retry.`,
         },
       })
     }

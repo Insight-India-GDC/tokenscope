@@ -86,7 +86,7 @@ async function saveLifecycle() {
             max="168"
             :disabled="!isOrgWide"
             data-testid="admin-settings-lifecycle-grace"
-            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none disabled:bg-calm-1 disabled:text-carbon-3"
+            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony disabled:bg-calm-1 disabled:text-carbon-3"
           >
         </div>
         <div>
@@ -101,7 +101,7 @@ async function saveLifecycle() {
             max="90"
             :disabled="!isOrgWide"
             data-testid="admin-settings-lifecycle-warn"
-            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none disabled:bg-calm-1 disabled:text-carbon-3"
+            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony disabled:bg-calm-1 disabled:text-carbon-3"
           >
         </div>
         <p v-if="lifecycleError" class="text-xs text-rag-red" role="alert">{{ lifecycleError }}</p>

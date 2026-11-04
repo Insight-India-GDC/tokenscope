@@ -75,7 +75,7 @@ case "$*" in
   *assert-runtime-rls-safe.ts*)
     echo "STUB-GATE-RAN"
     exit "\${STUB_GATE_RC:-0}" ;;
-  *index.mjs*)             echo "STUB-SERVER-STARTED"; exit 0 ;;
+  *index.mjs*)             echo "STUB-SERVER-STARTED owner-url=\${DATABASE_URL:-unset}"; exit 0 ;;
   *)                       exit 0 ;;
 esac
 `
@@ -291,6 +291,18 @@ describe('entrypoint.sh and the RLS cutover sweep exit code', () => {
       r.out.indexOf('STUB-GATE-RAN'),
       'the gate is pointless after the server has already bound',
     ).toBeLessThan(r.out.indexOf('STUB-SERVER-STARTED'))
+  })
+
+  it('once bound to the app role, the server starts WITHOUT the owner DATABASE_URL in its environment', async () => {
+    const r = await runEntrypoint({ TOKENSCOPE_APP_DATABASE_URL: 'postgresql://stub/app' })
+    expect(r.code, r.out).toBe(0)
+    expect(r.out).toContain('STUB-SERVER-STARTED owner-url=unset')
+  })
+
+  it('not bound to the app role, the server keeps DATABASE_URL — it is the runtime credential', async () => {
+    const r = await runEntrypoint({})
+    expect(r.code, r.out).toBe(0)
+    expect(r.out).toContain('STUB-SERVER-STARTED owner-url=postgresql://stub/stub')
   })
 
   it('a REFUSING gate ABORTS the boot — the server must never start unsafely bound', async () => {

@@ -130,3 +130,27 @@ describe('BulkPlaceDialog — partial success', () => {
     expect(placed![0]![0]).toMatchObject({ placed: 2, noop: 1, unitName: 'A Core' })
   })
 })
+
+describe('BulkPlaceDialog — no history controls', () => {
+  it('offers no history option at any batch size, and still submits a plain placement', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ placed: 60, noop: 0, failed: 0, results: [] })
+    vi.stubGlobal('$fetch', fetchMock)
+    const ids = Array.from({ length: 60 }, (_, i) => `id-${i}`)
+
+    const wrapper = mountDialog(ids)
+    expect(wrapper.find('[data-testid="bulk-place-move-history"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="bulk-place-history-capped"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toMatch(/stays where it is|future usage only/)
+
+    await wrapper.find('[data-testid="bulk-place-target"]').setValue('u-core')
+    expect(wrapper.find('[data-testid="bulk-place-explainer"]').text()).toContain('A Core')
+    await wrapper.find('[data-testid="bulk-place-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/admin/users/bulk-place',
+      expect.objectContaining({ body: { teammate_ids: ids, org_unit_id: 'u-core' } }),
+    )
+    expect(wrapper.emitted('placed')![0]![0]).not.toHaveProperty('historyRepaired')
+  })
+})

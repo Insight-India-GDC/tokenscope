@@ -47,13 +47,14 @@
  * `systemMessage` is shown to the developer; `additionalContext` goes to the
  * model). No credential/token material is ever written to stdout or stderr.
  */
-import { existsSync, realpathSync, readFileSync, rmSync, chmodSync } from 'node:fs'
+import { existsSync, realpathSync, readFileSync, rmSync, chmodSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from '../scripts/is-main.mjs'
-import { resolveRepoProjectCode, computeCodeHash, readGlobalEnrolment, writeRepoTag, resolveRepoRoot } from '../scripts/tag-repo.mjs'
-import { reconcilePluginPaths, parseHelperCommand } from '../scripts/env-builder.mjs'
+import { resolveRepoProjectCode, computeCodeHash, readGlobalEnrolment, writeRepoTag, resolveRepoRoot, readRepoTaggedHash, repoTagCarriesActivity } from '../scripts/tag-repo.mjs'
+import { readFolderActivity } from '../scripts/tokenscope-project.mjs'
+import { reconcilePluginPaths, parseHelperCommand, sharedHomeEquivalent } from '../scripts/env-builder.mjs'
 import { assertConfinedPath } from '../scripts/argv-guard.mjs'
 import { claudeSettingsPath } from '../scripts/claude-config-dir.mjs'
 import {
@@ -73,11 +74,15 @@ import {
   readSettingsFilesList,
   readIsolatedSettingsFiles,
   trustedStateDir,
+  claudeInstallStateDir,
+  storeHoldsEnrolment,
 } from '../scripts/plugin-runtime.mjs'
 import { refreshLanded } from '../scripts/landed-check.mjs'
 import { checkRepoProjectBillable } from '../scripts/project-check.mjs'
+import { readHookInput, reportSessionInstance } from '../scripts/session-report.mjs'
 import { enrollIfNeeded } from '../scripts/enroll.mjs'
 import { assertSafeEndpoint, isLoopbackHostname } from '../scripts/endpoint-guard.mjs'
+import { configuredServerUrl } from '../scripts/api-base.mjs'
 
 // This hook always runs at the ACTIVE plugin version (its command uses
 // ${CLAUDE_PLUGIN_ROOT}), so its own dir locates the active scripts.
@@ -261,8 +266,8 @@ function repoClaims(cwd, key) {
  * file named either one. Returns the keys it reset (empty when none was claimed).
  *
  * WHY THIS IS NOT COVERED BY `hookStateDir` OR `safeProcessEnv`. Claude Code
- * applies the repo-local `env` block by REPLACEMENT (`tag-repo.mjs:236-240`), so
- * a repository can set ANY variable in the environment a hook inherits — not
+ * merges the repo-local `env` block per key with the repo value winning, so a
+ * repository can set ANY variable in the environment a hook inherits — not
  * only the `TOKENSCOPE_*` / `OTEL_*` keys `REPO_UNTRUSTED_ENV_KEYS` enumerates.
  * `HOME` is the one that matters most, because `os.homedir()` trusts it and
  * `globalSettingsEnv()` resolves `~/.claude/settings.json` through it. A repo
@@ -421,9 +426,8 @@ export function neutraliseRepoExecEnv(cwd = process.cwd()) {
  * (plugin-runtime.mjs) — that is right for a genuine process-level pin (a shell
  * export, a container/deployment config, a test sandbox). But a hook inherits
  * the environment Claude Code assembled from the merged settings, and the
- * repo-local block is the highest-precedence half of that merge (applied by
- * REPLACEMENT — the fact `tag-repo.mjs:236-240` builds the whole self-contained
- * repo env copy around), so that one variable can also be repo-supplied. The
+ * repo-local block is the highest-precedence half of that merge (per key, the
+ * repo value winning), so that one variable can also be repo-supplied. The
  * state dir is where `otel-headers-helper.sh` caches the freshly minted emit
  * ACCESS TOKEN (`oauth-access.<tool>.json`) — credential-bearing, so a repository must not
  * get to choose it.
@@ -518,6 +522,8 @@ export function selfHealPluginPaths({
 } = {}) {
   const tool = 'claude-code'
   const recordFor = (dir) => (sd) => readHelperRecord(tool, sd ?? dir, sd)
+  // #447: record this side of a possibly shared Claude folder, and learn the others.
+  const otherSides = claudeOtherSides({ settingsPath, scriptsDir })
   const statuslineTarget = join(scriptsDir, 'statusline.mjs')
   // `onlyStateDir`: rebuild only a helper that names exactly this --state-dir.
   const heal = (path, onlyStateDir = undefined) => {
@@ -545,6 +551,7 @@ export function selfHealPluginPaths({
         // A value with no --state-dir runs with the default one, which is
         // where the emit-only redeem put its helper snapshot.
         defaultStateDir: storeDir,
+        otherSides,
       })
       helper = next.otelHeadersHelper
       if (!changed) return null
@@ -590,6 +597,60 @@ export function selfHealPluginPaths({
 }
 
 /**
+ * Remove the durable refresh token from the global settings env once the store
+ * the emit helper reads (its --state-dir, else `storeDir`) holds the enrolment
+ * that file names. The helper adopts that store whole and never reads the
+ * settings copy, while every process Claude Code spawns inherits it. Left alone
+ * when the store is absent, incomplete or names another instance. Returns
+ * whether it removed the key.
+ */
+export function dropSettingsRefreshToken({
+  settingsPath = claudeSettingsPath({ home: homedir() }), // homedir-ok: the file Claude Code reads; main() repaired HOME first (hookStateDir)
+  storeDir = trustedStateDir(),
+} = {}) {
+  if (!existsSync(settingsPath)) return false
+  const result = casWriteFile(settingsPath, (raw) => {
+    if (raw === null) return null
+    let settings
+    try {
+      settings = JSON.parse(raw)
+    } catch {
+      return null // unparseable — never clobber
+    }
+    const env = settings?.env
+    if (!env || typeof env !== 'object' || !Object.hasOwn(env, 'TOKENSCOPE_OAUTH_REFRESH_TOKEN')) return null
+    const helperDir = parseHelperCommand(settings.otelHeadersHelper)?.stateDir ?? storeDir
+    if (!storeHoldsEnrolment('claude-code', env.TOKENSCOPE_BEARER_ENDPOINT, helperDir)) return null
+    delete env.TOKENSCOPE_OAUTH_REFRESH_TOKEN
+    return `${JSON.stringify(settings, null, 2)}
+`
+  })
+  return result.changed === true
+}
+
+/**
+ * #475: what the repo tag should carry, given the `.tokenscope` hash (or null):
+ * `{ codeHash, activity }`, or null when there is nothing to write.
+ *   - the folder's default activity (readFolderActivity) rides along;
+ *   - a project tag already in the file with no `.tokenscope` behind it (an older
+ *     plugin's, or one written for an explicit code) is KEPT: adding a default
+ *     activity must not untag the repo. Only a well-formed hash is carried;
+ *   - a file that still carries an activity removed from the folder setting is
+ *     rewritten without it.
+ * Exported for tests.
+ */
+export function repoTagPlan(root, codeHash) {
+  const activity = root ? readFolderActivity(root) : null
+  let hash = codeHash
+  if (!hash && root) {
+    const kept = readRepoTaggedHash(root)
+    if (kept && /^[0-9a-f]{64}$/.test(kept)) hash = kept
+  }
+  if (!hash && !activity && !(root && repoTagCarriesActivity(root))) return null
+  return { codeHash: hash, activity }
+}
+
+/**
  * Job 1: reconcile the repo-local tag from the current global enrolment.
  *
  * Returns writeRepoTag's `{ settingsPath, changed, healed, instanceDrifted }`, or
@@ -602,35 +663,40 @@ function selfHealRepoTag() {
   const enrolment = readGlobalEnrolment()
   if (!enrolment) return // device not enrolled — nothing to do
 
-  let resolved
+  let codeHash = null
   try {
-    resolved = resolveRepoProjectCode({ arg: '', cwd }) // .tokenscope only in hook context
+    const resolved = resolveRepoProjectCode({ arg: '', cwd }) // .tokenscope only in hook context
+    if (resolved.source === 'tokenscope') codeHash = computeCodeHash(resolved.code)
   } catch {
-    return // no .tokenscope / no project.code — leave untagged
+    /* no .tokenscope / no project.code: untagged, unless the folder names an activity */
   }
-  if (resolved.source !== 'tokenscope') return
-
-  const codeHash = computeCodeHash(resolved.code)
+  // #475: the folder's default activity rides the same attrs; it applies from the
+  // NEXT session, since this one's attrs froze at startup.
+  const plan = repoTagPlan(resolveRepoRoot(cwd), codeHash)
+  if (!plan) return
+  ;({ codeHash } = plan)
+  const { activity } = plan
   // SELF-HEAL (ADR-0006): always re-derive from the CURRENT global enrolment.
   // writeRepoTag is change-detecting, so a true no-op leaves the file untouched.
   // The result is RETURNED, not discarded: when it reports `instanceDrifted` this
   // very session is emitting under the superseded instance (see the job-1 note at
   // the top of this file — resource attrs froze at startup, before this write), and
   // main() turns that into the one warning that tells the developer to relaunch.
-  return writeRepoTag({ cwd, enrolment, codeHash })
+  return writeRepoTag({ cwd, enrolment, codeHash, activity })
 }
 
 /**
- * PURE: the warning shown when the repo tag we just reconciled had pinned a
- * DIFFERENT instance than the device's current enrolment.
+ * PURE: the warning shown when the repo tag we just reconciled had pinned an
+ * instance writeRepoTag did not keep (it keeps one another local install on the
+ * same deployment holds, so that is never reported).
  *
- * THE INVARIANT: a session whose repo pin named a different instance than the
- * device's current enrolment is misattributing for its whole life, and must be
- * told so. Job 1 above can only fix the FILE (resource attrs froze at startup),
- * so the running session's only remedy is a relaunch.
+ * THE INVARIANT: a session whose repo pin named a superseded instance is
+ * misattributing for its whole life, and must be told so. Job 1 above can only
+ * fix the FILE (resource attrs froze at startup), so the running session's only
+ * remedy is a relaunch.
  *
- * Deliberately NOT gated on `healed`: that is also true for a helper-path move,
- * which does not change which instance records land against.
+ * Deliberately NOT gated on `healed`: that is also true when a copied key is
+ * removed, which does not change which instance records land against.
  *
  * Full incident timeline (2026-09-01 dogfood) in ADR-0006 decision 3 — kept there
  * rather than restated here, so the two cannot drift apart.
@@ -708,11 +774,14 @@ function emissionHealthWarning() {
   // OTEL_RESOURCE_ATTRIBUTES overlaid (repoAwareEnv / repoTagEnv — S1 fix 1).
   const env = repoAwareEnv(cwd)
   const endpoint = (env.TOKENSCOPE_BEARER_ENDPOINT ?? '').trim()
-  const hasOAuth = Boolean(
-    (env.TOKENSCOPE_OAUTH_REFRESH_TOKEN ?? '').trim() &&
-      (env.TOKENSCOPE_OAUTH_TOKEN_ENDPOINT ?? '').trim() &&
-      (env.TOKENSCOPE_OAUTH_CLIENT_ID ?? '').trim(),
-  )
+  // The refresh token lives in the device store; an older redeem left it in settings.
+  const hasOAuth =
+    storeHoldsEnrolment('claude-code', endpoint, dir) ||
+    Boolean(
+      (env.TOKENSCOPE_OAUTH_REFRESH_TOKEN ?? '').trim() &&
+        (env.TOKENSCOPE_OAUTH_TOKEN_ENDPOINT ?? '').trim() &&
+        (env.TOKENSCOPE_OAUTH_CLIENT_ID ?? '').trim(),
+    )
   if (!endpoint || !hasOAuth) return null // not enrolled — don't nag
 
   // Run the REAL emit path once (bounded). We do NOT short-circuit on a
@@ -764,6 +833,114 @@ function emissionHealthWarning() {
   const http = sentinelHttp(readEmitSentinel(env, dir)) // where the helper was pinned to write it
   if (http && http !== 0) return warnFor(http)
   return null
+}
+
+/**
+ * A warning when the plugin's `server_url` option is not https off-box, or null.
+ * Claude Code builds the MCP URL from it verbatim (.mcp.json), so a plaintext
+ * value sends the MCP OAuth bearer in the clear. A warning, not a refusal: the
+ * user chose the value, and loopback http is a local server.
+ */
+export function insecureServerUrlWarning(serverUrl = configuredServerUrl()) {
+  if (!serverUrl) return null
+  let url
+  try {
+    url = new URL(serverUrl)
+  } catch {
+    return `⚠ TokenScope: the plugin's server_url (${serverUrl}) is not a valid URL. Set it to your TokenScope https:// address in /plugin.`
+  }
+  if (url.protocol === 'https:') return null
+  if (url.protocol === 'http:' && isLoopbackHostname(url.hostname)) return null
+  return `⚠ TokenScope: the plugin's server_url (${url.origin}) is not https, so Claude Code talks to TokenScope unencrypted. Set it to the https:// address in /plugin.`
+}
+
+const SIDES_FILE = 'tokenscope-sides.json'
+const SIDE_FRESH_MS = 14 * 24 * 60 * 60 * 1000
+
+/** The config folder a plugin path sits under (everything before `/plugins/`), or null. */
+function configPrefix(p) {
+  const m = typeof p === 'string' && /^(.*?)[\\/]plugins[\\/](?:cache|marketplaces)[\\/]/.exec(`${p}/`)
+  return m ? m[1] : null
+}
+
+/**
+ * #447: which OTHER sides of a shared Claude folder are still running. Every
+ * SessionStart records the config folder it sees the plugin under (for example
+ * /home/u/.claude on the host, /home/claude/.claude in a container) in
+ * `tokenscope-sides.json` beside the settings file; a side seen in the last 14
+ * days that is not this one is another side. A home that was renamed stops
+ * being seen, so its stale paths get repaired again (sharedHomeEquivalent).
+ * Records this side unless `record` is false; best-effort, never throws.
+ */
+export function claudeOtherSides({
+  settingsPath = claudeSettingsPath({ home: homedir() }), // homedir-ok: the file Claude Code reads; main() repaired HOME first (hookStateDir)
+  scriptsDir = resolve(HOOK_DIR, '..', 'scripts'),
+  now = Date.now(),
+  record = true,
+} = {}) {
+  const file = join(dirname(settingsPath), SIDES_FILE)
+  let sides = {}
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'))
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) sides = parsed
+  } catch {
+    /* none yet */
+  }
+  const own = configPrefix(scriptsDir)
+  if (record && own && existsSync(dirname(settingsPath))) {
+    const seen = Date.parse(sides[own] ?? '')
+    // Once a day is enough: the window is two weeks, and this keeps the file still.
+    if (!(seen > now - 24 * 60 * 60 * 1000)) {
+      const fresh = Object.fromEntries(
+        Object.entries(sides).filter(([, t]) => Date.parse(t) > now - SIDE_FRESH_MS),
+      )
+      fresh[own] = new Date(now).toISOString()
+      try {
+        writeFileSync(file, `${JSON.stringify(fresh, null, 2)}\n`, { mode: 0o600 })
+        sides = fresh
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+  return Object.entries(sides)
+    .filter(([side, t]) => side !== own && Date.parse(t) > now - SIDE_FRESH_MS)
+    .map(([side]) => side)
+}
+
+/**
+ * #447: the settings file is shared with another side (a host and its
+ * containers) that sees the plugin under another home, and the helper path it
+ * holds was written there. The self-heal leaves it (rewriting it broke the other
+ * side), so say plainly that THIS side is not sending usage and how to fix it.
+ * Pure over its inputs + exported for tests; null when nothing is wrong.
+ */
+export function sharedHomeHelperWarning({
+  settingsPath = claudeSettingsPath({ home: homedir() }), // homedir-ok: the file Claude Code reads; main() repaired HOME first (hookStateDir)
+  scriptsDir = resolve(HOOK_DIR, '..', 'scripts'),
+  exists = existsSync,
+  otherSides = claudeOtherSides({ settingsPath, scriptsDir, record: false }),
+} = {}) {
+  let settings
+  try {
+    settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
+  } catch {
+    return null
+  }
+  const script = parseHelperCommand(settings?.otelHeadersHelper)?.script
+  if (!script || exists(script)) return null
+  const here = sharedHomeEquivalent(script, scriptsDir, exists, otherSides)
+  if (!here) return null
+  // The config folder each side sees: everything before `/plugins/`.
+  const configOf = (p) => p.split(/[\\/]plugins[\\/]/)[0]
+  const ours = configOf(here)
+  const other = configOf(script)
+  return (
+    `⚠ TokenScope: ${settingsPath} is shared with another computer or container that sees this Claude folder as ${other}, ` +
+    `and its telemetry helper points there, so this session's usage is NOT being sent. ` +
+    `TokenScope leaves the path alone (changing it would stop the other side instead). ` +
+    `Make ${other} lead to ${ours} on this side too (a link or a mount), then restart Claude Code. See the plugin README, "One ~/.claude shared with containers".`
+  )
 }
 
 /**
@@ -887,6 +1064,13 @@ export function migrateOffForwarderEndpoint({
 }
 
 async function main() {
+  // Claude Code writes the hook's JSON (session_id, source, ...) to stdin at
+  // spawn and closes it. Read it to the end BEFORE the work below: several jobs
+  // block the event loop (the emit helper runs synchronously), and the read's
+  // timeout would then fire before the pipe's data is handled, losing the
+  // session id the report needs. Bounded at one second when nothing is written.
+  const hookInput = await readHookInput().catch(() => null)
+
   // FIRST: neutralise a repo-supplied TOKENSCOPE_STATE_DIR — and a repo-supplied
   // HOME — on this process's env, before anything resolves a state dir or opens
   // the global settings file. The jobs below reach modules that call
@@ -906,8 +1090,14 @@ async function main() {
     // Legacy enrolments stored a credential but no endpoint; copy the endpoints
     // across from the device's OWN settings so the helper's refuse-to-pair rule
     // never becomes an outage. Trusted source only — see migrateStoredEndpoints.
-    migrateStoredEndpoints()
+    migrateStoredEndpoints(claudeInstallStateDir())
     selfHealPluginPaths()
+  } catch {
+    /* fail-open */
+  }
+  try {
+    // After the migration above: it may be what puts the credential in the store.
+    dropSettingsRefreshToken()
   } catch {
     /* fail-open */
   }
@@ -967,6 +1157,20 @@ async function main() {
   if (forwarderWarning) lines.push(forwarderWarning)
 
   try {
+    const w = sharedHomeHelperWarning()
+    if (w) lines.push(w)
+  } catch {
+    /* fail-open: never warn on our own error */
+  }
+
+  try {
+    const w = insecureServerUrlWarning()
+    if (w) lines.push(w)
+  } catch {
+    /* fail-open: never warn on our own error */
+  }
+
+  try {
     const w = emissionHealthWarning() // also runs the emit helper → refreshes the token
     if (w) lines.push(w)
   } catch {
@@ -983,8 +1187,17 @@ async function main() {
     const env = repoAwareEnv(cwd)
     const hasBearer = Boolean((env.TOKENSCOPE_BEARER_ENDPOINT ?? '').trim())
     const [, projectResult] = await Promise.all([
-      hasBearer ? refreshLanded({ env }).catch(() => null) : Promise.resolve(null),
+      // This install's own attrs: the repo tag may name another local install's
+      // instance, and the cache would then label this /health answer with it.
+      hasBearer ? refreshLanded({ env: globalSettingsEnv() }).catch(() => null) : Promise.resolve(null),
       hasBearer ? checkRepoProjectBillable({ env, cwd }).catch(() => null) : Promise.resolve(null),
+      // #494: "this session runs on THIS install", from this install's own
+      // settings and credential. Every session, tagged repo or not: the record's
+      // instance was fixed before this hook ran, from a file another install may
+      // have written, and the server ignores a report that changes nothing.
+      hasBearer
+        ? reportSessionInstance({ sessionId: hookInput?.session_id, env: globalSettingsEnv() }).catch(() => null)
+        : Promise.resolve(null),
     ])
     projectWarning = projectBillabilityWarning(projectResult)
   } catch {

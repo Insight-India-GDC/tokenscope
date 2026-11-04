@@ -87,7 +87,7 @@ export default defineEventHandler(async (event) => {
           type: 'https://tokenscope.example.com/errors/forbidden',
           title: 'Forbidden',
           status: 403,
-          detail: 'An unmapped provider org (no region) is estate-wide; only platform-admin may write it.',
+          detail: 'An unmapped provider org (no region) is estate-wide; only an Admin may write it.',
         },
       })
     }

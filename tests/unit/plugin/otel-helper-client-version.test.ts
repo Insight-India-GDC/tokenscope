@@ -18,6 +18,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+// Windows (#430): skipped on win32 because this file drives the POSIX .sh helper, which Windows does not run; the PowerShell twin is covered by otel-helper-conformance, claude-redeem-ps1 and status-ps1.
+const POSIX_ONLY = process.platform === 'win32'
+
 const REAL_HELPER = resolve(__dirname, '../../../plugin/scripts/otel-headers-helper.sh')
 const REAL_PLUGIN_JSON = resolve(__dirname, '../../../plugin/.claude-plugin/plugin.json')
 const REAL_COPILOT_PLUGIN_JSON = resolve(__dirname, '../../../copilot-plugin/plugin.json')
@@ -133,7 +136,7 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(tmp, { recursive: true, force: true }))
 
-describe('otel-headers-helper — client version headers', () => {
+describe.skipIf(POSIX_ONLY)('otel-headers-helper — client version headers', () => {
   it('sends the plugin version read from the plugin.json beside it', () => {
     // Anchored on $0, not on an env var: it must report the version of the code
     // that ACTUALLY ran. Those diverge exactly when a stale pinned helper path is
@@ -286,7 +289,7 @@ function runHelperTool(tool: 'claude-code' | 'copilot-cli', env: Record<string, 
   })
 }
 
-describe('otel-headers-helper — client platform + surface headers (#412)', () => {
+describe.skipIf(POSIX_ONLY)('otel-headers-helper — client platform + surface headers (#412)', () => {
   it.each([
     ['Linux', 'x86_64', 'linux-x64'],
     ['Linux', 'aarch64', 'linux-arm64'],
@@ -359,7 +362,7 @@ describe('otel-headers-helper — client platform + surface headers (#412)', () 
   })
 })
 
-describe('the SHIPPED plugins report a real version', () => {
+describe.skipIf(POSIX_ONLY)('the SHIPPED plugins report a real version', () => {
   it('plugin/.claude-plugin/plugin.json carries a version the helper will actually send', () => {
     // The tests above use a synthetic manifest. This pins the real one: a
     // malformed or missing version there would ship a fleet that silently reports

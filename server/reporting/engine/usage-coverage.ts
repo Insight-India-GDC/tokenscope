@@ -55,9 +55,9 @@ const num = (v: unknown): number => Number(v ?? 0)
  * and named the whole region above one manager's subtree. Pass `null` ONLY when the
  * clamp genuinely resolves to no scope at all (see UsageBudgetCoverage.scopeLabel).
  *
- * The lane is aliased `u` and clamps must address `u.region_id` / `u.org_unit_id`
+ * The lane is aliased `u` and clamps must address `u.`-qualified columns (`u.teammate_id`, `u.cost_owning_unit_id`)
  * — the same contract `fetchDailyMetrics` has with its callers, and not cosmetic:
- * the query LEFT JOINs a second relation, so an unqualified `region_id` in a
+ * the query LEFT JOINs a second relation, so an unqualified column in a
  * caller's predicate would be ambiguous rather than merely untidy.
  *
  * PROVISIONAL IDENTITY IS INCLUDED, deliberately. The project-spend seam offers
@@ -66,9 +66,9 @@ const num = (v: unknown): number => Number(v ?? 0)
  * every row. This qualifies THAT headline, so it must count the same rows — an
  * exclusion here would make the parts stop footing to the total they sit beside.
  *
- * BUDGETED = an allocation of kind `baseline` or `top-up`, on the PROJECT axis,
- * carrying a non-zero amount, whose effective range OVERLAPS the window (`&&`)
- * rather than containing a single instant. Each of those four clauses is load-bearing:
+ * BUDGETED = a POOL allocation (see below) of kind `baseline` or `top-up`, on the
+ * PROJECT axis, carrying a non-zero amount, whose effective range OVERLAPS the window
+ * (`&&`) rather than containing a single instant. Each of those clauses is load-bearing:
  *
  *   - `scope_type = 'project'` — `allocation.scope_id` is a bare uuid with no FK, and
  *     the same table holds region/platform/teammate-scoped rows. Without the clamp a
@@ -97,30 +97,22 @@ const num = (v: unknown): number => Number(v ?? 0)
  * without it, its spend would be counted three times and the parts would over-foot
  * the total.
  *
- * A PER-DEVELOPER CAP COUNTS, and `teammate_id` is deliberately unfiltered. Under
- * `allocation_mode = 'per_dev_fixed'` a project's budget IS the set of per-dev caps
- * — modelled (mig 0008) as project-scoped rows carrying a `teammate_id`, the pool
- * baseline being the same shape with `teammate_id` NULL. Adding `teammate_id IS
- * NULL` here would report a per-dev-funded project as unbudgeted, which is the
- * error the `allocation_kind` clause above already avoids for top-ups.
+ * POOL ROWS ONLY (`teammate_id IS NULL`). A per-developer cap (mig 0008: a
+ * project-scoped row carrying a `teammate_id`) is one member's share of the pool it
+ * sits under, not a budget of its own. The split writes caps over the pool's exact
+ * period and keeps sum(caps) within the pool, a pool period edit moves them with it,
+ * and budget-request approval raises the cap with the pool's period. So any project
+ * with a cap over $0 in the window has a pool row that already answers the question;
+ * counting caps would only add a stranded cap with no pool behind it, which is not a
+ * budget. It is the same filter the project budget figure uses
+ * (fetchProjectAllocations in server/usage/consumption.ts).
  *
- * What that does NOT claim: coverage is measured at PROJECT grain, and a per-dev
- * cap is at (project, teammate) grain. Spend by a developer who has no cap of their
- * own on a per_dev_fixed project still lands in the covered bucket. That is the
- * same grain the pool case already has — a $1 baseline marks a $50k project
- * budgeted — because the predicate is "had a budget for it", a membership test, not
- * "was within budget", an adequacy one. Adequacy is the budget-alert surface's
- * question, not this one's.
- *
- * In practice the per-dev rows change nothing: their only writer
- * (`allocations/{id}/split.post.ts`) requires an existing pool baseline on the same
- * project, stamps each cap with that pool's exact `effective`, and rejects
- * sum(caps) > pool budget — so a cap over $0 cannot exist without a pool row that
- * already satisfies this predicate, and DISTINCT makes the overlap free. That is a
- * write-path property and not an invariant: `allocations/{id}.patch.ts` will edit
- * any single row's amount or range afterwards without re-checking the relation. So
- * the clause is justified above on its own terms rather than on the redundancy, and
- * tests/integration/reports/usage-budget-coverage.test.ts pins both halves.
+ * What that does NOT claim: coverage is measured at PROJECT grain. Spend by a
+ * developer who has no cap of their own on a per_dev_fixed project lands in the
+ * covered bucket, because the predicate is "had a budget for it", a membership
+ * test, not "was within budget", an adequacy one. Adequacy is the budget-alert
+ * surface's question, not this one's. tests/integration/reports/usage-budget-
+ * coverage.test.ts pins the stranded-cap case.
  */
 export async function fetchUsageBudgetCoverage(
   tx: Tx,
@@ -140,6 +132,7 @@ export async function fetchUsageBudgetCoverage(
         SELECT DISTINCT al.scope_id AS project_id
           FROM allocation al
          WHERE al.scope_type = 'project'
+           AND al.teammate_id IS NULL
            AND al.allocation_kind IN ('baseline', 'top-up')
            AND al.budget_usd > 0
            AND al.effective && tstzrange(${window.startIso}::timestamptz, ${window.endIso}::timestamptz, '[)')
@@ -156,7 +149,7 @@ export async function fetchUsageBudgetCoverage(
                WHERE u.project_id IS NULL AND u.usage_provenance <> 'provider-usage'), 0)::text AS untagged,
              COALESCE(SUM(u.cost_usd) FILTER (
                WHERE u.project_id IS NULL AND u.usage_provenance = 'provider-usage'), 0)::text AS untaggable
-        FROM usage_rollup_daily u
+        FROM v_usage_rollup_current u
         LEFT JOIN budgeted_project bp ON bp.project_id = u.project_id
        WHERE ${scopeSql(scope)}
          AND u.day >= ${window.startIso.slice(0, 10)}::date

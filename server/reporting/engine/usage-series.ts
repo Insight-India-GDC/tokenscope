@@ -48,7 +48,7 @@ export async function fetchUsageWeeklyLanes(
   const rows = await tx.execute<{ week_start: string; tool: string | null; usd: string }>(sql`
     SELECT date_trunc('week', day::timestamp)::date::text AS week_start, tool,
            COALESCE(SUM(cost_usd), 0)::text AS usd
-    FROM usage_rollup_daily
+    FROM v_usage_rollup_current
     WHERE ${scopeSql(scope)}
       AND day >= ${window.startIso.slice(0, 10)}::date AND day < ${window.endIso.slice(0, 10)}::date
     GROUP BY 1, tool
@@ -105,9 +105,9 @@ export async function fetchUsageWeeklyLanes(
  * SQL and the browser alike — which is also what makes a deterministic "today"
  * testable at all.
  *
- * The lane is aliased `u` and clamps must address `u.region_id` /
- * `u.org_unit_id`. That is not cosmetic: the regional caller's predicate is
- * built by `scope.usageScope('u.region_id', 'u.org_unit_id')`, so the alias
+ * The lane is aliased `u` and clamps must address `u.`-qualified
+ * columns. That is not cosmetic: the regional caller's predicate is
+ * built by `scope.usageScope('u.teammate_id')`, so the alias
  * here is part of this function's contract with its callers.
  */
 export async function fetchDailyMetrics(
@@ -136,7 +136,7 @@ export async function fetchDailyMetrics(
              u.teammate_id,
              SUM(u.cost_usd) AS genuine,
              SUM(u.tokens) AS tokens
-      FROM usage_rollup_daily u
+      FROM v_usage_rollup_current u
       WHERE ${scopeSql(scope)}
         AND u.day >= ${startDate}::date
         AND u.day <  ${endDate}::date

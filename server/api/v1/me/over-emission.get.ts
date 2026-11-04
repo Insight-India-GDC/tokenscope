@@ -70,7 +70,7 @@ export default defineEventHandler(async (event) => {
         AND (ar.ts_event AT TIME ZONE 'UTC')::date = ANY(${sql`ARRAY[${sql.join(days.map((d) => sql`${d}::date`), sql`, `)}]`})
         AND NOT EXISTS (
           SELECT 1 FROM session_quarantine sq
-          WHERE sq.teammate_id = ar.teammate_id AND sq.conversation_id = ar.claude_session_id
+          WHERE sq.teammate_id = ar.teammate_id AND sq.conversation_id = COALESCE(ar.claude_session_id, ar.instance_id::text)
             AND sq.resolved_at IS NULL AND sq.reason = 'api-uncorroborated')
       GROUP BY (ar.ts_event AT TIME ZONE 'UTC')::date, ar.tool, COALESCE(ar.claude_session_id, ar.instance_id::text)
       ORDER BY SUM(ar.cost_usd) DESC

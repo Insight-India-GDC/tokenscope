@@ -13,9 +13,10 @@
  * 401/403s a non-admin's API calls; the page just hides itself.
  */
 
-import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { computed, ref } from 'vue'
 import { consola } from 'consola'
 import AdminPageSkeleton from '../../../components/admin/AdminPageSkeleton.vue'
+import { useModalA11y } from '../../../composables/useModalA11y'
 definePageMeta({ layout: 'admin', middleware: 'admin' })
 
 interface RegionRow {
@@ -47,8 +48,7 @@ const regions = computed(() => data.value?.regions ?? [])
 const skeleton = computed(() => !fetchError.value && data.value == null)
 
 // ── Create dialog ─────────────────────────────────────────────────────
-// a11y modelled on TagSessionDialog: role=dialog + aria-modal +
-// aria-labelledby, Escape closes, first field focused on open, focus trap.
+// role=dialog + aria-modal + aria-labelledby; keyboard handling is useModalA11y.
 const open = ref(false)
 const code = ref('')
 const displayName = ref('')
@@ -57,32 +57,6 @@ const error = ref<string | null>(null)
 const firstField = ref<HTMLInputElement | null>(null)
 const dialogEl = ref<HTMLElement | null>(null)
 const titleId = 'region-create-title'
-let lastFocused: HTMLElement | null = null
-
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
-    closeDialog()
-    return
-  }
-  if (e.key === 'Tab' && dialogEl.value) {
-    const focusable = Array.from(
-      dialogEl.value.querySelectorAll<HTMLElement>(
-        'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
-      ),
-    ).filter((el) => el.offsetParent !== null)
-    if (focusable.length === 0) return
-    const first = focusable[0]!
-    const last = focusable[focusable.length - 1]!
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault()
-      last.focus()
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault()
-      first.focus()
-    }
-  }
-}
-
 function openDialog() {
   code.value = ''
   displayName.value = ''
@@ -94,27 +68,14 @@ function closeDialog() {
   open.value = false
 }
 
-watch(
-  open,
-  async (isOpen) => {
-    // DOM-only (listeners + focus). The immediate watch fires during SSR
-    // setup where `document` is undefined — skip on the server. The dialog
-    // only ever opens via a client click, so nothing is lost by deferring.
-    if (!import.meta.client) return
-    if (isOpen) {
-      lastFocused = (document.activeElement as HTMLElement) ?? null // restore on close
-      document.addEventListener('keydown', onKeydown)
-      await nextTick()
-      firstField.value?.focus()
-    } else {
-      document.removeEventListener('keydown', onKeydown)
-      lastFocused?.focus()
-      lastFocused = null
-    }
-  },
-  { immediate: true },
-)
-onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
+// The shared dialog contract: Escape closes, Tab is trapped in the dialog,
+// the first field is focused on open and focus returns on close.
+useModalA11y({
+  isOpen: () => open.value,
+  dialogEl,
+  firstField,
+  onClose: closeDialog,
+})
 
 async function createRegion() {
   saving.value = true
@@ -145,7 +106,7 @@ async function createRegion() {
 
     <div class="mb-4 flex items-center justify-between gap-3">
       <p v-if="!isPlatformAdmin" class="text-xs text-carbon-3">
-        Only a platform admin can add regions.
+        Only an Admin can add regions.
       </p>
       <span v-else />
       <UiButton
@@ -236,7 +197,7 @@ async function createRegion() {
             ref="firstField"
             v-model="code"
             placeholder="e.g. apac, emea"
-            class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white font-mono focus:border-brand-harmony focus:outline-none"
+            class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white font-mono focus:border-brand-harmony"
             data-testid="region-create-code"
           >
 
@@ -245,7 +206,7 @@ async function createRegion() {
             id="region-create-name"
             v-model="displayName"
             placeholder="e.g. Asia-Pacific"
-            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
             data-testid="region-create-name"
             @keyup.enter="createRegion"
           >

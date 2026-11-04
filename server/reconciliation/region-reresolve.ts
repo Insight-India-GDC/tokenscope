@@ -290,16 +290,16 @@ export async function runRegionReresolve(db: Db, opts: ReresolveOpts): Promise<R
       if (derivationError !== null) throw derivationError
       const derived = der!
 
-      if (derived.via !== 'unit' && derived.via !== 'unit-rule') {
-        // No unit route for this person. NOT a de-placement: a region-scoped
-        // re-resolve only ever adds a cost-centre home, never removes one.
-        result.unresolved += 1
+      if (derived.regionId && derived.regionId !== opts.regionId) {
+        // Derived into another region (a unit, or region-only): a cross-region
+        // change this caller may not make.
+        result.outOfRegion += 1
         continue
       }
-      if (derived.regionId !== opts.regionId) {
-        // Their reporting line genuinely belongs to another region's cost centre.
-        // Moving them there is a cross-region change this caller may not make.
-        result.outOfRegion += 1
+      if (derived.via !== 'unit' && derived.via !== 'unit-rule') {
+        // No unit route for this person. NOT a de-placement: a region-scoped
+        // re-resolve only ever adds a Business Unit home, never removes one.
+        result.unresolved += 1
         continue
       }
       if (derived.orgUnitId === row.org_unit_id) {

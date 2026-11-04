@@ -148,7 +148,7 @@ defineEmits<{ toggle: [], 'toggle-runs': [] }>()
              worker's empty list is itself the confirmation that it never ran. -->
         <button
           type="button"
-          class="text-[11px] font-bold text-brand-vision hover:underline whitespace-nowrap cursor-pointer"
+          class="text-[11px] font-bold text-brand-vision-ink hover:underline whitespace-nowrap cursor-pointer"
           :aria-expanded="runsOpen"
           data-testid="worker-runs-toggle"
           @click="$emit('toggle-runs')"

@@ -8,7 +8,7 @@
  *   X-Internal-Timestamp: unix seconds (string)
  *
  * Verification rules:
- *   1. Timestamp within +/- 300 seconds of server clock (replay window)
+ *   1. Timestamp within +/- 60 seconds of server clock (replay window)
  *   2. Signature constant-time-equal to expected
  *
  * Key source:
@@ -25,7 +25,9 @@ import type { H3Event } from 'h3'
 import { createError, getHeader, readRawBody } from 'h3'
 import { requireStrongEnvKey } from './key-strength'
 
-const REPLAY_WINDOW_SECONDS = 300
+// The signer (scripts/cron-trigger.mjs) signs at send time and the jobs share
+// Azure's clock with the app, so a minute is ample.
+const REPLAY_WINDOW_SECONDS = 60
 
 let cachedKey: Buffer | null = null
 

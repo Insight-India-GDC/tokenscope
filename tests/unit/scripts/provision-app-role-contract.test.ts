@@ -614,8 +614,10 @@ describe('the provisioning budget fits inside the container start probe', () => 
    */
   it('migrate.ts really is unbounded, and the script says so instead of claiming a guarantee', () => {
     const migrate = readFileSync(resolve(ROOT, 'drizzle/migrate.ts'), 'utf8')
+    // A sleep between lock-timeout retries is not a deadline; a race against a
+    // timer or a statement_timeout would be.
     expect(migrate, 'if migrations ever get a bound, the header here has to be rewritten').not.toMatch(
-      /statement_timeout|setTimeout|BUDGET/,
+      /statement_timeout|Promise\.race|BUDGET/,
     )
     expect(
       script,

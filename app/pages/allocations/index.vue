@@ -6,6 +6,10 @@
  * (deferred — single-row form is Epic 9 polish). For Epic 8 the list
  * surface + create-CTA placeholder satisfy the verifiable end state.
  */
+import { computed } from 'vue'
+import { isOrgWideRole } from '#shared/auth/roles'
+import { apiErrorDetail, isConfirmedRejection } from '../../composables/useApiError'
+
 interface AllocRow {
   id: string
   scope_type: string
@@ -17,23 +21,37 @@ interface AllocRow {
   project_display_name: string | null
 }
 
-const { data } = useFetch<{ allocations: AllocRow[] }>('/api/v1/allocations', {
+const { data, error, refresh } = useFetch<{ allocations: AllocRow[] }>('/api/v1/allocations', {
   default: () => ({ allocations: [] }),
 })
 
-// Org-wide roles see every region's projects here (the /admin/region tabs are
-// region-scoped) — label the scope so the two views don't look contradictory.
+/*
+ * Empty, refused and failed are three answers. `default` fills `data` with an
+ * empty list even when the read failed, so the error is checked first: a 403
+ * must never read as "No allocations yet". Refused = the server answered with a
+ * 4xx and a reason (isConfirmedRejection); anything else is a failure, and then
+ * we cannot know what the list holds.
+ */
+const loadState = computed<'refused' | 'failed' | null>(() => {
+  if (!error.value) return null
+  return isConfirmedRejection(error.value) ? 'refused' : 'failed'
+})
+const refusedForbidden = computed(
+  () => (error.value as { statusCode?: number } | null)?.statusCode === 403,
+)
+const refusedDetail = computed(() => apiErrorDetail(error.value, 'none').replace(/\.$/, ''))
+
+// Label the scope so this list and the region-scoped /admin tabs don't look
+// contradictory. Per the live allocation-scope predicate
+// (server/auth/allocation-scope.ts): only platform-admin is unbounded; a Region
+// admin sees every project in THEIR OWN region; a manager sees their part of
+// the org.
 const { session } = useSession()
-// Org-wide (unbounded) roles per the live allocation-scope predicate
-// (server/auth/allocation-scope.ts: app.user_role IN ('admin','global-finops'),
-// + platform-admin super-admin). Only managers are clamped to their org subtree,
-// so only they see a region-scoped slice. Mislabelling admin as region-scoped
-// re-creates the contradiction this note exists to dispel.
 const scopeNote = computed(() => {
   const r = session.value?.role
-  return r === 'admin' || r === 'platform-admin'
-    ? 'Showing projects across all regions (org-wide).'
-    : "Showing the projects in your part of the org."
+  if (isOrgWideRole(r)) return 'Showing projects across all regions (org-wide).'
+  if (r === 'admin') return 'Showing every project in your region.'
+  return 'Showing the projects in your part of the org.'
 })
 
 // Money cells use the shared guarded formatter from ~/composables/useFormat
@@ -68,13 +86,37 @@ const scopeNote = computed(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-if="(data?.allocations.length ?? 0) === 0">
+          <tr v-if="loadState === 'refused'" data-testid="allocations-refused">
+            <td colspan="5" class="p-10 text-center text-sm">
+              <div class="font-bold text-carbon">
+                {{ refusedForbidden ? "You don't have access to project budgets." : 'The server refused to list project budgets.' }}
+              </div>
+              <div class="text-carbon-3 mt-1">
+                <template v-if="refusedForbidden">
+                  Project budgets are for managers and admins. This is not an empty list: budgets may exist that you can't see.
+                </template>
+                <template v-else>Reason given: {{ refusedDetail }}.</template>
+              </div>
+            </td>
+          </tr>
+          <tr v-else-if="loadState === 'failed'" data-testid="allocations-failed">
+            <td colspan="5" class="p-10 text-center text-sm">
+              <div class="font-bold text-carbon">Project budgets didn't load.</div>
+              <div class="text-carbon-3 mt-1">
+                We couldn't get an answer from the server, so we can't tell which budgets exist.
+              </div>
+              <UiButton class="mt-3" kind="secondary" size="sm" data-testid="allocations-retry" @click="refresh()">
+                Try again
+              </UiButton>
+            </td>
+          </tr>
+          <tr v-else-if="(data?.allocations.length ?? 0) === 0" data-testid="allocations-empty">
             <td colspan="5" class="p-10 text-center text-carbon-3 text-sm">
-              No allocations yet — create one to begin governing.
+              No project budgets in your scope yet.
             </td>
           </tr>
           <tr
-            v-for="r in data?.allocations ?? []"
+            v-for="r in loadState ? [] : (data?.allocations ?? [])"
             :key="r.id"
             class="border-b border-calm-2 last:border-b-0 hover:bg-brand-harmony-sheer/40"
           >

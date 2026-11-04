@@ -86,44 +86,32 @@ export interface AttributionGapResult {
   alertsDispatched: number
   skippedExisting: number
   autoResolved: number
+  /** The dispatch cap when more instances were gapped than it alerts on, else null. */
+  capHit: number | null
   instances: AttributionGapInstance[]
 }
 
-/**
- * Instances that are demonstrably alive (recent bearer mint) but whose
- * attribution has fallen days behind. Exported so the admin surface and the
- * worker share ONE predicate — an operator-facing list that disagreed with the
- * alerting predicate would be worse than no list.
- *
- * `regionId` MUST default to null/omitted, never be narrowed unconditionally:
- * the worker (runAttributionGap) calls this with no regionId at all, and
- * anything that forced a region here would re-create the exact
- * silent-attribution outage this detector exists to catch — see the header.
- * The admin diagnostics route is the only caller that ever passes one, and
- * only for a region-scoped `admin` session.
+/*
+ * Most gapped instances one tick alerts on. Bounds the dispatch only: resolution
+ * runs against the unbounded predicate, so an instance past the cap is never
+ * marked recovered while it is still gapped.
  */
-export async function findAttributionGaps(
-  // Deliberately schema-agnostic: this runs raw SQL only, and it must be
-  // callable BOTH from the worker (typed schema) and from the admin diagnostics
-  // route (RLS-scoped connection, generic schema) — the two sharing one
-  // predicate is the point.
-  db: AnyDb,
-  opts: { gapHours?: number; liveHours?: number; limit?: number; regionId?: string | null } = {},
-): Promise<AttributionGapInstance[]> {
-  const gapHours = Number.isFinite(opts.gapHours) && (opts.gapHours as number) > 0 ? (opts.gapHours as number) : DEFAULT_GAP_HOURS
-  const liveHours = Number.isFinite(opts.liveHours) && (opts.liveHours as number) > 0 ? (opts.liveHours as number) : DEFAULT_LIVE_HOURS
-  const limit = Number.isFinite(opts.limit) && (opts.limit as number) > 0 ? (opts.limit as number) : 200
-  const regionId = opts.regionId ?? null
-  const regionClause = regionId ? sql`AND sa.region_id = ${regionId}::uuid` : sql``
+const DEFAULT_LIMIT = 200
 
-  const rows = await db.execute<{
-    instance_id: string
-    teammate_id: string | null
-    email: string | null
-    last_bearer_at: string
-    last_attributed_at: string | null
-    gap_hours: string
-  }>(sql`
+interface GapOpts { gapHours?: number; liveHours?: number; limit?: number; regionId?: string | null }
+
+function positiveOr(v: number | undefined, fallback: number): number {
+  return Number.isFinite(v) && (v as number) > 0 ? (v as number) : fallback
+}
+
+/** The gap predicate itself, unordered and unbounded. Every caller shares it. */
+function gapSelect(opts: GapOpts) {
+  const gapHours = positiveOr(opts.gapHours, DEFAULT_GAP_HOURS)
+  const liveHours = positiveOr(opts.liveHours, DEFAULT_LIVE_HOURS)
+  const regionId = opts.regionId ?? null
+  // The teammate's CURRENT region, not the attestation's stamp (current-org-lens §3.2).
+  const regionClause = regionId ? sql`AND t.region_id = ${regionId}::uuid` : sql``
+  return sql`
     SELECT sa.instance_id::text                                    AS instance_id,
            sa.teammate_id::text                                    AS teammate_id,
            t.email                                                 AS email,
@@ -152,6 +140,41 @@ export async function findAttributionGaps(
      -- shape) — a never-attributed instance is not distinguishable here from one
      -- that has simply never spent.
     HAVING sa.last_bearer_at - MAX(ar.ts_event) > (${gapHours} * INTERVAL '1 hour')
+  `
+}
+
+/**
+ * Instances that are demonstrably alive (recent bearer mint) but whose
+ * attribution has fallen days behind, widest gap first, at most `limit`.
+ * Exported so the admin surface and the worker share ONE predicate — an
+ * operator-facing list that disagreed with the alerting predicate would be
+ * worse than no list.
+ *
+ * `regionId` MUST default to null/omitted, never be narrowed unconditionally:
+ * the worker (runAttributionGap) calls this with no regionId at all, and
+ * anything that forced a region here would re-create the exact
+ * silent-attribution outage this detector exists to catch — see the header.
+ * The admin diagnostics route is the only caller that ever passes one, and
+ * only for a region-scoped `admin` session.
+ */
+export async function findAttributionGaps(
+  // Deliberately schema-agnostic: this runs raw SQL only, and it must be
+  // callable BOTH from the worker (typed schema) and from the admin diagnostics
+  // route (RLS-scoped connection, generic schema) — the two sharing one
+  // predicate is the point.
+  db: AnyDb,
+  opts: GapOpts = {},
+): Promise<AttributionGapInstance[]> {
+  const limit = positiveOr(opts.limit, DEFAULT_LIMIT)
+  const rows = await db.execute<{
+    instance_id: string
+    teammate_id: string | null
+    email: string | null
+    last_bearer_at: string
+    last_attributed_at: string | null
+    gap_hours: string
+  }>(sql`
+    ${gapSelect(opts)}
      ORDER BY sa.last_bearer_at - MAX(ar.ts_event) DESC
      LIMIT ${limit}
   `)
@@ -172,28 +195,33 @@ export async function findAttributionGaps(
  */
 export async function runAttributionGap(
   db: PostgresJsDatabase<typeof schema>,
-  opts: { gapHours?: number; liveHours?: number; now?: Date } = {},
+  opts: { gapHours?: number; liveHours?: number; limit?: number; now?: Date } = {},
 ): Promise<AttributionGapResult> {
   const now = opts.now ?? new Date()
-  const instances = await findAttributionGaps(db, opts)
-  const affected = new Set(instances.map((i) => i.instanceId))
+  const limit = positiveOr(opts.limit, DEFAULT_LIMIT)
+  // Over-fetch by one to tell "exactly at the cap" from "truncated by it".
+  const fetched = await findAttributionGaps(db, { ...opts, limit: limit + 1 })
+  const capHit = fetched.length > limit ? limit : null
+  const instances = capHit === null ? fetched : fetched.slice(0, limit)
+  if (capHit !== null) {
+    console.warn(
+      `[attribution-gap] gapped-instance cap hit (${limit}); only the ${limit} widest gaps were alerted this tick.`,
+    )
+  }
 
   // ── Auto-resolve first ────────────────────────────────────────────────────
   // Any open signal for an instance NOT in the current gap set has recovered:
   // either the joiner caught up or the instance went idle. Done before
   // dispatching so a recovered-then-relapsed instance gets a fresh episode.
-  // Exclusion built as an explicit NOT IN list (sql.join), not `<> ALL($1::uuid[])`:
-  // a JS array does not bind as a Postgres array in that position through drizzle.
-  const stillAffected = [...affected]
-  const notAffected = stillAffected.length
-    ? sql`AND instance_id NOT IN (${sql.join(stillAffected.map((id) => sql`${id}::uuid`), sql`, `)})`
-    : sql``
+  // Resolved against the UNBOUNDED predicate, never the capped dispatch list:
+  // an instance past the cap is still gapped.
+  const stillGapped = sql`(SELECT g.instance_id::uuid FROM (${gapSelect(opts)}) g)`
   const resolvedHealth = await db.execute<{ id: string }>(sql`
     UPDATE instance_attestation_health
        SET resolved_at = ${now.toISOString()}::timestamptz
      WHERE status = ${ATTRIBUTION_GAP}
        AND resolved_at IS NULL
-       ${notAffected}
+       AND instance_id NOT IN ${stillGapped}
     RETURNING id::text AS id
   `)
   const resolvedInbox = await db.execute<{ id: string }>(sql`
@@ -202,7 +230,7 @@ export async function runAttributionGap(
      WHERE category = ${ATTRIBUTION_GAP}
        AND related_entity_kind = 'instance'
        AND ack_state IN ('unread', 'read', 'acknowledged')
-       ${stillAffected.length ? sql`AND related_entity_id NOT IN (${sql.join(stillAffected.map((id) => sql`${id}::uuid`), sql`, `)})` : sql``}
+       AND related_entity_id NOT IN ${stillGapped}
     RETURNING id::text AS id
   `)
   const autoResolved = [...resolvedHealth].length + [...resolvedInbox].length
@@ -272,6 +300,7 @@ export async function runAttributionGap(
     alertsDispatched,
     skippedExisting,
     autoResolved,
+    capHit,
     instances,
   }
 }

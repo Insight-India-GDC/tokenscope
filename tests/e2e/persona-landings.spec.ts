@@ -116,7 +116,7 @@ test.describe('Persona landings', () => {
     /*
      * resolveAdmins (server/notifications/dispatch.ts) routes
      * sync-conflict to admin-CLASS roles — admin, platform-admin AND
-     * platform-admin — so Mara now sees the seeded "PSR · APAC reports
+     * platform-admin — so Mara now sees the seeded "Pathway · APAC reports
      * conflict on Northwind Bank · CIB Modernise" item. (Pre-region-model this
      * spec asserted an empty finance inbox; routing changed.)
      */

@@ -20,6 +20,7 @@
  */
 import {
   readFileSync,
+  readdirSync,
   existsSync,
   realpathSync,
   writeFileSync,
@@ -35,10 +36,10 @@ import {
   constants as fsConstants,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, dirname, sep, basename } from 'node:path'
+import { join, dirname, sep, basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 // Store layout lives in device-store.mjs (synced to both plugins); re-exported
 // so existing importers keep one import site.
 import {
@@ -60,7 +61,9 @@ import { assertSafeEndpoint, unsafeEndpointError } from './endpoint-guard.mjs'
 // Re-exported so existing importers keep one name, and so mcp-origin.mjs can
 // reach it without importing this module (copilot-plugin does not vendor it).
 import { realHome } from './real-home.mjs'
-import { claudeSettingsPath } from './claude-config-dir.mjs'
+import { claudeConfigDir, claudeSettingsPath } from './claude-config-dir.mjs'
+import { parseHelperCommand } from './env-builder.mjs'
+import { assertConfinedPath } from './argv-guard.mjs'
 import { emitHelperSpawn, helperScriptName } from './emit-helper-spawn.mjs'
 export { realHome }
 export {
@@ -233,8 +236,8 @@ export function resolveHelperPath(platform = process.platform) {
 }
 
 /**
- * The TokenScope state dir (TOKENSCOPE_STATE_DIR or ~/.tokenscope), anchored on
- * the passwd home so it is stable across a leaked `HOME`. This dir is
+ * The TokenScope state dir (TOKENSCOPE_STATE_DIR, else this Claude install's own:
+ * claudeInstallStateDir), anchored on the passwd home so it is stable across a leaked `HOME`. This dir is
  * plugin-owned (token cache, failure sentinels, landed state) — it is NOT `~/.claude`,
  * which stays on `homedir()` to match Claude Code's own settings resolution.
  *
@@ -265,7 +268,7 @@ export function stateDir(env) {
   // it if so. `safeProcessEnv()` cannot do that job here — it strips a COPY,
   // while this function reads the live environment.
   const override = (process.env.TOKENSCOPE_STATE_DIR ?? '').trim()
-  return override || trustedStateDir()
+  return override || claudeInstallStateDir()
 }
 
 /**
@@ -279,6 +282,63 @@ export function stateDir(env) {
  */
 export function trustedStateDir() {
   return join(realHome(), '.tokenscope')
+}
+
+const IS_WIN = process.platform === 'win32'
+
+/** realpath (native on Windows, case-folded there), or the resolved path when absent. */
+function canonicalDir(p) {
+  let out
+  try {
+    out = (IS_WIN ? realpathSync.native : realpathSync)(p)
+  } catch {
+    out = resolve(p)
+  }
+  return IS_WIN ? out.toLowerCase() : out
+}
+
+/**
+ * The Claude lane's state dir for the Claude config folder `configDir`
+ * (claude-config-dir.mjs). The store is keyed by tool only, and Claude Desktop
+ * runs the same tool from its own folder, so two installs sharing one dir
+ * overwrite each other's enrolment (#449). The default `<passwd home>/.claude`
+ * keeps trustedStateDir() itself, so a single install never moves.
+ */
+export function claudeStateDir(configDir = claudeConfigDir()) {
+  const dir = canonicalDir(configDir)
+  if (dir === canonicalDir(join(realHome(), '.claude'))) return trustedStateDir()
+  const key = createHash('sha256').update(dir).digest('hex').slice(0, 12)
+  return join(trustedStateDir(), 'claude-config', key)
+}
+
+/**
+ * The state dir the emit helper in `helperCommand` reads: its `--state-dir`;
+ * the default dir for a helper without one (an install enrolled before #449);
+ * claudeStateDir(configDir) when there is no helper yet, or its `--state-dir`
+ * is outside the passwd home or inside a repository.
+ */
+export function helperStateDir(helperCommand, configDir) {
+  const named = parseHelperCommand(helperCommand)?.stateDir
+  if (named) {
+    try {
+      assertConfinedPath(named, { flag: '--state-dir', refuseInsideRepo: true })
+      return named
+    } catch {
+      return claudeStateDir(configDir)
+    }
+  }
+  return typeof helperCommand === 'string' && helperCommand.trim() ? trustedStateDir() : claudeStateDir(configDir)
+}
+
+/** helperStateDir for the helper in `configDir`'s own settings.json. */
+export function claudeInstallStateDir(configDir = claudeConfigDir()) {
+  let helper = null
+  try {
+    helper = JSON.parse(readRegularFileBounded(join(configDir, 'settings.json'), SETTINGS_MAX_BYTES) ?? 'null')?.otelHeadersHelper
+  } catch {
+    /* unreadable settings: no helper */
+  }
+  return helperStateDir(helper, configDir)
 }
 
 /**
@@ -298,6 +358,76 @@ function readJsonObject(path) {
 /** This lane's v2 store, or null. */
 export function readDeviceStore(tool, dir = trustedStateDir()) {
   return readJsonObject(deviceStorePath(tool, dir))
+}
+
+/**
+ * Every Claude-lane enrolment on this machine, as instance id ->
+ * { dir, bearerEndpoint }: the default store and each per-config-folder store
+ * under `claude-config/` (#449). Only a complete, consistent store counts; a
+ * symlinked folder is not followed.
+ */
+export function localClaudeEnrolments(root = trustedStateDir()) {
+  const dirs = [root]
+  try {
+    for (const e of readdirSync(join(root, 'claude-config'), { withFileTypes: true })) {
+      if (e.isDirectory()) dirs.push(join(root, 'claude-config', e.name))
+    }
+  } catch {
+    /* no per-config-folder stores */
+  }
+  const out = new Map()
+  for (const dir of dirs) {
+    try {
+      const store = assertStoreConsistent('claude-code', readDeviceStore('claude-code', dir))
+      if (!out.has(store.instance_id)) out.set(store.instance_id, { dir, bearerEndpoint: store.bearer_endpoint })
+    } catch {
+      /* absent or incomplete: not an enrolment */
+    }
+  }
+  return out
+}
+
+function originOf(url) {
+  try {
+    const o = new URL(String(url ?? '')).origin
+    return o === 'null' ? null : o
+  } catch {
+    return null
+  }
+}
+
+/**
+ * THE KEEP RULE for a repo tag's instance, shared by writeRepoTag (what the tag
+ * holds) and backfill (what a replay stamps). Returns { instanceId, dir } when a
+ * tag naming `tagInstance` keeps it, else null and the tag takes `ownInstance`.
+ *
+ * Kept only when another local Claude-lane store holds it AND that store targets
+ * the deployment this install does: the same bearer-endpoint origin (scheme,
+ * host, port). Records carry the tag's instance but are sent with this install's
+ * credential to this install's deployment, which does not know an instance
+ * enrolled elsewhere.
+ */
+export function keptRepoTagEnrolment(tagInstance, ownInstance, ownBearerEndpoint, root = trustedStateDir()) {
+  if (!tagInstance || tagInstance === ownInstance) return null
+  const own = originOf(ownBearerEndpoint)
+  if (!own) return null
+  const store = localClaudeEnrolments(root).get(tagInstance)
+  return store && originOf(store.bearerEndpoint) === own ? { instanceId: tagInstance, dir: store.dir } : null
+}
+
+/**
+ * Whether `dir` holds a complete store for `tool` whose bearer names the same
+ * instance as `bearerEndpoint`. The emit helper adopts such a store whole
+ * (source 1), so this, not a refresh token in settings, is what "enrolled" means.
+ */
+export function storeHoldsEnrolment(tool, bearerEndpoint, dir = trustedStateDir()) {
+  try {
+    const store = assertStoreConsistent(tool, readDeviceStore(tool, dir))
+    const want = bearerInstance(String(bearerEndpoint ?? '').trim())
+    return Boolean(want) && bearerInstance(store.bearer_endpoint) === want
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -671,24 +801,36 @@ export function repoTagEnv(globalEnv, repoEnv) {
  * under. Claude Code starts those shells WITHOUT the `OTEL_*` settings env, so
  * the session's own value is not there to read.
  *
- * Device identity (`tokenscope.instance_id`, `tool`) comes ONLY from the trusted
+ * Device identity (`tokenscope.instance_id`, `tool`) comes from the trusted
  * global enrolment, the same device the bearer is minted for. The repo-local
- * `settings.local.json` may contribute nothing but a well-formed
- * `project.code_hash` (sha256 hex, `computeCodeHash`): it is repo-controlled.
+ * `settings.local.json` is repo-controlled and contributes a well-formed
+ * `project.code_hash` (sha256 hex, `computeCodeHash`), plus its instance only
+ * when keptRepoTagEnrolment keeps it: the instance a live session in the repo
+ * emits under, so a replay matches it.
  *
  * @param {string} cwd
  * @param {Record<string,string>} [globalEnv]
+ * @param {string} [storeRoot]
  * @returns {string}
  */
-export function launchResourceAttrs(cwd, globalEnv = trustedGlobalSettingsEnv()) {
+export function launchResourceAttrs(cwd, globalEnv = trustedGlobalSettingsEnv(), storeRoot = trustedStateDir()) {
   const trusted =
     typeof globalEnv?.OTEL_RESOURCE_ATTRIBUTES === 'string' ? globalEnv.OTEL_RESOURCE_ATTRIBUTES : ''
   const repo = readSettingsEnv(join(cwd, '.claude', 'settings.local.json')).OTEL_RESOURCE_ATTRIBUTES
   // A repo with no attrs of its own inherits the global tag, as at launch.
   if (typeof repo !== 'string') return trusted
   const tag = /(?:^|,)project\.code_hash=([0-9a-f]{64})(?=,|$)/.exec(repo)?.[1]
-  const attrs = trusted.split(',').filter((kv) => kv && !kv.startsWith('project.code_hash='))
+  const own = attrsInstance(trusted)
+  const kept = own ? keptRepoTagEnrolment(attrsInstance(repo), own, globalEnv?.TOKENSCOPE_BEARER_ENDPOINT, storeRoot) : null
+  // #475: the folder's default activity, as the repo tag wrote it: encodeURIComponent
+  // output, which leaves `. ! ~ * ' ( )` unescaped besides letters, digits, `-` and `_`.
+  const activity = /(?:^|,)tokenscope\.activity=([A-Za-z0-9%_.!~*'()-]{1,200})(?=,|$)/.exec(repo)?.[1]
+  const attrs = trusted
+    .split(',')
+    .filter((kv) => kv && !kv.startsWith('project.code_hash=') && !kv.startsWith('tokenscope.activity='))
+    .map((kv) => (kept && kv.trim().startsWith('tokenscope.instance_id=') ? `tokenscope.instance_id=${kept.instanceId}` : kv))
   if (tag) attrs.push(`project.code_hash=${tag}`)
+  if (activity) attrs.push(`tokenscope.activity=${activity}`)
   return attrs.join(',')
 }
 

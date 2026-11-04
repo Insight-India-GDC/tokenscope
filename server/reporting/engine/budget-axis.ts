@@ -98,6 +98,7 @@ export async function fetchProjectBudgets(
     FROM allocation a
     WHERE a.scope_type = 'project'
       AND a.allocation_kind IN ('baseline', 'top-up')
+      AND a.teammate_id IS NULL
       AND a.effective @> now()
       AND a.scope_id = ANY(${ids})
     GROUP BY a.scope_id`)

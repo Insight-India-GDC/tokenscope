@@ -486,7 +486,7 @@ export async function computeAbDecomposition(
       AND EXISTS (
         SELECT 1 FROM session_quarantine sq
         WHERE sq.teammate_id = ar.teammate_id
-          AND sq.conversation_id = ar.claude_session_id
+          AND sq.conversation_id = COALESCE(ar.claude_session_id, ar.instance_id::text)
           AND sq.resolved_at IS NULL
           AND sq.reason = 'api-uncorroborated'
       )

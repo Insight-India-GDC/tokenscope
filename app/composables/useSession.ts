@@ -36,8 +36,13 @@ export function useSession() {
   }
 
   async function logout() {
-    // 1) Clear the sandbox override sidecar + audit (server-side).
-    await $fetch('/api/v1/auth/logout', { method: 'POST' })
+    // 1) Clear the sandbox override sidecar + audit (server-side). Best-effort:
+    //    a failure here must not stop the provider logout below.
+    try {
+      await $fetch('/api/v1/auth/logout', { method: 'POST' })
+    } catch (err) {
+      console.warn('[logout] sidecar clear failed; continuing to provider logout', err)
+    }
     session.value = null
     // 2) Hand off to nuxt-oidc-auth's provider-logout endpoint, which
     //    clears the OIDC cookie and redirects through Entra's logout

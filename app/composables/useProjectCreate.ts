@@ -1,16 +1,12 @@
 /*
- * useProjectCreate — idempotent two-step project + baseline-budget creation
- * (FE-3, projects/new.vue).
- *
- * Step 1 (POST /admin/projects) runs AT MOST ONCE: the created id is
- * remembered across submit attempts, so a failed step 2 (POST /allocations)
- * can be retried without re-POSTing the project — a re-POST would 409 on the
- * unique project code and dead-end the user with an orphaned, budget-less
- * project. `failedStep` lets the page distinguish "project create failed"
- * from "project created, budget failed".
+ * useProjectCreate — create a project, its PM and its baseline budget in ONE
+ * atomic call (projects/new.vue). Admins post to /admin/projects, PMO-list
+ * holders to /projects; both take the same body. A refusal from the server
+ * leaves nothing behind, so a retry simply resubmits. A failure with no answer
+ * (network, 5xx) may have created the project: outcomeUnknown says so.
  */
 import { ref } from 'vue'
-import { apiErrorDetail } from './useApiError'
+import { apiErrorDetail, isConfirmedRejection } from './useApiError'
 
 export interface ProjectCreateBody {
   code: string
@@ -20,14 +16,42 @@ export interface ProjectCreateBody {
   cost_owning_unit_id: string
   /** Optional finance-system WBS code (correlation only). */
   wbs_code?: string
+  end_date?: string
+  /** Required by the PMO route; optional for admins. */
+  pm_teammate_id?: string
+  budget: { amount_usd: string; from: string; to: string }
 }
 
-export interface AllocationCreateBody {
-  budget_usd: string
-  effective: string
+export type ProjectCreateRoute = 'admin' | 'pmo'
+
+export interface ProjectCreated {
+  id: string
+  code: string
+  allocation_id: string
 }
 
-type PostFn = <T>(url: string, body: Record<string, unknown>) => Promise<T>
+/**
+ * Where to go after a create. An admin route lands on the new baseline. On the
+ * PMO route the project page opens only for members, and the creator is one
+ * only when they named themselves PM: anyone else goes back to My projects,
+ * which names the project it created.
+ */
+export function afterCreatePath(
+  route: ProjectCreateRoute,
+  created: ProjectCreated,
+  who: { pmId: string | null; viewerId: string | null },
+): string {
+  if (route === 'admin') return `/allocations/${created.allocation_id}`
+  if (who.pmId !== null && who.pmId === who.viewerId) return `/projects/${encodeURIComponent(created.code)}`
+  return `/projects?created=${encodeURIComponent(created.code)}`
+}
+
+type PostFn =<T>(url: string, body: Record<string, unknown>) => Promise<T>
+
+export const PROJECT_CREATE_URL: Record<ProjectCreateRoute, string> = {
+  admin: '/api/v1/admin/projects',
+  pmo: '/api/v1/projects',
+}
 
 export function useProjectCreate(deps?: { post?: PostFn }) {
   // Injectable for unit tests; defaults to $fetch in the app.
@@ -36,50 +60,27 @@ export function useProjectCreate(deps?: { post?: PostFn }) {
     (<T,>(url: string, body: Record<string, unknown>) =>
       $fetch<T>(url, { method: 'POST', body }) as Promise<T>)
 
-  const createdProjectId = ref<string | null>(null)
   const submitting = ref(false)
   const error = ref<string | null>(null)
-  const failedStep = ref<'project' | 'allocation' | null>(null)
+  /** The last failure had no server refusal behind it, so the project may exist. */
+  const outcomeUnknown = ref(false)
 
-  /**
-   * Returns the new allocation id on full success, null on any failure
-   * (inspect `failedStep` / `error`). Safe to call again after a failure:
-   * an already-created project is never re-POSTed.
-   */
-  async function submit(
-    project: ProjectCreateBody,
-    allocation: AllocationCreateBody,
-  ): Promise<string | null> {
+  /** The created project on success, null on failure (inspect `error`). */
+  async function submit(route: ProjectCreateRoute, body: ProjectCreateBody): Promise<ProjectCreated | null> {
     if (submitting.value) return null
     submitting.value = true
     error.value = null
-    failedStep.value = null
+    outcomeUnknown.value = false
     try {
-      if (!createdProjectId.value) {
-        try {
-          const p = await post<{ id: string }>('/api/v1/admin/projects', { ...project })
-          createdProjectId.value = p.id
-        } catch (err) {
-          failedStep.value = 'project'
-          error.value = apiErrorDetail(err, 'Project create failed.')
-          return null
-        }
-      }
-      try {
-        const a = await post<{ id: string }>('/api/v1/allocations', {
-          ...allocation,
-          project_id: createdProjectId.value,
-        })
-        return a.id
-      } catch (err) {
-        failedStep.value = 'allocation'
-        error.value = apiErrorDetail(err, 'Budget allocation failed.')
-        return null
-      }
+      return await post<ProjectCreated>(PROJECT_CREATE_URL[route], { ...body })
+    } catch (err) {
+      outcomeUnknown.value = !isConfirmedRejection(err)
+      error.value = apiErrorDetail(err, 'Project create failed.')
+      return null
     } finally {
       submitting.value = false
     }
   }
 
-  return { createdProjectId, submitting, error, failedStep, submit }
+  return { submitting, error, outcomeUnknown, submit }
 }

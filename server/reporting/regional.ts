@@ -7,9 +7,9 @@
  *     lane (attribution ∪ the API−OTel gap), read through `usage_rollup_daily` —
  *     the day-grain rollup DEFINED as an aggregate of `v_complete_usage`
  *     (docs/design/usage-rollup-lane.md R5; seasonality alone stays on the view
- *     — it is off the page's request path). Homed by
- *     `org_unit_id` (the point-in-time emit home) — the Regional usage axis is
- *     already point-in-time "as at emit" (owner-decisions D-Homing).
+ *     — it is off the page's request path), through the current-lens views
+ *     (`v_usage_rollup_current`, `v_complete_usage_current`): usage is grouped and
+ *     scoped by where each person sits NOW (docs/design/current-org-lens).
  *   - the monetised genuine-vs-chargeable pair → `v_finance_chargeback_month`
  *     (the §B bill lane), region/subtree grain.
  * No reporting query here touches `attribution_record` or raw `actual_spend`
@@ -21,7 +21,7 @@
  * byte-identical to the screen figures (build-design §2 "byte-identical rule").
  */
 import { sql, type SQL } from 'drizzle-orm'
-import { clampedFinance, clampedUsage } from './engine/scope'
+import { clampedFinance, clampedUsage, currentPlacementTeammates } from './engine/scope'
 import { vendorSplitAggregates } from './vendor-split'
 import { fetchKpiCore, type ReportKpiCore } from './engine/kpis'
 import { fetchPerPerson, type PerPersonKpi } from './engine/per-person'
@@ -122,8 +122,11 @@ export interface RegionalScope {
   regionOptions: RegionRef[]
   isCrossRegion: boolean
   ou: OuRef | null
-  /** Usage-lane predicate over (`region_id`, `org_unit_id`)-style columns. */
-  usageScope: (regionCol: string, subtreeCol: string) => SQL
+  /**
+   * Usage-lane predicate: the people whose CURRENT placement is in scope, as a
+   * clamp on the given teammate-id column (`currentPlacementTeammates`).
+   */
+  usageScope: (teammateCol: string) => SQL
   /** Finance-lane predicate over (`region_id`, `cost_owning_unit_id`)-style columns. */
   financeScope: (regionCol: string, costOwningCol: string) => SQL
   /**
@@ -148,8 +151,6 @@ export interface RegionalScope {
    * to the region: that fallback is exactly what was wrong.
    */
   scopeLabel: string | null
-  /** `true` while dims are point-in-time "as at emit" (Regional usage lane always is). */
-  pointInTimeDims: boolean
 }
 
 /**
@@ -395,10 +396,12 @@ export async function resolveRegionalScope(
   // finance: cost-owning only).
   const scopeRole = isCrossRegion ? 'global-finops' : isSubtree ? 'manager' : caller.role
   const scopeCaller = { role: scopeRole, regionId: caller.regionId }
-  const usageScope = (regionCol: string, subtreeCol: string): SQL =>
-    ou
-      ? sql`${sql.raw(subtreeCol)} IN (${orgSubtreeIds(ou.path, ou.regionId)})`
-      : managerScopePredicate(scopeCaller, effectiveRegionId, regionCol, subtreeCol)
+  const usageScope = (teammateCol: string): SQL =>
+    currentPlacementTeammates(teammateCol, (regionCol, subtreeCol) =>
+      ou
+        ? sql`${sql.raw(subtreeCol)} IN (${orgSubtreeIds(ou.path, ou.regionId)})`
+        : managerScopePredicate(scopeCaller, effectiveRegionId, regionCol, subtreeCol),
+    )
   const financeScope = (regionCol: string, costOwningCol: string): SQL =>
     ou
       ? sql`${sql.raw(costOwningCol)} IN (${orgSubtreeIds(ou.path, ou.regionId, { costOwningOnly: true })})`
@@ -467,7 +470,6 @@ export async function resolveRegionalScope(
     // PATH, so a unit moved in the tree keeps its id while its subtree changes.
     scopeKey: `regional:${scopeRole}:${caller.regionId ?? '-'}:${effectiveRegionId}:${ou?.id ?? '-'}:${ou?.path ?? '-'}:${gucKey}`,
     scopeLabel,
-    pointInTimeDims: true,
   }
 }
 
@@ -484,9 +486,9 @@ export type RegionalKpis = ReportKpiCore
  * The Regional KPI row: usage-lane genuine total + the finance-lane chargeable
  * pair, each clamped by this scope's own predicate for its own lane.
  *
- * The §A clamp addresses UNALIASED `region_id` / `org_unit_id` because the
- * engine's totals query selects from `v_complete_usage` with no alias; the §B
- * clamp addresses `region_id` / `cost_owning_unit_id`. Both are the SAME
+ * The §A clamp addresses the UNALIASED `teammate_id` because the engine's
+ * totals query selects from the rollup with no alias; the §B clamp addresses
+ * `region_id` / `cost_owning_unit_id`. Both are the SAME
  * predicates the region's series queries pass, so a tile and the card under it
  * cannot be summed over different scopes.
  *
@@ -503,7 +505,7 @@ export async function fetchRegionalKpis(
   return fetchKpiCore(
     tx,
     {
-      usage: clampedUsage(scope.usageScope('region_id', 'org_unit_id')),
+      usage: clampedUsage(scope.usageScope('teammate_id')),
       finance: clampedFinance(scope.financeScope('region_id', 'cost_owning_unit_id')),
       monthFloorKey: scope.scopeKey,
     },
@@ -527,7 +529,7 @@ export async function fetchRegionalPerPerson(
   range: UsageWindow,
   opts: { momMonthRange?: MonthRangeUtc | null; asOfDate?: string | null } = {},
 ): Promise<PerPersonKpi> {
-  return fetchPerPerson(tx, clampedUsage(scope.usageScope('region_id', 'org_unit_id')), range, opts)
+  return fetchPerPerson(tx, clampedUsage(scope.usageScope('teammate_id')), range, opts)
 }
 
 // ── Vendor split (drill donut) ───────────────────────────────────────────────
@@ -546,8 +548,8 @@ export async function fetchRegionalVendorSplit(
   const [r] = [
     ...(await tx.execute<{ claude: string; copilot: string; other: string }>(sql`
       SELECT ${vendorSplitAggregates}
-      FROM usage_rollup_daily u
-      WHERE ${scope.usageScope('u.region_id', 'u.org_unit_id')}
+      FROM v_usage_rollup_current u
+      WHERE ${scope.usageScope('u.teammate_id')}
         AND u.day >= ${range.startIso.slice(0, 10)}::date
         AND u.day <  ${range.endIso.slice(0, 10)}::date`)),
   ]
@@ -574,7 +576,7 @@ export interface RankedRow {
 
 /**
  * Rank the region's usage by PRACTICE — the nearest cost-owning ancestor of each
- * record's emit-home unit. Records with no cost-owning ancestor bucket into an
+ * person's CURRENT unit. Records with no cost-owning ancestor bucket into an
  * explicit "Unattributed" row so the ranking SUMS BACK to the genuine headline.
  *
  * `isDefault` flags the region's `default` BU (`cou.code = 'default'`) so the
@@ -595,12 +597,12 @@ export async function fetchRegionalPractices(
     SELECT cou.cost_owning_unit_id::text AS key, cou.cost_owning_unit_name AS label,
            (cou.cost_owning_unit_code = 'default') AS is_default,
            COALESCE(SUM(u.cost_usd), 0)::text AS value
-    FROM usage_rollup_daily u
+    FROM v_usage_rollup_current u
     -- ONE cost-owner resolution (v_org_unit_cost_owner, mig 0114), not a
     -- correlated LATERAL per usage row. LEFT, so unhomed spend keeps its row.
     -- The join key org_unit_id is in the rollup grain (usage-rollup-lane.md R5).
     LEFT JOIN v_org_unit_cost_owner cou ON cou.org_unit_id = u.org_unit_id
-    WHERE ${scope.usageScope('u.region_id', 'u.org_unit_id')}
+    WHERE ${scope.usageScope('u.teammate_id')}
       AND u.day >= ${range.startIso.slice(0, 10)}::date
       AND u.day <  ${range.endIso.slice(0, 10)}::date
     GROUP BY cou.cost_owning_unit_id, cou.cost_owning_unit_name, cou.cost_owning_unit_code
@@ -703,7 +705,7 @@ export async function fetchRegionalDailyMetrics(
 ): Promise<DailyMetric[]> {
   return fetchDailyMetrics(
     tx,
-    clampedUsage(scope.usageScope('u.region_id', 'u.org_unit_id')),
+    clampedUsage(scope.usageScope('u.teammate_id')),
     window,
     clock,
   )
@@ -716,7 +718,7 @@ export async function fetchRegionalDailyMetrics(
  * project and how much sits outside the budget lens.
  *
  * Clamped by the SAME usage predicate `fetchRegionalDailyMetrics` uses
- * (`scope.usageScope('u.region_id', 'u.org_unit_id')`), so its `totalUsd` IS the
+ * (`scope.usageScope('u.teammate_id')`), so its `totalUsd` IS the
  * region's headline and the parts foot to the number they are rendered beside.
  * Pure §A — no bill-lane operand (contract C2).
  *
@@ -732,7 +734,7 @@ export async function fetchRegionalUsageBudgetCoverage(
 ): Promise<UsageBudgetCoverage> {
   return fetchUsageBudgetCoverage(
     tx,
-    clampedUsage(scope.usageScope('u.region_id', 'u.org_unit_id')),
+    clampedUsage(scope.usageScope('u.teammate_id')),
     window,
     scope.scopeLabel,
   )
@@ -743,9 +745,9 @@ export async function fetchRegionalUsageBudgetCoverage(
  * The region-scoped Behavioural-exposure card — the same primitive the
  * whole-company surface calls, with the scope predicate supplied instead of
  * declared away. Clamped by the SAME finance predicate the KPI charge uses
- * (`scope.financeScope('region_id', 'cost_owning_unit_id')`), which is also the
- * clamp `provider_usage_fact` can serve: it stamps `region_id` /
- * `cost_owning_unit_id` at ingest (`0118:70-79`).
+ * (`scope.financeScope('region_id', 'cost_owning_unit_id')`), applied to
+ * `v_provider_usage_fact_current`, whose columns are the person's current region
+ * and Business Unit.
  *
  * §B lane — NEVER summed with the §A `genuineUsd` on the same page (contract C2).
  */
@@ -815,7 +817,7 @@ export async function fetchRegionalChargebackLaneTrend(
  * The region-scoped canonical §A USAGE weekly lane series over the window — the
  * regional mirror of `fetchAcrossUsageWeeklyLanes` (requirement 1),
  * REGION-CLAMPED by the SAME usage-lane predicate every other §A regional query
- * uses (`scope.usageScope('region_id', 'org_unit_id')` — identical to
+ * uses (`scope.usageScope('teammate_id')` — identical to
  * `fetchRegionalKpis`', so this can never diverge from the region's genuine
  * headline). REPLACES the former billed-showback-basis fetcher
  * (`v_finance_bill_showback`) that fed this same hero while it was still
@@ -829,7 +831,7 @@ export async function fetchRegionalUsageWeeklyLanes(
   scope: RegionalScope,
   window: UsageWindow,
 ): Promise<UsageSurfaceWeeklyCell[]> {
-  return fetchUsageWeeklyLanes(tx, clampedUsage(scope.usageScope('region_id', 'org_unit_id')), window)
+  return fetchUsageWeeklyLanes(tx, clampedUsage(scope.usageScope('teammate_id')), window)
 }
 
 // ── §B chargeback lane totals (bill lane — the split-donut operand, V2-Regional) ─
@@ -914,7 +916,7 @@ export async function fetchRegionalDrivers(
 ): Promise<DriversResult> {
   return fetchDrivers(
     tx,
-    clampedUsage(scope.usageScope('u.region_id', 'u.org_unit_id')),
+    clampedUsage(scope.usageScope('u.teammate_id')),
     range,
     axis,
     lens,
@@ -956,7 +958,7 @@ export async function fetchRegionalTrend(
   scope: RegionalScope,
   range: UsageWindow,
 ): Promise<{ series: TrendPoint[]; windowDays: number }> {
-  return fetchSpendTrend(tx, clampedUsage(scope.usageScope('u.region_id', 'u.org_unit_id')), range)
+  return fetchSpendTrend(tx, clampedUsage(scope.usageScope('u.teammate_id')), range)
 }
 
 // ── Provider split (region-scoped, spend + active users) ─────────────────────
@@ -997,8 +999,8 @@ export async function fetchRegionalProviderSplit(
         COUNT(DISTINCT u.teammate_id) FILTER (WHERE u.tool = ${COPILOT_AGENT_TOOL})::int AS ca_users,
         COALESCE(SUM(u.cost_usd) FILTER (WHERE u.tool NOT IN (${laneListSql(SECTION_A_USAGE_TOOLS)}) OR u.tool IS NULL), 0)::text AS ot_spend,
         COUNT(DISTINCT u.teammate_id) FILTER (WHERE u.tool NOT IN (${laneListSql(SECTION_A_USAGE_TOOLS)}) OR u.tool IS NULL)::int AS ot_users
-      FROM usage_rollup_daily u
-      WHERE ${scope.usageScope('u.region_id', 'u.org_unit_id')}
+      FROM v_usage_rollup_current u
+      WHERE ${scope.usageScope('u.teammate_id')}
         AND u.day >= ${range.startIso.slice(0, 10)}::date
         AND u.day <  ${range.endIso.slice(0, 10)}::date`)),
   ]
@@ -1025,8 +1027,8 @@ export async function fetchRegionalSeasonality(
     SELECT to_char(u.ts_event, 'IYYY-"W"IW') AS iso_week,
            (EXTRACT(ISODOW FROM u.ts_event)::int - 1) AS dow,
            COALESCE(SUM(u.cost_usd), 0)::text AS value
-    FROM v_complete_usage u
-    WHERE ${scope.usageScope('u.region_id', 'u.org_unit_id')}
+    FROM v_complete_usage_current u
+    WHERE ${scope.usageScope('u.teammate_id')}
       AND u.ts_event >= ${window.startIso}::timestamptz
       AND u.ts_event <  ${window.endIso}::timestamptz
     GROUP BY 1, 2
@@ -1046,7 +1048,7 @@ export async function fetchRegionalActiveTrend(
   scope: RegionalScope,
   window: UsageWindow,
 ): Promise<ActiveTrendPoint[]> {
-  return fetchActiveTrend(tx, clampedUsage(scope.usageScope('u.region_id', 'u.org_unit_id')), window)
+  return fetchActiveTrend(tx, clampedUsage(scope.usageScope('u.teammate_id')), window)
 }
 
 // ── Exceptions (velocity-flagged, dial-driven) ───────────────────────────────
@@ -1112,7 +1114,7 @@ export async function fetchRegionalExceptions(
     drill_is_provisional: boolean | null
   }>(sql`
     WITH weekly AS (
-      -- usage_rollup_daily, not the live view (usage-rollup-lane.md R5): the
+      -- The rollup, not the live view (usage-rollup-lane.md R5): the
       -- week buckets derive from the day column, and the lower bound is exact
       -- because date_trunc('week', <request instant>) is a UTC-midnight
       -- instant under the pinned session TimeZone (server/db/index.ts), so
@@ -1120,8 +1122,8 @@ export async function fetchRegionalExceptions(
       SELECT u.teammate_id,
              date_trunc('week', u.day::timestamp)::date AS week_start,
              SUM(u.cost_usd) AS week_usd
-      FROM usage_rollup_daily u
-      WHERE ${scope.usageScope('u.region_id', 'u.org_unit_id')}
+      FROM v_usage_rollup_current u
+      WHERE ${scope.usageScope('u.teammate_id')}
         AND u.day >= (date_trunc('week', ${nowIso}::timestamptz) - INTERVAL '4 weeks')::date
       GROUP BY u.teammate_id, date_trunc('week', u.day::timestamp)
     ),

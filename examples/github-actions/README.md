@@ -93,7 +93,10 @@ before an image exists:
 1. **TokenScope infra**, mode `apply`. Stops at the Container App, which
    waits for its image (`MANIFEST_UNKNOWN`); the resources that depend on it
    (alerts, worker jobs, Front Door) come with the next apply. The run
-   succeeds with a notice saying so; any other failure fails it.
+   succeeds with a notice saying so; any other failure fails it, except an
+   Azure platform fault (an `InternalError`, a timeout, a conflict) or a Front
+   Door endpoint that is not routing yet: then the run applies again, up to
+   twice, each after a fresh sign-in, and its summary says so.
 2. **TokenScope deploy**: build `acr-task` (sandbox), or `docker` /
    `acr-agent-pool` (VNet). Builds the image and rolls the app, which brings up
    the Container App from step 1. `prebuilt` skips the build, for an image your

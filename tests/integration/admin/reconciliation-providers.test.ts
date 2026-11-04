@@ -646,6 +646,49 @@ describe('provider_org cross-region clamp — create/patch (idor:0004 / T3-xregi
     ).rejects.toMatchObject({ statusCode: 422 })
   })
 
+  it('linking an ANTHROPIC org to an enterprise is platform-admin only; a GitHub link stays open to region admins', async () => {
+    const anthEnt = (await entPost(ev({
+      method: 'POST', session: finops(),
+      body: { provider: 'anthropic', externalId: 'xr-anth-ent', displayName: 'Anth Ent', reconciliationMode: 'indicative' },
+    }))) as { id: string }
+    const ghEnt = (await entPost(ev({
+      method: 'POST', session: finops(),
+      body: { provider: 'github', externalId: 'xr-gh-ent', displayName: 'GH Ent', reconciliationMode: 'indicative' },
+    }))) as { id: string }
+    const anthOrg = (await orgsPost(ev({
+      method: 'POST', session: finops(),
+      body: { provider: 'anthropic', externalOrgId: 'xr-anth-org', displayName: 'Anth Org', reconciliationMode: 'indicative', apiKind: 'enterprise-analytics', regionId },
+    }))) as { id: string }
+    const linkOf = async (id: string) =>
+      (await t.client<{ e: string | null }[]>`SELECT provider_enterprise_id::text AS e FROM provider_org WHERE id = ${id}::uuid`)[0]!.e
+
+    await expect(
+      orgPatch(ev({ method: 'PATCH', session: adminA(), params: { id: anthOrg.id }, body: { providerEnterpriseId: anthEnt.id } })),
+    ).rejects.toMatchObject({ statusCode: 403 })
+    expect(await linkOf(anthOrg.id)).toBeNull()
+    await expect(
+      orgsPost(ev({
+        method: 'POST', session: adminA(),
+        body: { provider: 'anthropic', externalOrgId: 'xr-anth-new', displayName: 'X', reconciliationMode: 'indicative', apiKind: 'enterprise-analytics', regionId, providerEnterpriseId: anthEnt.id },
+      })),
+    ).rejects.toMatchObject({ statusCode: 403 })
+
+    await orgPatch(ev({ method: 'PATCH', session: finops(), params: { id: anthOrg.id }, body: { providerEnterpriseId: anthEnt.id } }))
+    expect(await linkOf(anthOrg.id)).toBe(anthEnt.id)
+    // Re-sending the unchanged link (the admin form round-trips it) is not a change.
+    await orgPatch(ev({ method: 'PATCH', session: adminA(), params: { id: anthOrg.id }, body: { displayName: 'Anth Org 2', providerEnterpriseId: anthEnt.id } }))
+    await expect(
+      orgPatch(ev({ method: 'PATCH', session: adminA(), params: { id: anthOrg.id }, body: { providerEnterpriseId: null } })),
+    ).rejects.toMatchObject({ statusCode: 403 })
+
+    const ghOrg = (await orgsPost(ev({
+      method: 'POST', session: adminA(),
+      body: { provider: 'github', externalOrgId: 'xr-gh-org', displayName: 'GH Org', reconciliationMode: 'indicative', regionId },
+    }))) as { id: string }
+    await orgPatch(ev({ method: 'PATCH', session: adminA(), params: { id: ghOrg.id }, body: { providerEnterpriseId: ghEnt.id } }))
+    expect(await linkOf(ghOrg.id)).toBe(ghEnt.id)
+  })
+
   it('region-A admin creates a region-A org with a region-A costOwningUnitId → 200', async () => {
     const res = (await orgsPost(ev({
       method: 'POST', session: adminA(),

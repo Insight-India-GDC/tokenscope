@@ -54,6 +54,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 . ([System.IO.Path]::Combine($PSScriptRoot, 'ps-json.ps1'))
+. ([System.IO.Path]::Combine($PSScriptRoot, 'claude-config-dir.ps1'))
 
 # The packaged default server is NOT restated here: it is read from the
 # plugin's own .claude-plugin/plugin.json (userConfig.server_url.default), the
@@ -61,32 +62,16 @@ $ProgressPreference = 'SilentlyContinue'
 # ships it empty, which means "no default" (#415).
 $Tool = 'claude-code'
 $RetiredEnvKeys = @('TOKENSCOPE_SESSION_TOKEN', 'TOKENSCOPE_READ_REFRESH_TOKEN', 'TOKENSCOPE_READ_CLIENT_ID')
+# claude-redeem.mjs STORE_ONLY_ENV_KEYS: in the device store, never in settings.json,
+# whose env block every process Claude Code spawns inherits.
+$StoreOnlyEnvKeys = @('TOKENSCOPE_OAUTH_REFRESH_TOKEN')
 
-function Test-TsWindows {
-  return ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)
-}
 
-function Get-TsPathComparison {
-  if (Test-TsWindows) { return [System.StringComparison]::OrdinalIgnoreCase }
-  return [System.StringComparison]::Ordinal
-}
 
 function Write-TsOut([string]$Line) { [Console]::Out.WriteLine($Line) }
 function Write-TsErr([string]$Line) { [Console]::Error.WriteLine($Line) }
 
-# An error whose message is safe to print: it names, never echoes, a value.
-function New-TsError([string]$Message, [string]$Reason) {
-  $e = New-Object System.Exception -ArgumentList $Message
-  $e.Data['reason'] = $Reason
-  return $e
-}
 
-# argv-guard.mjs safeToken: a rejected token rendered in a fixed character set.
-function Get-TsSafeToken([string]$Token) {
-  $t = $Token
-  if ($t.Length -gt 40) { $t = $t.Substring(0, 40) }
-  return ($t -replace '[^A-Za-z0-9._=/:-]', '?')
-}
 
 # ---- URLs (endpoint-guard.mjs) ---------------------------------------------
 
@@ -191,84 +176,9 @@ function Get-TsFlagValue($Argv, [int]$Index, [string]$Flag, [bool]$AllowLeadingD
   return $v
 }
 
-function Get-TsProfileRoot {
-  $root = [System.Environment]::GetFolderPath('UserProfile')
-  if (-not $root) { throw (New-TsError 'cannot determine your profile directory' 'no-profile') }
-  return [System.IO.Path]::GetFullPath($root).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
-}
 
-# Does a directory entry exist at $Path, WITHOUT following a link? A dangling
-# link is an entry. Returns its attributes, or $null.
-function Get-TsEntryAttributes([string]$Path) {
-  try {
-    $a = (New-Object System.IO.FileInfo -ArgumentList $Path).Attributes
-    if ([int]$a -eq -1) { return $null }
-    return $a
-  } catch {
-    return $null
-  }
-}
 
-function Test-TsUnder([string]$Path, [string]$Root) {
-  $sep = [string][System.IO.Path]::DirectorySeparatorChar
-  return ($Path.StartsWith($Root + $sep, (Get-TsPathComparison)))
-}
 
-# argv-guard.mjs assertConfinedPath, for a script that has no realpath.
-#
-# Node resolves symlinks and then checks containment. Windows PowerShell 5.1
-# cannot resolve a junction or symlink target without P/Invoke, so this is
-# STRICTER: any existing link (reparse point) below the profile root is
-# refused, which is fail-closed for the same threat (a link that leads out of
-# the profile, or into a repository).
-function Resolve-TsConfinedPath([string]$Value, [string]$Flag, [string[]]$AllowedBasenames, [bool]$RefuseInsideRepo) {
-  $root = Get-TsProfileRoot
-  $sep = [System.IO.Path]::DirectorySeparatorChar
-  try {
-    $full = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine((Get-Location).ProviderPath, $Value))
-  } catch {
-    throw (New-TsError "$(Get-TsSafeToken $Flag) could not be resolved to a real path inside your home directory ($root)" 'unresolvable-path')
-  }
-  if ($full.Length -gt $root.Length) { $full = $full.TrimEnd($sep) }
-  $cmp = Get-TsPathComparison
-  if (-not ($full.Equals($root, $cmp) -or (Test-TsUnder $full $root))) {
-    throw (New-TsError "$(Get-TsSafeToken $Flag) must name a path inside your home directory ($root), and must not be a symlink out of it" 'outside-home')
-  }
-  # Every EXISTING component below the root must be a plain entry.
-  $rel = $full.Substring($root.Length).TrimStart($sep)
-  $cur = $root
-  if ($rel) {
-    foreach ($seg in $rel.Split($sep)) {
-      $cur = $cur + $sep + $seg
-      $attrs = Get-TsEntryAttributes $cur
-      if ($null -eq $attrs) { break }
-      if (($attrs -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw (New-TsError "$(Get-TsSafeToken $Flag) must name a path inside your home directory ($root), and must not be a symlink out of it" 'outside-home')
-      }
-    }
-  }
-  if ($AllowedBasenames -and $AllowedBasenames.Count -gt 0) {
-    $leaf = [System.IO.Path]::GetFileName($full)
-    if (-not ($AllowedBasenames -ccontains $leaf)) {
-      throw (New-TsError "$(Get-TsSafeToken $Flag) must name one of: $($AllowedBasenames -join ', ')" 'unexpected-filename')
-    }
-  }
-  if ($RefuseInsideRepo) {
-    $dir = $full
-    if ($AllowedBasenames -and $AllowedBasenames.Count -gt 0) { $dir = [System.IO.Path]::GetDirectoryName($full) }
-    # The root itself is EXCLUSIVE, as in Node: a version-controlled profile
-    # does not refuse every path.
-    while ($dir -and (Test-TsUnder $dir $root)) {
-      if ($null -ne (Get-TsEntryAttributes ([System.IO.Path]::Combine($dir, '.git')))) {
-        throw (New-TsError "$(Get-TsSafeToken $Flag) must not name a path inside a git repository - it receives a durable credential, and a repository publishes what is written into it" 'inside-repository')
-      }
-      $parent = [System.IO.Path]::GetDirectoryName($dir)
-      if (-not $parent -or $parent -eq $dir) { break }
-      $dir = $parent
-    }
-  }
-  return $full
-}
 
 function Read-TsArgs($Argv) {
   $out = @{ HandoffCode = $null; ApiBase = $null; InstanceId = $null; SettingsPath = $null; StateDir = $null }
@@ -434,11 +344,13 @@ function Get-TsServerUrlFromSettings([string]$Path, $Marketplace) {
 # file under the profile. Never project or local settings (Claude Code ignores
 # pluginConfigs there so a repository cannot set it), never CLAUDE_CONFIG_DIR
 # or CLAUDE_PLUGIN_OPTION_* (environment a repository can set).
-function Get-TsConfiguredServerUrl([string]$ProfileDir, [string]$ScriptsDir) {
+function Get-TsConfiguredServerUrl([string]$ProfileDir, [string]$ScriptsDir, [string]$ConfigDir = '') {
   $mkt = Get-TsOwnMarketplace $ScriptsDir
   $v = Get-TsServerUrlFromSettings (Get-TsManagedSettingsPath) $mkt
   if ($v) { return $v }
-  return (Get-TsServerUrlFromSettings ([System.IO.Path]::Combine([System.IO.Path]::Combine($ProfileDir, '.claude'), 'settings.json')) $mkt)
+  # The install's own settings (#449), as api-base.mjs reads claudeSettingsPath.
+  if (-not $ConfigDir) { $ConfigDir = [System.IO.Path]::Combine($ProfileDir, '.claude') }
+  return (Get-TsServerUrlFromSettings ([System.IO.Path]::Combine($ConfigDir, 'settings.json')) $mkt)
 }
 
 # api-base.mjs resolveApiBase: arg, then a LOOPBACK TOKENSCOPE_API_BASE, then
@@ -778,16 +690,10 @@ function Write-TsDeviceStore($Fields, [string]$Dir) {
     Write-TsTemp $tmp ((ConvertTo-TsJson $Fields) + "`n")
     Move-TsIntoPlace $tmp $path
   } catch {
-    # Best-effort only while nothing is left to shadow this enrolment: the
-    # helper prefers a store on disk over the environment.
-    $shadow = $true
-    try { $shadow = [System.IO.File]::Exists($path) -or [System.IO.File]::Exists([System.IO.Path]::Combine($Dir, 'config.json')) } catch { }
-    if ($shadow) {
-      throw ("TokenScope: could not update the device credential store in $Dir, and an existing " +
-        'store is still there. The emit helper prefers that store over the environment and ' +
-        'requires the token AND both endpoints in it, so this device would stop emitting. ' +
-        'Enrolment is NOT complete: make the directory writable and re-run setup.')
-    }
+    # Always fatal: settings.json no longer carries the credential.
+    throw ("TokenScope: could not write the device credential store in $Dir. The emit helper " +
+      'reads the durable credential only from that store, so this device would not emit. ' +
+      'Enrolment is NOT complete: make the directory writable and re-run setup.')
   } finally {
     if ($tmp -and [System.IO.File]::Exists($tmp)) { try { [System.IO.File]::Delete($tmp) } catch { } }
   }
@@ -894,7 +800,7 @@ function Write-TsClaudeSettings([string]$SettingsPath, [string]$HelperCommand, $
       $newEnv = Copy-TsJsonSpread $base
       foreach ($k in @($EnvBlock.get_Keys())) { $newEnv[$k] = $EnvBlock[$k] }
     }
-    foreach ($k in $RetiredEnvKeys) { if ($newEnv.Contains($k)) { $newEnv.Remove($k) } }
+    foreach ($k in ($RetiredEnvKeys + $StoreOnlyEnvKeys)) { if ($newEnv.Contains($k)) { $newEnv.Remove($k) } }
     $merged['env'] = $newEnv
     return ((ConvertTo-TsJson $merged) + "`n")
   }
@@ -1010,9 +916,14 @@ function Invoke-TsMain($Argv) {
     return 1
   }
   $profileRoot = Get-TsProfileRoot
+  # #449: the install running this setup (claude-config-dir.ps1): Claude
+  # Desktop's own CLAUDE_CONFIG_DIR when the user's environment set it, else
+  # <profile>\.claude. Its settings and device store are its own, as
+  # claude-redeem.mjs keys them.
+  $cfg = Resolve-TsClaudeConfigDir $profileRoot
   $scriptsDir = $PSScriptRoot
   $discovered = Find-TsMcpOrigin $profileRoot $scriptsDir
-  $configured = Get-TsConfiguredServerUrl $profileRoot $scriptsDir
+  $configured = Get-TsConfiguredServerUrl $profileRoot $scriptsDir $cfg.Dir
   $packagedDefault = Get-TsPackagedDefault
   # api-base.mjs knownApiOrigins: what --api-base may SELECT.
   $known = @($packagedDefault, $configured, $discovered)
@@ -1023,12 +934,20 @@ function Invoke-TsMain($Argv) {
     return 1
   }
   $trustedDir = [System.IO.Path]::Combine($profileRoot, '.tokenscope')
+  if (-not $a.SettingsPath -and $cfg.Refused) {
+    Write-TsErr "[tokenscope] WARN: CLAUDE_CONFIG_DIR is set but was not used ($($cfg.Refused)); writing $([System.IO.Path]::Combine($cfg.Dir, 'settings.json')) instead."
+  }
   $storeDir = $a.StateDir
-  if (-not $storeDir) { $storeDir = $trustedDir }
+  if (-not $storeDir) {
+    if ($a.SettingsPath) { $storeDir = $trustedDir } else { $storeDir = Get-TsClaudeStateDir $cfg.Dir $profileRoot }
+  }
+  # The helper command names the store this redeem writes, unless it is the default one.
+  $recordDir = $a.StateDir
+  if (-not $recordDir -and -not $storeDir.Equals($trustedDir, (Get-TsPathComparison))) { $recordDir = $storeDir }
   # Built and checked BEFORE the handoff is spent: a state dir or install path
   # cmd.exe cannot carry, or a snapshot that cannot be written, is a refusal,
   # not a half-written enrolment.
-  $record = New-TsHelperRecord $a.StateDir
+  $record = New-TsHelperRecord $recordDir
   try {
     $helperScriptsDir = Copy-TsHelperSnapshot $storeDir
   } catch {
@@ -1061,7 +980,7 @@ function Invoke-TsMain($Argv) {
       'Writing the credential to the real profile; Claude Code reads USERPROFILE, so emission may not start until it is corrected.')
   }
   $settingsPath = $a.SettingsPath
-  if (-not $settingsPath) { $settingsPath = [System.IO.Path]::Combine([System.IO.Path]::Combine($profileRoot, '.claude'), 'settings.json') }
+  if (-not $settingsPath) { $settingsPath = [System.IO.Path]::Combine($cfg.Dir, 'settings.json') }
   try {
     $change = Write-TsClaudeSettings $settingsPath $helperCommand $record $envBlock $storeDir ([bool]$a.SettingsPath) $trustedDir
   } catch {

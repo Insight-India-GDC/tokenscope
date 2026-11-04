@@ -38,11 +38,10 @@
  * broken.
  *
  * ── THE CLAMP ADDRESSES `t`, THE ROSTER — NOT `u`, THE USAGE LANE ───────────
- * Every other §A engine primitive takes a clamp over `u.region_id` / `u.org_unit_id`
- * on `v_complete_usage`, which are EMIT-TIME dimensions (point-in-time, as at the
- * event). This one takes a clamp over `t.region_id` / `t.org_unit_id` on `teammate`
- * — CURRENT placement. They are genuinely different questions and the alias
- * difference is what keeps them from being confused: `u` is not in scope where this
+ * Every other §A engine primitive takes a clamp over the usage lane `u` (the
+ * current-lens views). This one takes a clamp over `t.region_id` / `t.org_unit_id`
+ * on the `teammate` roster: the people, not their rows. The alias difference is
+ * what keeps the two from being confused: `u` is not in scope where this
  * predicate is applied, so a clamp written for the usage lane raises "missing
  * FROM-clause entry for table u" rather than silently answering a different one.
  *
@@ -93,8 +92,7 @@ interface RosterRow extends Record<string, unknown>, TeammateDrillFactRow {
  * Unallocated spend over the soft cap for one scope and window.
  *
  * @param scope  A §A clamp addressing **`t.region_id` / `t.org_unit_id`** on the
- *               `teammate` roster — CURRENT placement, not the emit-time dimensions
- *               the usage lane carries. See the module header.
+ *               `teammate` roster (current placement). See the module header.
  *
  * ── WHAT THIS PRIMITIVE DECIDES, AND WHAT THE CALLER DECIDES ────────────────
  * The caller's scope decides WHICH cost centre. Everything else is policy and lives

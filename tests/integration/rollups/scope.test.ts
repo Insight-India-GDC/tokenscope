@@ -6,8 +6,8 @@
  * week-over-week rollup must not span outside their org subtree.
  * global-finops / admin (org-wide vs region) bypass as designed.
  *
- * These assert the APP-LEVEL predicate (the GUC-reading scope clause in
- * manager.get.ts) — the live gate, since RLS is bypassed here (test connects
+ * These assert the APP-LEVEL predicates (orgSubtreeScopePredicate and
+ * managerScopePredicate) — the live gate, since RLS is bypassed here (test connects
  * as the table owner, same as the running app until Epic 10's non-owner role
  * lands).
  */

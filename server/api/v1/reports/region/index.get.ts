@@ -192,8 +192,6 @@ export default defineEventHandler(async (event) => {
         providerStates: providerStatesForWindow(win, now),
         coverage,
         scope: 'region',
-        // Usage dims are point-in-time "as at emit" (§A completeness lane).
-        pointInTimeDims: true,
         ...(win.isMonth ? {} : { range: { from: win.from, to: win.to } }),
       }
 
@@ -320,7 +318,6 @@ export default defineEventHandler(async (event) => {
       providerStates: providerStatesForWindow(win, now),
       coverage,
       scope: 'region',
-      pointInTimeDims: scope.pointInTimeDims,
       ...(win.isMonth ? {} : { range: { from: win.from, to: win.to } }),
     }
 

@@ -2,7 +2,7 @@
 /*
  * Sign-in page.
  *
- * Per docs/design/ux-pilot/.../design-notes.md §Screen 1: two-column
+ * Per docs/archive/ux-pilot/tokenscope-pilot-design/project/design-notes.md §Screen 1: two-column
  * split. Left = brand hero with slogan-style headline; right = the
  * sign-in panel — Microsoft (Entra OIDC) button + a 2x2 demo persona
  * grid. Demo grid stays in pilot builds (cleanly removable for prod).
@@ -177,8 +177,8 @@ function signInWithEntra() {
 
         <p class="mt-8 text-[11px] text-carbon-3 leading-relaxed">
           By signing in you agree to use TokenScope per the responsible-use
-          guidelines. We never block your AI tools — over-budget → off-channel
-          nudge.
+          guidelines. We never block your AI tools: going over budget raises an
+          item in your TokenScope inbox, not a hard stop.
         </p>
       </div>
     </section>

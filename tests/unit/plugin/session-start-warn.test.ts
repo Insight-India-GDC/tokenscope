@@ -19,6 +19,7 @@ import {
   buildHookOutput,
   staleInstancePinWarning,
   trackedRepoTagWarning,
+  insecureServerUrlWarning,
 } from '../../../plugin/hooks/session-start.mjs'
 import { repoTagEnv } from '../../../plugin/scripts/plugin-runtime.mjs'
 
@@ -196,5 +197,22 @@ describe('trackedRepoTagWarning — the repo tag refused a git-tracked file (SS-
     expect(trackedRepoTagWarning({ trackedRefused: true })).toContain('tracked by git')
     expect(trackedRepoTagWarning({ settingsPath: null, changed: false, healed: false, instanceDrifted: false })).toBeNull()
     expect(trackedRepoTagWarning(null)).toBeNull()
+  })
+})
+
+describe('insecureServerUrlWarning — server_url is the MCP URL Claude Code builds verbatim', () => {
+  it('warns on plaintext http to an off-box host', () => {
+    const w = insecureServerUrlWarning('http://tokenscope.example.com')
+    expect(w).toMatch(/not https/)
+    expect(w).toContain('http://tokenscope.example.com')
+  })
+  it('warns on a value that is not a URL', () => {
+    expect(insecureServerUrlWarning('tokenscope.example.com')).toMatch(/not a valid URL/)
+  })
+  it('is silent for https, for loopback http, and when nothing is configured', () => {
+    expect(insecureServerUrlWarning('https://tokenscope.example.com')).toBeNull()
+    expect(insecureServerUrlWarning('http://localhost:3000')).toBeNull()
+    expect(insecureServerUrlWarning('http://127.0.0.1:3000')).toBeNull()
+    expect(insecureServerUrlWarning(null)).toBeNull()
   })
 })

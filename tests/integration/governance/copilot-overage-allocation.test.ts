@@ -15,8 +15,12 @@
  *       or drift the persisted rows.
  *   (H) zero attributable weight -> one explicit unallocated row for the
  *       WHOLE overage net.
- *   (I) a CLOSED finance period refuses the write; reopening unblocks it
- *       (design §8.4 "no silent rewrite").
+ *   (I) a CLOSED month still accepts the write.
+ *   (J) a login bound only by self-claim weighs as unallocated, in usage and
+ *       seat policies; an admin bind homes it on the next recompute.
+ *   (K) a teammate on a plain team node homes on its Business Unit.
+ *   (L) the recipient is the teammate's CURRENT Business Unit, not the staged one.
+ *   (M) no cost-owning ancestor → unallocated, never an invented home.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
@@ -100,7 +104,28 @@ async function seedBill(overageNetUsd: number, opts?: { includedAllowanceUsd?: n
   })
 }
 
-async function seedUsage(teammateId: string, costOwningUnitId: string, actualUsd: number, category = 'copilot_interactive'): Promise<void> {
+type Lane = 'enterprise' | 'self'
+
+const loginOf = (teammateId: string) => `gh-${teammateId.slice(0, 8)}`
+
+/** Bind the teammate's GitHub login: the directory/admin lane (this enterprise) or the self lane. */
+async function bindLogin(teammateId: string, lane: Lane): Promise<void> {
+  await t.client`
+    INSERT INTO teammate_identity_map (teammate_id, system, identifier, identifier_kind, enterprise_slug, source, verified_at)
+    VALUES (${teammateId}::uuid, 'github', ${loginOf(teammateId)}, 'username',
+            ${lane === 'enterprise' ? ENT : null}, ${lane === 'enterprise' ? 'directory-sync' : 'self'},
+            ${lane === 'enterprise' ? new Date().toISOString() : null}::timestamptz)
+    ON CONFLICT DO NOTHING`
+}
+
+async function seedUsage(
+  teammateId: string,
+  costOwningUnitId: string,
+  actualUsd: number,
+  category = 'copilot_interactive',
+  lane: Lane = 'enterprise',
+): Promise<void> {
+  await bindLogin(teammateId, lane)
   await t.db.insert(schema.reconciliationRecord).values({
     teammateId,
     provider: 'github',
@@ -117,10 +142,12 @@ async function seedUsage(teammateId: string, costOwningUnitId: string, actualUsd
     spendClass: 'indicative',
     disposition: 'under',
     status: 'applied',
+    raw: { login: loginOf(teammateId), periodDate: '2026-06-10' },
   })
 }
 
-async function seedSeat(teammateId: string, costOwningUnitId: string): Promise<void> {
+async function seedSeat(teammateId: string, costOwningUnitId: string, lane: Lane = 'enterprise'): Promise<void> {
+  await bindLogin(teammateId, lane)
   await t.db.insert(schema.actualSpend).values({
     teammateId,
     date: MONTH,
@@ -133,6 +160,7 @@ async function seedSeat(teammateId: string, costOwningUnitId: string): Promise<v
     providerEnterpriseId: entId,
     costOwningUnitId,
     chargebackExempt: false,
+    rawPayload: { kind: 'flat-seat', login: loginOf(teammateId) },
   })
 }
 
@@ -160,6 +188,130 @@ describe('copilot-overage-allocation', () => {
     expect(byou.get(couA)).toBe(150)
     expect(byou.get(couB)).toBe(50)
     expect(await sumAllocated()).toBe(200)
+  })
+
+  it('(J) a SELF-ONLY login weighs as unallocated; a directory-bound login homes on its unit; totals equal the bill', async () => {
+    const tmA = await mkTeammate(couA)
+    const tmC = await mkTeammate(couB)
+    await seedUsage(tmA, couA, 50)
+    await seedUsage(tmC, couB, 50, 'copilot_interactive', 'self')
+    await seedBill(100)
+
+    const run = () =>
+      t.db.transaction((tx) =>
+        persistCopilotOverageAllocation(tx, { providerEnterpriseId: entId, enterpriseExternalId: ENT, month: MONTH, actorSystem: 'test' }),
+      )
+    const byou = new Map((await run()).recipients.map((r) => [r.costOwningUnitId, r.allocatedUsd]))
+    expect(byou.get(couA)).toBe(50)
+    expect(byou.has(couB)).toBe(false)
+    expect(byou.get(null)).toBe(50)
+    expect(await sumAllocated()).toBe(100)
+
+    // An admin bind (the enterprise lane, as map.post writes it) verifies the login.
+    await bindLogin(tmC, 'enterprise')
+    const after = new Map((await run()).recipients.map((r) => [r.costOwningUnitId, r.allocatedUsd]))
+    expect(after.get(couB)).toBe(50)
+    expect(after.has(null)).toBe(false)
+    expect(await sumAllocated()).toBe(100)
+  })
+
+  it('(J2) a merged record (raw is an array) is verified only when every login in it is bound', async () => {
+    const tmA = await mkTeammate(couA)
+    await seedUsage(tmA, couA, 40)
+    await t.client`
+      UPDATE reconciliation_record
+      SET raw = ${JSON.stringify([{ login: loginOf(tmA) }, { login: 'gh-unbound-second' }])}::jsonb
+      WHERE teammate_id = ${tmA}::uuid`
+    await seedBill(40)
+    const result = await t.db.transaction((tx) =>
+      persistCopilotOverageAllocation(tx, { providerEnterpriseId: entId, enterpriseExternalId: ENT, month: MONTH, actorSystem: 'test' }),
+    )
+    expect(result.recipients.map((r) => [r.costOwningUnitId, r.allocatedUsd])).toEqual([[null, 40]])
+  })
+
+  it('(J3) seat-share: a self-only seat holder weighs as unallocated', async () => {
+    await t.client`UPDATE provider_enterprise SET overage_allocation_policy = 'seat-share' WHERE id = ${entId}::uuid`
+    await seedSeat(await mkTeammate(couA), couA)
+    await seedSeat(await mkTeammate(couB), couB, 'self')
+    await seedBill(90)
+    const result = await t.db.transaction((tx) =>
+      persistCopilotOverageAllocation(tx, { providerEnterpriseId: entId, enterpriseExternalId: ENT, month: MONTH, actorSystem: 'test' }),
+    )
+    const byou = new Map(result.recipients.map((r) => [r.costOwningUnitId, r.allocatedUsd]))
+    expect(byou.get(couA)).toBe(45)
+    expect(byou.get(null)).toBe(45)
+    expect(byou.has(couB)).toBe(false)
+    expect(await sumAllocated()).toBe(90)
+  })
+
+  it('(K) usage staged on a plain team node homes on the Business Unit above it', async () => {
+    const [team] = await t.db
+      .insert(schema.orgUnit)
+      .values({ regionId, path: `ca.ca-a.team${randomUUID().slice(0, 6)}`, code: `ca-team-${randomUUID().slice(0, 6)}`, displayName: 'team', unitType: 'team', isCostOwningUnit: false })
+      .returning()
+    const tm = await mkTeammate(team!.id)
+    await seedUsage(tm, team!.id, 70)
+    await seedBill(70)
+    const result = await t.db.transaction((tx) =>
+      persistCopilotOverageAllocation(tx, { providerEnterpriseId: entId, enterpriseExternalId: ENT, month: MONTH, actorSystem: 'test' }),
+    )
+    expect(result.recipients.map((r) => [r.costOwningUnitId, r.allocatedUsd])).toEqual([[couA, 70]])
+  })
+
+  /*
+   * (L)/(M) current-org lens §3.3: the split reads the Business Unit the teammate
+   * sits in WHEN IT RUNS. The staged rows' own unit (cost_owning_unit_id, written
+   * at ingest) is recorded placement and must not decide the recipient.
+   */
+  it('(L) consumption-share: a teammate staged under unit A who now sits in B is allocated to B', async () => {
+    const mover = await mkTeammate(couB)
+    const stayer = await mkTeammate(couA)
+    await seedUsage(mover, couA, 60) // staged while they sat in A
+    await seedUsage(stayer, couA, 20)
+    await seedBill(80)
+    const result = await t.db.transaction((tx) =>
+      persistCopilotOverageAllocation(tx, { providerEnterpriseId: entId, enterpriseExternalId: ENT, month: MONTH, actorSystem: 'test' }),
+    )
+    const byou = new Map(result.recipients.map((r) => [r.costOwningUnitId, r.allocatedUsd]))
+    expect(byou.get(couB)).toBe(60)
+    expect(byou.get(couA)).toBe(20)
+    expect(await sumAllocated()).toBe(80)
+  })
+
+  it('(L2) seat-share: a seat stamped with unit A whose holder now sits in B counts for B', async () => {
+    await t.client`UPDATE provider_enterprise SET overage_allocation_policy = 'seat-share' WHERE id = ${entId}::uuid`
+    await seedSeat(await mkTeammate(couB), couA)
+    await seedSeat(await mkTeammate(couA), couA)
+    await seedBill(90)
+    const result = await t.db.transaction((tx) =>
+      persistCopilotOverageAllocation(tx, { providerEnterpriseId: entId, enterpriseExternalId: ENT, month: MONTH, actorSystem: 'test' }),
+    )
+    const byou = new Map(result.recipients.map((r) => [r.costOwningUnitId, r.allocatedUsd]))
+    expect(byou.get(couA)).toBe(45)
+    expect(byou.get(couB)).toBe(45)
+    expect(await sumAllocated()).toBe(90)
+  })
+
+  it('(M) a teammate whose current unit has no cost-owning ancestor is unallocated — never their stamped unit', async () => {
+    const [orphan] = await t.db
+      .insert(schema.orgUnit)
+      .values({ regionId, path: `cz${randomUUID().slice(0, 6)}`, code: `ca-orphan-${randomUUID().slice(0, 6)}`, displayName: 'orphan', unitType: 'team', isCostOwningUnit: false })
+      .returning()
+    const tm = await mkTeammate(orphan!.id)
+    await seedUsage(tm, couA, 30) // staged under A
+    await t.client`UPDATE provider_enterprise SET overage_allocation_policy = 'consumption-share' WHERE id = ${entId}::uuid`
+    await seedBill(30)
+    const result = await t.db.transaction((tx) =>
+      persistCopilotOverageAllocation(tx, { providerEnterpriseId: entId, enterpriseExternalId: ENT, month: MONTH, actorSystem: 'test' }),
+    )
+    expect(result.recipients.map((r) => [r.costOwningUnitId, r.allocatedUsd])).toEqual([[null, 30]])
+
+    await t.client`UPDATE provider_enterprise SET overage_allocation_policy = 'seat-share' WHERE id = ${entId}::uuid`
+    await seedSeat(tm, couA)
+    const seats = await t.db.transaction((tx) =>
+      persistCopilotOverageAllocation(tx, { providerEnterpriseId: entId, enterpriseExternalId: ENT, month: MONTH, actorSystem: 'test' }),
+    )
+    expect(seats.recipients.map((r) => [r.costOwningUnitId, r.allocatedUsd])).toEqual([[null, 30]])
   })
 
   it('(B) excess-share: weight is excess above the blended per-seat share; a zero-excess CoU gets no row', async () => {

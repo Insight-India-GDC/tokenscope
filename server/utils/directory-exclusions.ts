@@ -15,17 +15,13 @@
  * MATCHING: `*` is the only wildcard (any run, incl. empty). Everything else is
  * a literal. Both the pattern and the UPN are lowercased (the UPN is already
  * lowercased on read in azure/directory.ts, and the unique index is on
- * lower(pattern)); we do NOT also use the `i` regex flag — one normalisation
- * mechanism, not two. Anchored `^…$` so a pattern matches the WHOLE UPN.
+ * lower(pattern)). A pattern matches the WHOLE UPN.
  */
 import { sql } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { LIKE_ESCAPE } from './sql-like'
 
 type Db = PostgresJsDatabase<Record<string, unknown>>
-
-/** Regex metacharacters to escape in the literal (non-`*`) parts of a pattern. */
-const RE_META = /[.*+?^${}()|[\]\\]/g
 
 /**
  * Validate a pattern for the match-all footgun and structural sanity. A pattern
@@ -58,16 +54,35 @@ export function validateExclusionPattern(raw: string): string | null {
   return null
 }
 
-/** Compile a `*`-glob to an anchored RegExp. Consecutive `*` collapse to one
- *  `.*` to avoid needless polynomial backtracking. Caller passes a
- *  validate-passed pattern; we still escape fully (defense in depth). */
-export function upnGlobToRegExp(pattern: string): RegExp {
-  const collapsed = pattern.trim().toLowerCase().replace(/\*+/g, '*')
-  const body = collapsed
-    .split('*')
-    .map((seg) => seg.replace(RE_META, '\\$&'))
-    .join('.*')
-  return new RegExp(`^${body}$`)
+/**
+ * True when the `*`-glob matches the WHOLE upn. A two-pointer match with
+ * backtrack-to-last-star, O(len(pattern) * len(upn)) at worst: a RegExp with one
+ * `.*` per wildcard backtracks polynomially, which a many-wildcard pattern turns
+ * into seconds per sign-in.
+ */
+export function upnGlobMatches(pattern: string, upn: string): boolean {
+  const p = pattern.trim().toLowerCase()
+  const u = upn.toLowerCase()
+  let pi = 0
+  let ui = 0
+  let star = -1
+  let resume = 0
+  while (ui < u.length) {
+    if (pi < p.length && p[pi] === '*') {
+      star = pi++
+      resume = ui
+    } else if (pi < p.length && p[pi] === u[ui]) {
+      pi++
+      ui++
+    } else if (star >= 0) {
+      pi = star + 1
+      ui = ++resume
+    } else {
+      return false
+    }
+  }
+  while (pi < p.length && p[pi] === '*') pi++
+  return pi === p.length
 }
 
 /**
@@ -77,7 +92,7 @@ export function upnGlobToRegExp(pattern: string): RegExp {
  * `ESCAPE ''` before Postgres ever sees it, silently disabling the escaping
  * this function just did (see ./sql-like's header for the full trap). `*` →
  * `%`; LIKE metacharacters (`% _ \`) in the literal parts are escaped.
- * Agrees with `upnGlobToRegExp` for these patterns (both treat `.` as
+ * Agrees with `upnGlobMatches` for these patterns (both treat `.` as
  * literal).
  */
 export function upnGlobToSqlLike(pattern: string): string {
@@ -100,7 +115,7 @@ export function isExcludedUpn(upn: string | null | undefined, patterns: string[]
   if (!upn || patterns.length === 0) return false
   const u = upn.toLowerCase()
   for (const p of patterns) {
-    if (upnGlobToRegExp(p).test(u)) return true
+    if (upnGlobMatches(p, u)) return true
   }
   return false
 }

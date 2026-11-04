@@ -108,9 +108,13 @@ test.describe('Convergence — data parity across surfaces', () => {
    * contributor with no authority over delta — exercises the
    * links-withheld path below.
    */
-  test('"Open project" → /allocations/{id} (no query) + form NOT expanded (PM recipient)', async ({
+  test('"Open project" → /projects/{code}, the project page, not the budget editor (PM recipient)', async ({
     page,
   }) => {
+    // Issue 488: "Open project" opened the budget editor, which a member who is
+    // not the manager cannot open. It now opens the project page, whose gate
+    // (membership, BU ownership or a region admin) the server checks before it
+    // emits the link. The editor stays one click away on "Add top-up".
     await signInAs(page, 'developer')
     await page.goto(`${baseUrl}/inbox`)
     await page.waitForLoadState('networkidle')
@@ -123,15 +127,10 @@ test.describe('Convergence — data parity across surfaces', () => {
     const openLink = page.locator('[data-testid="drawer-open-project"]')
     await expect(openLink).toBeVisible()
     const href = await openLink.getAttribute('href')
-    expect(href).toMatch(/^\/allocations\/[0-9a-f-]+$/) // no query string
+    expect(href).toBe('/projects/CSL-AII')
 
     await openLink.click()
-    await page.waitForURL(/\/allocations\/[0-9a-f-]+$/)
-    // Top-up form should NOT be pre-expanded.
-    await expect(page.locator('[data-testid="topup-form"]')).toHaveCount(0)
-    // Allocator should render the CSL-AII budget (PM admitted via the
-    // relationship arm — Priya's org role is developer).
-    await expect(page.locator('[data-testid="alloc-budget"]')).toHaveValue('12500.00')
+    await page.waitForURL(/\/projects\/CSL-AII$/)
   })
 
   test('"Add top-up" → /allocations/{id}?focus=topup + form expanded + amount focused + item NOT auto-resolved (PM recipient)', async ({

@@ -272,7 +272,7 @@ moves new rows only; older rows stay in `log-<name>`.
    conditions to the ntfy topic in `NUXT_OPS_ALERT_NTFY_URL` (empty means no
    push).
 10. It keeps each condition's state in Postgres and writes every severity to
-   the platform admins' inbox and the audit log.
+   the Admins' inbox and the audit log.
 
 *Rules 1 to 6 run in Azure Monitor and evaluate whether or not the app is up,
 and notify through the action group when one is configured; the in-app worker covers what only the app can measure, rule

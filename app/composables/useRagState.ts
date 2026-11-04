@@ -1,8 +1,8 @@
 /*
  * useRagState — shared RAG threshold computation.
  *
- * Single source of truth for "percent → severity" — used by UiPbar,
- * UiRagChip, UiKpi, and any consumer that needs RAG state without a
+ * Single source of truth for "percent → severity" — used by UiPbar, UiKpi,
+ * and any consumer that needs RAG state without a
  * component. Thresholds match design-notes §Screen 2:
  *   < 0.75 → green / harmony  (Healthy)
  *   ≥ 0.75 → amber             (Watch)

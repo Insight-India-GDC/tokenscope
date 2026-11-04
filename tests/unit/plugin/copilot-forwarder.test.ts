@@ -16,6 +16,9 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+// Windows (#430): skipped on win32 because this file the span-file owner check compares uids; Windows has none, so isForeignOwned is a deliberate no-op there (copilot-forwarder.mjs) and the uid-mismatch cases cannot hold. The git-tracked half of the guard is platform-neutral.
+const POSIX_ONLY = process.platform === 'win32'
+
 // The forwarder reads TOKENSCOPE_FWD_OFFSET_FILE ONCE at module load, so the
 // override must be in place BEFORE the dynamic import — setting it in beforeEach
 // (the old shape) was too late and the suite silently round-tripped through the
@@ -86,7 +89,7 @@ afterEach(() => {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe('clampForwardIntervalMs — PLG-7 garbage-interval guard', () => {
+describe.skipIf(POSIX_ONLY)('clampForwardIntervalMs — PLG-7 garbage-interval guard', () => {
   it('passes a sane numeric interval through (number or numeric string)', () => {
     expect(clampForwardIntervalMs(5_000)).toBe(5_000)
     expect(clampForwardIntervalMs('30000')).toBe(30_000)
@@ -117,7 +120,7 @@ describe('clampForwardIntervalMs — PLG-7 garbage-interval guard', () => {
   })
 })
 
-describe('readNewSpans — basic tailing', () => {
+describe.skipIf(POSIX_ONLY)('readNewSpans — basic tailing', () => {
   it('returns empty array when file does not exist', () => {
     const spans = readNewSpans(spanFile)
     expect(spans).toEqual([])
@@ -175,7 +178,7 @@ describe('readNewSpans — basic tailing', () => {
   })
 })
 
-describe('offset persistence — M3 + L2 guards', () => {
+describe.skipIf(POSIX_ONLY)('offset persistence — M3 + L2 guards', () => {
   it('persistOffset + loadPersistedOffset round-trip restores offset', () => {
     writeFileSync(spanFile, chatSpanLine() + '\n')
     readNewSpans(spanFile) // advances offset
@@ -271,7 +274,7 @@ describe('offset persistence — M3 + L2 guards', () => {
 // file COMMITTED INTO THE REPOSITORY is read from byte 0 and POSTed to ingest
 // under the developer's own emit bearer. readNewSpans now refuses (1) a file not
 // owned by this process's uid and (2) a file git tracks, BEFORE doing any read.
-describe('isForeignOwned — pure uid check', () => {
+describe.skipIf(POSIX_ONLY)('isForeignOwned — pure uid check', () => {
   it('false when the stat uid matches this process', () => {
     const uid = typeof process.getuid === 'function' ? process.getuid() : 0
     expect(isForeignOwned({ uid })).toBe(false)
@@ -288,7 +291,7 @@ describe('isForeignOwned — pure uid check', () => {
   })
 })
 
-describe('isGitTracked — pure git-tracked check', () => {
+describe.skipIf(POSIX_ONLY)('isGitTracked — pure git-tracked check', () => {
   it('false for a path outside any git repository', () => {
     expect(isGitTracked(spanFile)).toBe(false) // spanFile lives under a bare tmpdir, never a repo
   })
@@ -307,7 +310,7 @@ describe('isGitTracked — pure git-tracked check', () => {
   })
 })
 
-describe('readNewSpans / readAndForward — provenance guard integration', () => {
+describe.skipIf(POSIX_ONLY)('readNewSpans / readAndForward — provenance guard integration', () => {
   it('refuses a git-tracked span file (root-cause scenario): readNewSpans returns nothing', () => {
     initGitRepo(dir)
     // Simulate a span file planted/committed into the repo — the exact vector a
@@ -368,7 +371,7 @@ describe('readNewSpans / readAndForward — provenance guard integration', () =>
 // client-plugins:idor:0001 — a committed symlink `.tokenscope.local -> evil/` slips
 // past the git-tracked check (git refuses a pathspec beyond a symlink) and the uid
 // check (the victim owns the checkout). The directory itself is refused.
-describe('symlinked .tokenscope.local — refused before any read or write', () => {
+describe.skipIf(POSIX_ONLY)('symlinked .tokenscope.local — refused before any read or write', () => {
   const savedCwd = process.cwd()
   afterEach(() => process.chdir(savedCwd))
 

@@ -2,11 +2,11 @@
  * Adapter & identity-resolver registration seams — the ONLY shared edit point
  * between the two concurrent streams (Stream A = Anthropic, Stream B = GitHub).
  *
- * Phase 0 ships these EMPTY. Each stream registers its provider by adding one
- * line below when its adapter/resolver lands (a 1-line add to a known list — git
- * merges adjacent adds cleanly; no other foundation file changes). The
- * reconciliation-sync / identity-sync worker shells iterate over whatever is
- * registered, so until a stream registers, that provider is a clean no-op.
+ * Each provider registers by one line below (a 1-line add to a known list; no
+ * other foundation file changes). The reconciliation-sync / identity-sync
+ * workers iterate over whatever is registered. Registered today: the Anthropic
+ * and GitHub adapters, and the GitHub identity resolver. A provider with no
+ * entry here is a clean no-op for that worker.
  */
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type * as schema from '../../../drizzle/schema'
@@ -38,18 +38,14 @@ export type AdapterFactory = (db: Db, scope: AdapterScope) => Adapter
 /** Seeds teammate_identity_map from a provider directory (seats + SCIM/SAML). */
 export type IdentityResolver = (db: Db) => Promise<{ provider: ReconcileProvider; upserts: number }>
 
-/*
- *   Stream A (Anthropic): registered below.
- *   Stream B adds: github: createGithubAdapter
- */
+/* Both streams' adapters are registered. */
 export const ADAPTER_FACTORIES: Partial<Record<ReconcileProvider, AdapterFactory>> = {
   anthropic: createAnthropicAdapter,
   github: createGithubAdapter,
 }
 
 /*
- * Phase 0: empty.
- *   Stream A adds the Anthropic resolver (actor email -> teammate)
- *   Stream B adds the GitHub resolver (seats + SCIM/SAML -> github_login -> teammate)
+ * GitHub resolver (seats + SCIM/SAML -> github_login -> teammate) is registered.
+ * Anthropic has none: its usage rows carry the actor email, resolved at reconcile.
  */
 export const IDENTITY_RESOLVERS: IdentityResolver[] = [createGithubIdentityResolver()]

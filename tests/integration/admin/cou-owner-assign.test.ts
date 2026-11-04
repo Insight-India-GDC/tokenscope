@@ -36,6 +36,8 @@ function ev(opts: { session: Session; unitId: string; body: unknown }) {
   return e as unknown as Parameters<typeof handler>[0]
 }
 const admin = (): Session => ({ teammateId: ADMIN_ID, email: 'ow-admin@x.test', displayName: 'Admin', role: 'admin', regionId, orgPath: 'ow' } as Session)
+// Provisioning a new person as an owner is platform-admin only.
+const platformAdmin = (): Session => ({ ...admin(), role: 'platform-admin' } as Session)
 
 async function unplacedIdFor(rid: string): Promise<string> {
   const [row] = await t.client<{ id: string }[]>`
@@ -84,7 +86,7 @@ beforeEach(async () => {
 
 describe('cost-centre owner assignment (directory-backed)', () => {
   it('provisions the teammate from a directory oid and assigns ownership', async () => {
-    const res = (await handler(ev({ session: admin(), unitId: ids['prac']!, body: { oid: 'dir-oid-0001' } }))) as { teammate_id: string; email: string; provisioned: boolean; identity_adopted: boolean }
+    const res = (await handler(ev({ session: platformAdmin(), unitId: ids['prac']!, body: { oid: 'dir-oid-0001' } }))) as { teammate_id: string; email: string; provisioned: boolean; identity_adopted: boolean }
     expect(res.provisioned).toBe(true)
     expect(res.identity_adopted).toBe(false)
     expect(res.email).toBe('sasha.kumar@example.com')
@@ -112,7 +114,7 @@ describe('cost-centre owner assignment (directory-backed)', () => {
      * before the ownership check, so the teammate count is the assertion and
      * the rejection is the new invariant, asserted beside it.
      */
-    await handler(ev({ session: admin(), unitId: ids['prac']!, body: { oid: 'dir-oid-0002' } })) // provisions tom
+    await handler(ev({ session: platformAdmin(), unitId: ids['prac']!, body: { oid: 'dir-oid-0002' } })) // provisions tom
     await expect(
       handler(ev({ session: admin(), unitId: ids['team']!, body: { oid: 'dir-oid-0002' } })),
     ).rejects.toMatchObject({ statusCode: 409 })
@@ -127,7 +129,7 @@ describe('cost-centre owner assignment (directory-backed)', () => {
      * skips them entirely, so a multi-BU owner silently places nobody and their
      * reports pile up on the region default.
      */
-    await handler(ev({ session: admin(), unitId: ids['prac']!, body: { oid: 'dir-oid-0003' } }))
+    await handler(ev({ session: platformAdmin(), unitId: ids['prac']!, body: { oid: 'dir-oid-0003' } }))
     await expect(
       handler(ev({ session: admin(), unitId: ids['team']!, body: { oid: 'dir-oid-0003' } })),
     ).rejects.toMatchObject({ statusCode: 409 })
@@ -138,6 +140,54 @@ describe('cost-centre owner assignment (directory-backed)', () => {
       JOIN teammate tm ON tm.id = co.teammate_id
       WHERE tm.entra_oid = 'dir-oid-0003' AND co.revoked_at IS NULL`
     expect(own!.n).toBe('1')
+  })
+
+  it('refuses a FOREIGN-region teammate_id before resolving its identity (422 Cross-region owner, no email)', async () => {
+    const [rb] = await t.client<{ id: string }[]>`
+      INSERT INTO region (code, display_name) VALUES ('ow-b', 'OW B') RETURNING id::text AS id`
+    const [ouB] = await t.client<{ id: string }[]>`
+      INSERT INTO org_unit (region_id, parent_id, path, code, display_name, unit_type, is_cost_owning_unit)
+      VALUES (${rb!.id}::uuid, NULL, 'owb'::ltree, 'owb', 'OW B', 'bu', true) RETURNING id::text AS id`
+    // Not in the mock directory: identity resolution would answer 422 naming this email.
+    const [foreign] = await t.client<{ id: string }[]>`
+      INSERT INTO teammate (entra_oid, email, display_name, region_id, org_unit_id, role, source)
+      VALUES ('bill:9a1e0000-0000-4000-8000-000000000b01', 'ghost.owner@x.test', 'Ghost', ${rb!.id}::uuid, ${ouB!.id}::uuid, 'developer', 'bill')
+      RETURNING id::text AS id`
+    const err = await handler(ev({ session: admin(), unitId: ids['prac']!, body: { teammate_id: foreign!.id } })).then(
+      () => null,
+      (e: unknown) => e as { statusCode: number; statusMessage: string; data?: unknown },
+    )
+    expect(err).toMatchObject({ statusCode: 422, statusMessage: 'Cross-region owner' })
+    expect(JSON.stringify(err!.data)).not.toContain('ghost.owner@x.test')
+    await t.client`DELETE FROM teammate WHERE id = ${foreign!.id}::uuid`
+    await t.client`DELETE FROM org_unit WHERE id = ${ouB!.id}::uuid`
+    await t.client`DELETE FROM region WHERE id = ${rb!.id}::uuid`
+  })
+
+  it('refuses a region admin who picks someone not yet a teammate (403), provisioning nothing', async () => {
+    /*
+     * A unit owner is a manager-walk target and the walk is estate-wide, so a
+     * director named here would place unplaced people from every region. A
+     * region admin names existing teammates only; a new person is a
+     * platform-admin pick, like region leaders.
+     */
+    await expect(
+      handler(ev({ session: admin(), unitId: ids['prac']!, body: { oid: 'dir-oid-0004' } })),
+    ).rejects.toMatchObject({ statusCode: 403, statusMessage: 'Owner is not a teammate yet' })
+    const [n] = await t.client<{ n: string }[]>`SELECT count(*)::text AS n FROM teammate WHERE entra_oid = 'dir-oid-0004'`
+    expect(n!.n).toBe('0')
+    const [own] = await t.client<{ n: string }[]>`SELECT count(*)::text AS n FROM cou_owner`
+    expect(own!.n).toBe('0')
+    const [aud] = await t.client<{ n: string }[]>`
+      SELECT count(*)::text AS n FROM audit_event WHERE event_type = 'teammate-provisioned' AND payload->>'oid' = 'dir-oid-0004'`
+    expect(aud!.n).toBe('0')
+  })
+
+  it('lets a region admin pick a directory person who is already a teammate in the region', async () => {
+    await seedTeammate({ oid: 'dir-oid-0005', email: 'nadia.haddad@example.com' })
+    const res = (await handler(ev({ session: admin(), unitId: ids['prac']!, body: { oid: 'dir-oid-0005' } }))) as { provisioned: boolean; email: string }
+    expect(res.provisioned).toBe(false)
+    expect(res.email).toBe('nadia.haddad@example.com')
   })
 
   it('rejects a body with neither oid nor teammate_id (400)', async () => {
@@ -170,13 +220,13 @@ describe('directory-exclusion policy (#121)', () => {
   it('FAIL-OPEN: with NO pattern configured, even an onmicrosoft account is assignable', async () => {
     // A genuinely cloud-only real user (dir-oid-0008, no vanity twin) must not
     // be excluded by default — the portable default excludes nobody.
-    const res = (await handler(ev({ session: admin(), unitId: ids['prac']!, body: { oid: 'dir-oid-0008' } }))) as { provisioned: boolean }
+    const res = (await handler(ev({ session: platformAdmin(), unitId: ids['prac']!, body: { oid: 'dir-oid-0008' } }))) as { provisioned: boolean }
     expect(res.provisioned).toBe(true)
   })
 
   it('the STANDARD account is always assignable, even with the onmicrosoft pattern set', async () => {
     await seedPattern()
-    const res = (await handler(ev({ session: admin(), unitId: ids['prac']!, body: { oid: RIO_PRIMARY_OID } }))) as { provisioned: boolean; email: string }
+    const res = (await handler(ev({ session: platformAdmin(), unitId: ids['prac']!, body: { oid: RIO_PRIMARY_OID } }))) as { provisioned: boolean; email: string }
     expect(res.provisioned).toBe(true)
     expect(res.email).toBe(RIO_EMAIL)
   })

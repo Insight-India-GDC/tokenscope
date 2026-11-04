@@ -27,6 +27,23 @@ export const PLACED_VIA_MANAGER_CHAIN = 'manager-chain'
 export const PLACED_VIA_ATTRIBUTE_RULE = 'attribute-rule'
 
 /**
+ * Placed by an admin applying a placement-check proposal. NOT derived: an admin
+ * confirmed it, so no worker re-derives it; the next check reports any drift.
+ * It also keeps the home out of manualPlacementSql (it carries `placedVia`).
+ */
+export const PLACED_VIA_PLACEMENT_CHECK = 'placement-check'
+
+/**
+ * First sign-in homes: a REGION the directory derived (on its Unplaced node), or
+ * the default region when the directory gave nothing in time. Recorded so the
+ * placement check can say so; not re-derivable kinds, since a signed-in person
+ * is never moved automatically. A unit derived at sign-in records the derived
+ * kind (manager-chain / attribute-rule) instead.
+ */
+export const PLACED_VIA_JIT_DIRECTORY = 'jit-directory'
+export const PLACED_VIA_JIT_DEFAULT = 'jit-default'
+
+/**
  * Every DERIVED placement kind — i.e. every value of `metadata.placedVia` whose
  * holder may be re-derived by a later pass. An admin placement has no
  * `placedVia` at all and is therefore never in this set.
@@ -59,8 +76,20 @@ export const PLACEMENT_PROVENANCE_KEYS = [
   'placedVia',
   'placedOwnerOid',
   'placedAttribute',
+  'placedStep',
   'placedAt',
 ] as const
+
+/** The provenance keys present in `metadata`, as strings; null when none is. */
+export function provenanceOf(metadata: unknown): Record<string, string> | null {
+  if (!metadata || typeof metadata !== 'object') return null
+  const out: Record<string, string> = {}
+  for (const k of PLACEMENT_PROVENANCE_KEYS) {
+    const v = (metadata as Record<string, unknown>)[k]
+    if (v !== undefined && v !== null) out[k] = String(v)
+  }
+  return Object.keys(out).length > 0 ? out : null
+}
 
 /**
  * The audit event type for a teammate's org_unit changing. ONE type for every

@@ -24,19 +24,11 @@
  * entry is hidden — whereas two independent header fetches could fail apart, and
  * a working ownership fetch would still have shown the link. That is the price
  * of one verdict instead of three inputs, and it errs closed.
- * A `revoke-all` grant (mig 0130) still zeroes only the GRANT arm — a revoked
- * admin or owner keeps the nav entry and lands on the empty shell, as before.
- * That is deliberately preserved, not endorsed: changing it is a product
- * decision, not a refactor.
  */
 import type { H3Event } from 'h3'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { isReportingRole } from '../../shared/auth/roles'
-import {
-  computeOwnsCostCentre,
-  resolveReportPermissions,
-  resolveReportAccessRevoked,
-} from './report-scope'
+import { computeOwnsCostCentre, resolveReportPermissions } from './report-scope'
 
 type Tx = PostgresJsDatabase<Record<string, unknown>>
 
@@ -86,47 +78,12 @@ export async function resolveReportingNav(
   const byRole = reportingNavFromRoleAlone(role)
   if (byRole) return byRole
 
-  /*
-   * THE ORDER IS LOAD-BEARING, and it is the canonical one — ownership, then
-   * permissions, then revoke, exactly as `resolveReportGrants`
-   * (report-scope.ts:185-187) sequences the same three reads.
-   *
-   * Reading the revoke LAST is what makes deny win. These are three separate
-   * statements under READ COMMITTED, so each sees its own snapshot:
-   *
-   *   permissions@T1 (sees the grant) → revoke@T2 (sees a revoke committed
-   *   after T1) ⇒ denied. Correct.
-   *
-   * The reverse order loses that. A first draft here read the revoke FIRST and
-   * ran it concurrently with ownership: a revoke committed between the two
-   * statements was invisible to the revoke read AND its positive grant was
-   * still visible to the permissions read, so the caller kept access. Deny did
-   * not win, and this file's own claim of exact equivalence was false for that
-   * window. Do not re-introduce the Promise.all — the concurrency saved one
-   * round-trip on a once-per-app-load probe and cost correctness.
-   */
   const owns = await computeOwnsCostCentre(tx, teammateId)
-  /*
-   * Ownership alone settles BOTH outputs — `visible` is already true and
-   * `scope` is already the deep-link — so the two reads below could only
-   * produce a verdict identical to this one.
-   *
-   * Returning here is not a shortcut past the revoke, but the reason is
-   * narrower than it first looks and is stated precisely because getting it
-   * wrong would be an access bug. In THIS EXPRESSION the ownership arm has
-   * never consulted the revoke — that is the behaviour the browser had and
-   * this relocation preserves. It is NOT a general claim that a revoke leaves
-   * ownership alone: report AUTHORIZATION denies a revoked owner outright
-   * (`effectiveReportGrants` returns REVOKED_GRANTS before ownership is even
-   * read, shared/auth/report-visibility.ts). So a revoked owner keeps the nav
-   * entry and lands on a shell with no scopes — deliberate, documented, and
-   * not something this early return introduces.
-   */
+  // Ownership alone settles both outputs; the permissions read could not change them.
   if (owns) return { visible: true, scope: 'cost-centre' }
 
   const permissions = await resolveReportPermissions(event, tx, teammateId)
-  const revoked = await resolveReportAccessRevoked(event, tx, teammateId)
-  const granted = !revoked && permissions.length > 0
+  const granted = permissions.length > 0
 
   return { visible: granted, scope: null }
 }

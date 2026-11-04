@@ -10,6 +10,7 @@ import {
   parseSignalRows,
   emptyParseCounters,
   buildSessionUsageKql,
+  buildSessionUsageKqlGenAI,
   KQL_PROJECTED_COLUMNS,
 } from '../../../server/azure/reader'
 
@@ -441,5 +442,63 @@ describe('buildSessionUsageKql — the intermediate projection carries every ali
 
   it('reads the emitting account from Attributes[user.email]', () => {
     expect(buildSessionUsageKql(SID)).toContain("_uemail = tostring(Attributes['user.email'])")
+  })
+  it('reads the folder default activity from ResourceAttributes[tokenscope.activity] in both builders (#475)', () => {
+    expect(KQL_PROJECTED_COLUMNS.Activity).toBe('_act')
+    for (const kql of [buildSessionUsageKql(SID), buildSessionUsageKqlGenAI(SID)]) {
+      expect(kql).toContain("_act = tostring(ResourceAttributes['tokenscope.activity'])")
+      expect(kql).toContain('Activity = _act')
+    }
+  })
+})
+
+/*
+ * #475 — tokenscope.activity, the folder's default activity. Optional-field
+ * shape: a bad value drops the field, keeps the row, and is counted. The
+ * vocabulary gate is the joiner's; the parser only decodes and bounds.
+ */
+describe('parseLogAnalyticsRows — tokenscope.activity (#475)', () => {
+  const ACT_COLS = [...COLS, 'Activity']
+  const row = (act: unknown) => [['sid-1', 'm', 'input', 100, '2026-06-01T00:00:00Z', 'r', act]]
+
+  it('surfaces a plain label, trimmed', () => {
+    expect(parseLogAnalyticsRows(ACT_COLS, row('  Code review '))[0]!.activity).toBe('Code review')
+  })
+
+  it('decodes a percent-encoded value (OTEL_RESOURCE_ATTRIBUTES encoding)', () => {
+    expect(parseLogAnalyticsRows(ACT_COLS, row('code%20review'))[0]!.activity).toBe('code review')
+    expect(parseLogAnalyticsRows(ACT_COLS, row('R%C3%A9sum%C3%A9'))[0]!.activity).toBe('Résumé')
+    // A bare % with no hex pair is not an encoding: left as it is.
+    expect(parseLogAnalyticsRows(ACT_COLS, row('100%'))[0]!.activity).toBe('100%')
+  })
+
+  it('treats absent, empty or blank as absent, not as a reject', () => {
+    const counters = emptyParseCounters()
+    expect(parseLogAnalyticsRows(COLS, [['s', 'm', 'input', 100, '2026-06-01T00:00:00Z', 'r']], counters)[0]!.activity).toBeUndefined()
+    expect(parseLogAnalyticsRows(ACT_COLS, row(''), counters)[0]!.activity).toBeUndefined()
+    expect(parseLogAnalyticsRows(ACT_COLS, row(null), counters)[0]!.activity).toBeUndefined()
+    expect(parseLogAnalyticsRows(ACT_COLS, row('   '), counters)[0]!.activity).toBeUndefined()
+    expect(counters.rejectedActivity).toBe(0)
+  })
+
+  it('rejects over-length, control characters (raw or encoded) and bad encoding: drops ONLY the field, counts it', () => {
+    const counters = emptyParseCounters()
+    const bad = [
+      'a'.repeat(65), // > ACTIVITY_LABEL_MAX (64)
+      '%61'.repeat(65), // decodes past the bound
+      'x'.repeat(64 * 12 + 1), // too long to be worth decoding
+      'code\nreview',
+      'code%0Areview', // an encoded newline is still a newline
+      'code\u009breview', // C1 (CSI) as well as C0
+      '%E0%A4%A', // malformed percent-encoding
+    ]
+    for (const v of bad) {
+      const out = parseLogAnalyticsRows(ACT_COLS, row(v), counters)
+      expect(out, JSON.stringify(v)).toHaveLength(1)
+      expect(out[0]!.activity, JSON.stringify(v)).toBeUndefined()
+    }
+    expect(counters.rejectedActivity).toBe(bad.length)
+    // Exactly at the bound passes, counted in code points (an emoji is one).
+    expect(parseLogAnalyticsRows(ACT_COLS, row('\u{1F600}'.repeat(64)))[0]!.activity).toBe('\u{1F600}'.repeat(64))
   })
 })

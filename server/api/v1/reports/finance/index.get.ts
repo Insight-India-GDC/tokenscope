@@ -116,8 +116,6 @@ export default defineEventHandler(async (event) => {
       providerStates: providerStatesForWindow(win, now),
       coverage: await reportCoverageMeta(tx),
       scope: 'finance',
-      // Finance homes bill rows to the CURRENT org structure (D-Homing interim).
-      pointInTimeDims: false,
       ...(win.isMonth ? {} : { range: { from: win.from, to: win.to } }),
     }
 

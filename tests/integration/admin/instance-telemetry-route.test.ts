@@ -429,3 +429,40 @@ describe('instance-telemetry — the client version claims', () => {
     expect(usageRequestCount).toBe(before)
   })
 })
+
+// Current-org lens (§3.2): the clamp follows where the device's teammate sits NOW, so the
+// admin who sees the device on the attribution-gaps list can also diagnose it.
+describe('instance-telemetry — region clamp follows the teammate, not the attestation stamp', () => {
+  it('a device stamped region A whose teammate now sits in B: denied to A, served to B with its ledger', async () => {
+    const instanceId = randomUUID()
+    const [mover] = await t.db
+      .insert(schema.teammate)
+      .values({ entraOid: 'oid-it-mover', email: 'it-mover@x.test', role: 'developer', regionId: regionBId, orgUnitId: ouBId })
+      .returning()
+    const [adminB] = await t.db
+      .insert(schema.teammate)
+      .values({ entraOid: 'oid-it-admin-b', email: 'it-admin-b@x.test', role: 'admin', regionId: regionBId, orgUnitId: ouBId })
+      .returning()
+    await t.client.unsafe(`
+      INSERT INTO instance_attestation
+        (instance_id, principal_oid, principal_email, teammate_id, project_code_hash, raw_project_code,
+         tool, ts_start, last_bearer_at,
+         attestation_state, region_id, org_unit_id, cost_owning_unit_id)
+      VALUES ('${instanceId}','oid-it-mover','it-mover@x.test','${mover!.id}','h-it-m','ITM',
+         'claude-code', NOW() - INTERVAL '30 days', NOW(),
+         'attested','${regionId}','${ouId}','${ouId}')`)
+    await t.db.insert(schema.attributionRecord).values({
+      instanceId, teammateId: mover!.id, regionId, orgUnitId: ouId, costOwningUnitId: ouId,
+      tool: 'claude-code', model: 'claude-sonnet-4-7', tokenType: 'input', tokens: 100n, costUsd: '0.01',
+      fidelityTier: 'tier-2', costBasis: 'telemetry-only', tsEvent: new Date(Date.now() - 3600_000),
+    })
+
+    await expect(handler(ev({ session: admin(), query: { instanceId } }))).rejects.toMatchObject({ statusCode: 403 })
+
+    const adminBSession: Session = { teammateId: adminB!.id, email: 'it-admin-b@x.test', displayName: 'Admin B', role: 'admin', regionId: regionBId, orgPath: 'it-b.svc' }
+    const r = (await handler(ev({ session: adminBSession, query: { instanceId } }))) as Resp
+    expect(r.known).toBe(true)
+    // Its records are stamped region A; the ledger count must not drop them for that.
+    expect(r.attribution.records).toBe(1)
+  })
+})

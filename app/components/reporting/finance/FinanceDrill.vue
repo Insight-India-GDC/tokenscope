@@ -138,7 +138,7 @@ function othersTitle(b: DominantLane): string {
             kind="rag-amber"
             dot="amber"
             data-testid="finance-copilot-pending-chip"
-            title="Copilot pooled chargeback is not yet validated on Dev (Σ=bill) — Anthropic chargeable only until then."
+            title="Copilot pooled chargeback is not yet validated against the bill, so this is Anthropic chargeable only until then."
           >Copilot chargeback pending</UiBadge>
           <UiBadge
             v-else-if="drill.copilot.unsettled"
@@ -172,15 +172,15 @@ function othersTitle(b: DominantLane): string {
         label="Copilot pooled"
         :value="drill.copilot.chargeableUsd != null ? fmtUsd(drill.copilot.chargeableUsd) : 'pending'"
         :sub="drill.copilot.unclassifiedNetUsd > 0
-          ? `pooled net (org → CoU) · + ${fmtUsd(drill.copilot.unclassifiedNetUsd)} unclassified (needs mapping, never charged)`
-          : 'pooled net (org → CoU)'"
+          ? `pooled net (org → Business Unit) · + ${fmtUsd(drill.copilot.unclassifiedNetUsd)} unclassified (needs mapping, never charged)`
+          : 'pooled net (org → Business Unit)'"
       />
     </div>
 
     <!-- Anthropic per-teammate charges -->
     <UiCard data-testid="finance-anthropic-charges">
       <div class="text-sm font-semibold text-carbon-1 mb-1">Anthropic — per-teammate charges</div>
-      <div class="text-[11px] text-carbon-3 mb-3">Homed to the current cost-owning structure.</div>
+      <div class="text-[11px] text-carbon-3 mb-3">Homed to the current Business Unit structure.</div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead>
@@ -234,7 +234,7 @@ function othersTitle(b: DominantLane): string {
           </tbody>
           <tfoot>
             <tr class="border-t-2 border-calm-2 text-carbon-2">
-              <td colspan="2" class="py-2.5 font-semibold">Σ Anthropic chargeable</td>
+              <td colspan="2" class="py-2.5 font-semibold">Total Anthropic chargeable</td>
               <td class="py-2.5 text-right tabular-nums font-semibold">{{ fmtUsd(drill.anthropicChargeableUsd) }}</td>
             </tr>
           </tfoot>

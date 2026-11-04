@@ -381,6 +381,24 @@ describe('3. admin grants — region-scoping (F3.3)', () => {
     expect(out.revoked).toBe(true)
   })
 
+  it('region admin revoking a same-region platform-admin\'s grant → 403, grant stays live; platform-admin may', async () => {
+    const grantPlatform = await insertGrant({
+      teammateId: '00000000-0000-4000-8000-0000000000f1',
+      scope: 'tokenscope.read',
+      refreshIssuedAt: new Date(),
+    })
+    await expect(
+      call(adminRevoke, ev({ params: { id: grantPlatform }, session: adminA() })),
+    ).rejects.toMatchObject({ statusCode: 403 })
+    const rows = await t.db.execute<{ revoked_at: string | null }>(sql`
+      SELECT revoked_at FROM oauth_token WHERE id = ${grantPlatform}::uuid
+    `)
+    expect([...rows][0]!.revoked_at).toBeNull()
+
+    const out = await call<{ revoked: boolean }>(adminRevoke, ev({ params: { id: grantPlatform }, session: platform() }))
+    expect(out.revoked).toBe(true)
+  })
+
   it('404 revoking an unknown grant id', async () => {
     await expect(
       call(adminRevoke, ev({ params: { id: randomUUID() }, session: adminA() })),

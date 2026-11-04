@@ -16,6 +16,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+// Windows (#430): skipped on win32 because this file drives the POSIX .sh helper, which Windows does not run; the PowerShell twin is covered by otel-helper-conformance, claude-redeem-ps1 and status-ps1.
+const POSIX_ONLY = process.platform === 'win32'
+
 const HELPER = resolve(__dirname, '../../../plugin/scripts/otel-headers-helper.sh')
 const bearerFor = (id: string) => `https://device.local/api/v1/instances/${id}/bearer`
 const TOKEN_EP = 'https://device.local/api/v1/oauth/token'
@@ -175,7 +178,7 @@ function probe(cell: Cell, i: number) {
   return { status: r.status, contacted }
 }
 
-describe('exhaustive: the hostile endpoint is reachable only from a device with nothing stored', () => {
+describe.skipIf(POSIX_ONLY)('exhaustive: the hostile endpoint is reachable only from a device with nothing stored', () => {
   it(`covers all ${cells.length} cells`, () => {
     expect(cells.length).toBe(OWN.length * LEGACY.length * SETTINGS.length)
   })
@@ -239,7 +242,7 @@ function cacheBody(state: (typeof CACHE)[number]): string | null {
   }
 }
 
-describe('exhaustive: a cached bearer is presented only to the endpoint it was minted for', () => {
+describe.skipIf(POSIX_ONLY)('exhaustive: a cached bearer is presented only to the endpoint it was minted for', () => {
   const stores: Array<[string, Cell]> = [
     ['own store present', { own: 'complete', legacy: 'absent', settings: 'absent' }],
     ['settings only', { own: 'absent', legacy: 'absent', settings: 'complete' }],

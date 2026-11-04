@@ -185,7 +185,7 @@ function fmtTs(v: string | null): string {
       class="mb-4 p-3 rounded-md text-sm font-medium"
       :class="toast.kind === 'ok'
         ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30'
-        : 'bg-brand-hunger/10 text-brand-hunger border border-brand-hunger/30'"
+        : 'bg-brand-hunger/10 text-brand-heart border border-brand-hunger/30'"
     >
       {{ toast.message }}
     </div>
@@ -215,7 +215,7 @@ function fmtTs(v: string | null): string {
           v-model="search"
           type="text"
           placeholder="Search by name or email"
-          class="mt-2 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+          class="mt-2 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
           data-testid="admin-grants-search"
         >
         <UiFetchErrorBanner v-if="tmError" :error="tmError" label="teammates" class="mt-3" @retry="refreshTeammates" />

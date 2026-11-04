@@ -36,7 +36,6 @@ interface DirectoryHit {
   division: string | null
   already_member: boolean
   existing_region_code: string | null
-  existing_role: string | null
   /** Teammate exists but bound to this person's OTHER Entra identity (#121). */
   teammate_via_other_identity?: boolean
 }
@@ -205,7 +204,7 @@ function errText(e: unknown, fallback: string): string {
             v-model="query"
             type="search"
             placeholder="Search by name or email…"
-            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
             data-testid="at-search"
             @input="onSearchInput"
           >
@@ -278,7 +277,7 @@ function errText(e: unknown, fallback: string): string {
               id="at-orgunit"
               v-model="orgUnitId"
               :disabled="!!orgUnitsError"
-              class="w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none disabled:bg-calm/40 disabled:cursor-not-allowed"
+              class="w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony disabled:bg-calm/40 disabled:cursor-not-allowed"
               data-testid="at-orgunit"
             >
               <option value="" disabled>Select an org unit…</option>
@@ -296,7 +295,7 @@ function errText(e: unknown, fallback: string): string {
           <select
             id="at-role"
             v-model="role"
-            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
             data-testid="at-role"
           >
             <option v-for="r in grantableRoles" :key="r" :value="r">{{ roleLabel(r) }}</option>

@@ -80,6 +80,7 @@ function otlpPayload(instanceAttr: string, instanceId: string, convId: string) {
           attributes: [
             { key: instanceAttr, value: { stringValue: instanceId } },
             { key: 'project.code_hash', value: { stringValue: 'abc123' } },
+            { key: 'tokenscope.activity', value: { stringValue: 'research' } },
             { key: 'tool', value: { stringValue: 'claude-code' } },
           ],
         },
@@ -130,13 +131,15 @@ describe('fake-azure-monitor POST /v1/logs (the real OTLP path)', () => {
     // Keyed on the INSTANCE, which is the attribute the read joiner joins on;
     // session.id rides the record as a field rather than being the store key.
     const usage = (await fetch(`${base}/v1/sessions/inst-current/usage`).then((r) => r.json())) as {
-      usage: Array<{ tokenType: string; claudeSessionId: string; projectCodeHash: string }>
+      usage: Array<{ tokenType: string; claudeSessionId: string; projectCodeHash: string; activity: string }>
     }
     expect(usage.usage).toHaveLength(2)
     expect(usage.usage.map((u) => u.tokenType).sort()).toEqual(['input', 'output'])
     // The two attributes attribution depends on must survive normalisation.
     expect(new Set(usage.usage.map((u) => u.claudeSessionId))).toEqual(new Set(['conv-current']))
     expect(new Set(usage.usage.map((u) => u.projectCodeHash))).toEqual(new Set(['abc123']))
+    // The folder default activity (#475) rides through raw; the joiner gates it.
+    expect(new Set(usage.usage.map((u) => u.activity))).toEqual(new Set(['research']))
   })
 
   it('still accepts the retired tokenscope.session_id attribute', async () => {

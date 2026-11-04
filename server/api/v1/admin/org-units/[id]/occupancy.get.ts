@@ -82,7 +82,7 @@ export default defineEventHandler(async (event) => {
   await requireRegionScope(event, unit.region_id)
   if (!unit.is_default) {
     const detail =
-      'Occupancy is the catch-all report: it counts the people a fallback unit CAUGHT, and its threshold is that unit’s span-of-control dial. Neither means anything on an ordinary cost centre.'
+      'Occupancy is the catch-all report: it counts the people a fallback unit CAUGHT, and its threshold is that unit’s span-of-control dial. Neither means anything on an ordinary Business Unit.'
     throw createError({
       statusCode: 422,
       statusMessage: detail,

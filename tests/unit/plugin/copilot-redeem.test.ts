@@ -23,6 +23,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readBoundAccessToken } from '../../../plugin/scripts/device-store.mjs'
 
+// Windows (#430): skipped on win32 because this file asserts POSIX file mode 0600; Windows reports 0666.
+const POSIX_ONLY = process.platform === 'win32'
+
 // ── helpers: dynamically import the CJS-like MJS helpers ────────────────────
 // writeTokenscopeConfig is a module-private helper; we test via the public API
 // by driving main() through its internal fn. Instead, reach in via a thin
@@ -72,7 +75,7 @@ const FAKE_BUNDLE = {
 // forward (copilot-forwarder.mjs) would then send the durable credential / span
 // data wherever that endpoint points. assertSafeRedeemBundle must refuse it
 // BEFORE writeTokenscopeConfig ever writes it to disk.
-describe('assertSafeRedeemBundle — S2: no unsafe endpoint reaches config.json', () => {
+describe.skipIf(POSIX_ONLY)('assertSafeRedeemBundle — S2: no unsafe endpoint reaches config.json', () => {
   it('does not throw for an all-https bundle', () => {
     expect(() => assertSafeRedeemBundle(FAKE_BUNDLE)).not.toThrow()
   })
@@ -107,7 +110,7 @@ describe('assertSafeRedeemBundle — S2: no unsafe endpoint reaches config.json'
   })
 })
 
-describe('writeTokenscopeConfig — credential separation', () => {
+describe.skipIf(POSIX_ONLY)('writeTokenscopeConfig — credential separation', () => {
   it('config.json contains oauth_refresh_token (required by mintBearer)', () => {
     writeTokenscopeConfig(FAKE_BUNDLE, 'rt_super_secret', 'client-abc', dir)
     const config = JSON.parse(readFileSync(join(dir, 'config.copilot-cli.json'), 'utf8'))
@@ -165,7 +168,7 @@ describe('writeTokenscopeConfig — credential separation', () => {
 // Re-provisioning a device from one TokenScope deployment to another (Sandbox→Dev,
 // Dev→Prod) must NOT leave the OLD deployment's bearer/logs endpoints or OAuth
 // credential at rest in config.json. The change is detected from the bearer host.
-describe('writeTokenscopeConfig — refuses to write a store the helper would refuse', () => {
+describe.skipIf(POSIX_ONLY)('writeTokenscopeConfig — refuses to write a store the helper would refuse', () => {
   /*
    * The helper refuses an inconsistent envelope on read. Without this, a bad
    * bundle was WRITTEN successfully, setup reported success, and every later
@@ -178,7 +181,7 @@ describe('writeTokenscopeConfig — refuses to write a store the helper would re
   })
 })
 
-describe('writeTokenscopeConfig — cross-environment transition', () => {
+describe.skipIf(POSIX_ONLY)('writeTokenscopeConfig — cross-environment transition', () => {
   // A SANDBOX bundle (the device's first/old enrolment).
   const SANDBOX_BUNDLE = {
     instance_id: 'sandbox-inst-0000',
@@ -324,7 +327,7 @@ describe('writeTokenscopeConfig — cross-environment transition', () => {
   })
 })
 
-describe('detectEnvChange — bearer-host comparison', () => {
+describe.skipIf(POSIX_ONLY)('detectEnvChange — bearer-host comparison', () => {
   const bundleFor = (bearer: string, logs = '') => ({
     TOKENSCOPE_BEARER_ENDPOINT: bearer,
     TOKENSCOPE_LOGS_ENDPOINT: logs,
@@ -350,7 +353,7 @@ describe('detectEnvChange — bearer-host comparison', () => {
   })
 })
 
-describe('emitEnvLabel — host classification (mirrors statusline)', () => {
+describe.skipIf(POSIX_ONLY)('emitEnvLabel — host classification (mirrors statusline)', () => {
   it('classifies the known product tokens from the bearer host', () => {
     // `.example.com`, not the real internal host, and deliberately so: the public
     // mirror's publish step rewrites `tokenscope.example.com` wholesale to
@@ -377,7 +380,7 @@ describe('emitEnvLabel — host classification (mirrors statusline)', () => {
   })
 })
 
-describe('removeBlock idempotency', () => {
+describe.skipIf(POSIX_ONLY)('removeBlock idempotency', () => {
   const BLOCK_START = '# >>> TokenScope >>>'
   const BLOCK_END   = '# <<< TokenScope <<<'
 
@@ -395,7 +398,7 @@ describe('removeBlock idempotency', () => {
   })
 })
 
-describe('cutover to the usage extension (armUsageExtension)', () => {
+describe.skipIf(POSIX_ONLY)('cutover to the usage extension (armUsageExtension)', () => {
   const BLOCK_START = '# >>> TokenScope >>>'
   const BLOCK_END = '# <<< TokenScope <<<'
   let home: string
@@ -640,7 +643,7 @@ describe('cutover to the usage extension (armUsageExtension)', () => {
   })
 })
 
-describe('--remove (uninstall) cleans rc files the same way migration does', () => {
+describe.skipIf(POSIX_ONLY)('--remove (uninstall) cleans rc files the same way migration does', () => {
   it('removes the block from every rc, keeps each file mode, and never replaces a symlinked rc', () => {
     const home = mkdtempSync(join(tmpdir(), 'ts-remove-'))
     try {
@@ -681,7 +684,7 @@ describe('--remove (uninstall) cleans rc files the same way migration does', () 
   })
 })
 
-describe('detectShellRcTargets — cleanup reaches every rc an earlier setup may have written', () => {
+describe.skipIf(POSIX_ONLY)('detectShellRcTargets — cleanup reaches every rc an earlier setup may have written', () => {
   it('every supported rc that exists, whatever the current shell (a bash block survives a switch to zsh)', () => {
     expect(detectShellRcTargets(undefined, dir)).toEqual([])
     for (const f of ['.bashrc', '.profile', '.zshrc', '.zshenv']) writeFileSync(join(dir, f), '# x\n')
@@ -705,7 +708,7 @@ describe('detectShellRcTargets — cleanup reaches every rc an earlier setup may
 // test that let the no-override path run would write into the developer's own
 // ~/.tokenscope. TOKENSCOPE_DIR is the value writeTokenscopeConfig defaults to,
 // so pinning it pins the write.
-describe('the durable credential store does not follow a moved $HOME', () => {
+describe.skipIf(POSIX_ONLY)('the durable credential store does not follow a moved $HOME', () => {
   const HOME_KEYS = ['HOME', 'USERPROFILE'] as const
 
   it('TOKENSCOPE_DIR is anchored on the passwd home, not $HOME', async () => {

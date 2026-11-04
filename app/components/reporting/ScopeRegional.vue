@@ -52,6 +52,7 @@ import ScopeRegionalView from './ScopeRegionalView.vue'
 import { useReportState } from '../../composables/useReportState'
 import { rollingTrendWindow } from './trend-window'
 import { useDrillGrants, useDrillWindow } from '../../composables/useDrillContract'
+import { useAdminAccess } from '../../composables/useAdminAccess'
 import { buildConcentration } from './regional/build-concentration'
 import {
   behaviourOnScreen,
@@ -75,6 +76,8 @@ const rs = useReportState()
  */
 const drillGrants = useDrillGrants()
 const drillWindow = useDrillWindow()
+// "Fix org homing →" opens /admin, which bounces non-admins: show it to admins only.
+const { isAdmin: canFixHoming } = useAdminAccess()
 
 // The drivers-table axis is table-local (not URL state). Reset on entering/leaving
 // a drill so a stale "practice" axis can't survive it.
@@ -435,6 +438,7 @@ function onRegion(regionId: string) {
     :export-filename="exportFilename"
     :drill-grants="drillGrants"
     :drill-window="drillWindow"
+    :can-fix-homing="canFixHoming"
     @update:region="onRegion"
     @update:drivers-axis="axis = $event"
     @drill="rs.patch({ ou: $event })"

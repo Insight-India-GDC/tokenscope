@@ -1,7 +1,7 @@
 /*
  * TokenScope brand tokens — TokenScope palette.
  *
- * Mirrors docs/design/ux-pilot/tokenscope-pilot-design/project/styles.css
+ * Mirrors docs/archive/ux-pilot/tokenscope-pilot-design/project/styles.css
  * so the Claude Design hi-fi prototype and the live Nuxt app reference the
  * exact same values. All component colours MUST resolve to one of these
  * tokens — no hardcoded hex (enforced by adversarial review).
@@ -24,6 +24,13 @@
   --brand-harmony-lite: #e8daff;
   --brand-vision-lite: #d0e2ff;
   --brand-zeal-lite: #c5edfa;
+
+  /* ───── Ink — the vision and zeal hues as TEXT (WCAG 1.4.3) ─────
+   * vision #5990f0 is 3.2:1 on white and zeal #4ec7ea 2.0:1, so neither may
+   * carry text. Ink on white / paper / its own lite:
+   * vision-ink 7.8 / 7.5 / 6.0:1, zeal-ink 6.5 / 6.2 / 5.2:1. */
+  --brand-vision-ink: #1f4ea3;
+  --brand-zeal-ink: #0a6680;
   --brand-clarity: #f5f5f5;
 
   /* ───── Tertiary (sheers) — washes ───── */
@@ -34,17 +41,27 @@
   /* ───── Neutrals ───── */
   --carbon: #3e332d;
   --carbon-2: #5a4d45;
-  --carbon-3: #8a7e76;
+  /* carbon-3 is the muted TEXT colour (~1,090 uses, often 10 to 12px), so it
+   * must reach 4.5:1 on every light surface (WCAG 1.4.3). #6b6059 is 6.1:1 on
+   * white, 5.8 on paper, 5.6 on clarity, 5.2 on calm-2 and 4.6 on
+   * harmony-lite. It was #8a7e76 (3.9 / 3.8 / 3.6:1, failing). */
+  --carbon-3: #6b6059;
   --cloud: #bdbdbd;
   --calm: #e0e0e0;
   --calm-2: #ececec;
   --paper: #fafaf8;
   --white: #ffffff;
 
-  /* ───── RAG (TokenScope-defined; brand doesn't prescribe) ───── */
-  --rag-red: #dc2626;
-  --rag-amber: #d97706;
-  --rag-green: #16a34a;
+  /* ───── RAG (TokenScope-defined; brand doesn't prescribe) ─────
+   * All three are used as text as well as fills, so each reaches 4.5:1 on
+   * white, paper and its own 10% tint (WCAG 1.4.3), and white text on the
+   * solid fill reaches 4.5:1 too. On white / paper / own 10% tint:
+   * red 6.5 / 6.2 / 5.5, amber 6.0 / 5.7 / 5.2, green 5.9 / 5.7 / 5.2. They
+   * were #dc2626, #d97706 and #16a34a (red 4.1:1 on its tint; amber and
+   * green 3.2 and 3.3:1 on white, failing). */
+  --rag-red: #b91c1c;
+  --rag-amber: #a14a07;
+  --rag-green: #137336;
 
   /* ───── Chart vendor-lane colours (#142) ─────
    * One FIXED colour per billing lane (shared/usage/vendor.ts VENDOR_LANES,
@@ -67,7 +84,9 @@
   --lane-claude-chrome: #fd4057; /* inspired @ L0.66 */
   --lane-claude-design: #1398b8; /* zeal @ L0.63 */
   --lane-claude-slack: #7e4d9b; /* harmony @ L0.51 */
-  --lane-claude-other: var(--carbon-3);
+  /* Pinned to the hex the palette was validated with: carbon-3 was darkened
+   * for text contrast, and this lane must keep its validated CVD spacing. */
+  --lane-claude-other: #8a7e76;
   --lane-copilot: var(--brand-vision);
   /* Copilot §A/§B lanes (migs 0085/0086) — same derivation procedure: hold
    * the anchor ramp's OKLCH hue+chroma, re-step lightness, validate the FULL
@@ -89,25 +108,12 @@
   --lane-copilot-unclassified: var(--carbon-2);
   --lane-other: var(--cloud);
 
-  /* ───── Semantic ───── */
-  --success: #22c55e;
-  --warning: #f59e0b;
-  --error: #ef4444;
-  --info: var(--brand-vision);
-
   /* ───── Type ───── */
   --font-sans: 'Manrope', 'Greycliff CF', Arial, system-ui, sans-serif;
   --font-slab: 'Zilla Slab', 'Klinic Slab', Georgia, serif;
   --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'SF Mono', monospace;
 
-  /* ───── Shape ───── */
-  --r-card: 12px;
-  --r-badge: 6px;
-  --r-input: 8px;
-  --r-pill: 999px;
-
-  /* ───── Shadows (Harmony-tinted per brand) ───── */
+  /* ───── Shadows (Harmony-tinted per brand; UiCard and UiKpi read them) ───── */
   --shadow-card: 0 4px 24px rgba(88, 40, 115, 0.08);
   --shadow-card-h: 0 8px 28px rgba(88, 40, 115, 0.12);
-  --shadow-pop: 0 16px 48px rgba(88, 40, 115, 0.16);
 }

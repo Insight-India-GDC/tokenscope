@@ -156,7 +156,7 @@ const footerNote = computed(() => {
         v-model="query"
         type="search"
         :placeholder="`Search ${slug}…`"
-        class="flex-1 min-w-[200px] px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+        class="flex-1 min-w-[200px] px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
         :data-testid="`entity-search-${slug}`"
       >
       <slot name="toolbar" />

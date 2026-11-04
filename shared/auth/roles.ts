@@ -1,12 +1,15 @@
 /*
  * Roles + demo personas — pilot-shaped.
  *
- * Six canonical roles per the design / chrome.jsx RoleMenu (see ROLES below:
- * developer, manager, admin, finance, global-finops, platform-admin). Per
- * docs/build/mvp-lite-epic.md §Epic 3: "4 demo personas → each lands on
- * role-correct page". Two members are RETIRED and hold no capability:
- * `finance` (never minted) and `global-finops` (retired 2026-09-05) — both are
- * kept in the enum for historical rows only. See the banner above ADMIN_ROLES.
+ * Six enum members, first shaped by the prototype's RoleMenu
+ * (docs/archive/ux-pilot/tokenscope-pilot-design/project/src/chrome.jsx; see ROLES below: developer, manager, admin, finance,
+ * global-finops, platform-admin). Per docs/archive/build-plans/mvp-lite-epic.md
+ * §Epic 3: "4 demo personas → each lands on role-correct page". Three are
+ * assignable today: developer, manager and platform-admin ("Admin"). `admin`
+ * ("Region admin") can no longer be granted, though a remaining holder keeps
+ * region-scoped access. `finance` (never minted) and `global-finops` (retired
+ * 2026-09-05) hold no capability and are kept in the enum for historical rows
+ * only. See the banner above ADMIN_ROLES.
  *
  * Persona records below are the dev-mode mapping. Real Entra OIDC
  * (Epic 10) replaces dev-login but the role enum stays.
@@ -50,7 +53,7 @@ export const ADMIN_ROLES = ['admin', 'platform-admin'] as const
 /** Org-wide (cross-region) roles: unbounded data scope, edit platform defaults. */
 export const ORG_WIDE_ROLES = ['platform-admin'] as const
 
-/** True for any role that may enter /admin (Region admin, Global finance, Platform admin). */
+/** True for any role that may enter /admin (Admin, and a remaining Region admin). */
 export function isAdminRole(role: string | null | undefined): boolean {
   return !!role && (ADMIN_ROLES as readonly string[]).includes(role)
 }
@@ -68,7 +71,7 @@ export function isRetiredRole(role: string | null | undefined): boolean {
   return !!role && (RETIRED_ROLES as readonly string[]).includes(role)
 }
 
-/** True for the cross-region role (Platform admin). */
+/** True for the cross-region role (Admin). */
 export function isOrgWideRole(role: string | null | undefined): boolean {
   return !!role && (ORG_WIDE_ROLES as readonly string[]).includes(role)
 }
@@ -91,28 +94,33 @@ export function isReportingRole(role: string | null | undefined): boolean {
 }
 
 /**
- * Roles offered in role-assignment dropdowns. Excludes `finance` — a retired
- * enum member never assigned to anyone (kept in ROLES only for exhaustiveness /
- * historical data). Never offer an unassignable role. See the "Roles & terms"
- * glossary for why `finance` still exists in the enum.
+ * `admin` (Region admin) can no longer be granted: there is one admin role, Admin
+ * (`platform-admin`), by owner ruling (docs/design/org-setup/00-spec.md). Existing
+ * holders keep its region-scoped access until the region-scoping code is removed.
  */
-export const SELECTABLE_ROLES: readonly Role[] = ROLES.filter(
-  (r) => r !== 'finance' && r !== 'global-finops',
-)
+export const UNGRANTABLE_ROLES = [...RETIRED_ROLES, 'admin'] as const
+
+/** True for a role nobody may be given, retired or not. */
+export function isUngrantableRole(role: string | null | undefined): boolean {
+  return !!role && (UNGRANTABLE_ROLES as readonly string[]).includes(role)
+}
+
+/** Roles offered in role-assignment dropdowns: never an ungrantable one. */
+export const SELECTABLE_ROLES: readonly Role[] = ROLES.filter((r) => !isUngrantableRole(r))
 
 /**
  * Canonical human-facing role labels — ONE source so no surface renders a raw
- * enum code. `admin` is region-scoped ("Region admin"). Both `finance` and
- * `global-finops` are retired and labelled as such, so a historical row still
- * reads as a name rather than a raw code. See docs/design/admin-ia.md §Vocabulary.
+ * enum code. `platform-admin` is the one admin role, "Admin". `admin` (Region
+ * admin), `finance` and `global-finops` can no longer be granted and say so, so a
+ * historical row still reads as a name rather than a raw code.
  */
 export const ROLE_LABELS: Record<Role, string> = {
   developer: 'Developer',
   manager: 'Manager',
-  admin: 'Region admin',
+  admin: 'Region admin (retired)',
   finance: 'Finance (retired)',
   'global-finops': 'Global finance (retired)',
-  'platform-admin': 'Platform admin',
+  'platform-admin': 'Admin',
 }
 
 /** Display label for a role value; falls back to the raw value if unknown. */

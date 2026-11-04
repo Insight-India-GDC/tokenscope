@@ -114,6 +114,13 @@ describe('PATCH users/:id/region', () => {
     expect(Number(audit[0]!.count)).toBeGreaterThanOrEqual(1)
   })
 
+  it('strips every provenance key, including a rule-placed attribute', async () => {
+    await t.client`UPDATE teammate SET metadata = jsonb_build_object('placedVia','attribute-rule','placedAttribute','department','placedStep','unit-rule','placedAt','t','keep','x') WHERE id = ${devAId}::uuid`
+    await regionHandler(makeEvent({ body: { region_id: regionAId, org_unit_id: ouAId }, routerParams: { id: devAId }, initialSession: orgWideSession() }))
+    const [row] = await t.client<{ metadata: Record<string, unknown> }[]>`SELECT metadata FROM teammate WHERE id = ${devAId}::uuid`
+    expect(row!.metadata).toEqual({ keep: 'x' })
+  })
+
   it('region-scoped admin cannot reassign (org-wide gate → 403)', async () => {
     await expect(
       regionHandler(makeEvent({ body: { region_id: regionAId }, routerParams: { id: devAId }, initialSession: adminSession() })),

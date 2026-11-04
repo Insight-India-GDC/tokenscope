@@ -18,8 +18,6 @@ import { and, eq, sql } from 'drizzle-orm'
 import * as schema from '../../drizzle/schema'
 import { isUuid } from '../utils/uuid'
 import { monthStartIso as monthStartIsoFor } from '../utils/period'
-import { REPORT_DATA_INBOX_CATEGORIES } from '../../shared/schemas/inbox'
-import { activeReportDenySql } from '../auth/report-deny-sql'
 
 export type InboxCategory =
   | 'sync-conflict'
@@ -38,8 +36,12 @@ export type InboxCategory =
   | 'project-ending-soon' // D3: a project a dev is tagged to enters its end_date warning window — re-tag ahead
   | 'project-ended-retag' // D2a: a dev's spend spilled to unallocated because the project ended — re-tag the spilled portion
   | 'github-coverage-gap' // a GitHub org transitioned into a non-connected coverage state, or an enterprise lost its census capability (github-coverage-sweep worker); admin-routed — Workstream D, design §6
-  | 'over-emission-escalated' // a teammate's over-emission flag was escalated, by them or by the stray-quarantine sweep (notifications/over-emission.ts); admin-routed to the flag's region
+  | 'over-emission-escalated' // a teammate's over-emission flag was escalated, by them or by the stray-quarantine sweep (notifications/over-emission.ts); admin-routed to the teammate's current region
   | 'personal-subscription-prompt' // settled Claude usage has no provider corroboration; prompt the teammate to declare only when personally funded (ADR-0011 D4)
+  | 'project-request' // a teammate asked for a new project; admin-routed to the Business Unit's region (docs/design/project-requests/00-spec.md §3)
+  | 'project-request-decided' // the requester's project request was approved or rejected; per-dev (recipientTeammateIdHint)
+  | 'quota-request' // a project member asked for more budget (spec §5); routed to the project's current PMs, else the project region's admins. relatedEntity = the project; body.quota_request_id names the request
+  | 'quota-request-decided' // the requester's budget request was approved or rejected; per-dev (recipientTeammateIdHint = the requester)
   | 'ops-alert' // A5 inbox parity for an externally-notified ops condition (ops-alert worker); ONE item per condition key (related_entity_kind carries the key), reminders update it in place (docs/design/ops-alerting.md A5, ar-M17); admin-routed
 
 export interface DispatchInput {
@@ -146,6 +148,7 @@ function defaultSeverity(category: InboxCategory): 'info' | 'attention' | 'urgen
     case 'project-ending-soon':
     case 'project-ended-retag':
     case 'over-emission-escalated':
+    case 'project-request':
     case 'github-coverage-gap': // per-org gap default; the sweep overrides 'urgent' for a whole-enterprise capability loss
       return 'attention'
     // Silent-attribution failures page like a connector outage, not a nag:
@@ -161,6 +164,9 @@ function defaultSeverity(category: InboxCategory): 'info' | 'attention' | 'urgen
     case 'copilot-bill-unclassified':
     case 'joiner-selection-cap': // a CAPACITY warning, not an outage — the joiner sheds least-recently-active first, so a cap hit does not prove any live device stopped attributing, and the one that does still pages urgently as 'attribution-gap'. Pitching it at 'urgent' would page on an often-benign condition (the false-positive machine the old went-silent heuristic was)
       return 'attention'
+    case 'quota-request':
+      return 'attention'
+    case 'quota-request-decided':
     case 'velocity-warning':
     case 'untagged-backlog':
     default:
@@ -195,16 +201,15 @@ async function resolveRecipients(
     case 'connector-health':
     case 'copilot-bill-unsettled':
     case 'copilot-bill-unclassified':
-    case 'over-emission-escalated': {
+    case 'over-emission-escalated':
+    case 'project-request': {
       // Admin-routed, region-scoped when derivable (the org's region, passed as input.regionId);
       // otherwise the cross-region finance/ops roles only. A missing-license-SKU month — or an
       // unclassified/conservation-break month (D3) — is a finance data-correctness concern
       // → platform-admin (+ the region's admin).
       const region = await deriveAlertRegion(db, input)
       return {
-        // Report data (REPORT_DATA_INBOX_CATEGORIES) skips an admin with an
-        // active report-access deny.
-        recipientIds: await resolveAdmins(db, region, { withReportAccess: REPORT_DATA_INBOX_CATEGORIES.includes(input.category) }),
+        recipientIds: await resolveAdmins(db, region),
         routingScope: region ? `region:${region}` : 'fail-open',
       }
     }
@@ -242,18 +247,52 @@ async function resolveRecipients(
       // no single region to derive. Routes to cross-region ops, matching
       // read-path-stale/attribution-gap — the same "no region to derive" shape.
       return { recipientIds: await resolveAdmins(db, null), routingScope: 'platform' }
+    case 'quota-request': {
+      // The project's current PMs decide budget requests. A project with no
+      // current PM falls back to its region's admins (spec §5, A10); the request
+      // stays on the project page's Manage section either way.
+      const pms = await resolveProjectManagers(db, input.relatedEntityId, input.now)
+      if (pms.length > 0) return { recipientIds: pms }
+      const region = await deriveAlertRegion(db, input)
+      return {
+        recipientIds: await resolveAdmins(db, region),
+        routingScope: region ? `region:${region}` : 'fail-open',
+      }
+    }
     case 'velocity-warning':
     case 'untagged-backlog':
     case 'over-attribution':
     case 'reconciliation-gap':
     case 'project-ending-soon':
     case 'project-ended-retag':
+    case 'project-request-decided':
+    case 'quota-request-decided':
       // Per-developer notifications — the caller resolves the recipient and
       // passes recipientTeammateIdHint (handled above); no rule-based routing.
       return { recipientIds: [] }
     default:
       return { recipientIds: [] }
   }
+}
+
+/** Active teammates holding a currently-effective PM assignment on the project. */
+async function resolveProjectManagers(
+  db: PostgresJsDatabase<typeof schema>,
+  projectId: string | undefined,
+  nowAnchor?: Date,
+): Promise<string[]> {
+  if (!isUuid(projectId)) return []
+  const at = (nowAnchor ?? new Date()).toISOString()
+  const rows = await db.execute<{ id: string }>(sql`
+    SELECT DISTINCT t.id::text AS id
+    FROM project_assignment pa
+    JOIN teammate t ON t.id = pa.teammate_id
+    WHERE pa.project_id = ${projectId}::uuid
+      AND pa.role = 'manager'
+      AND pa.effective @> ${at}::timestamptz
+      AND t.is_active = TRUE
+  `)
+  return [...rows].map((r) => r.id)
 }
 
 async function resolveOverBudgetRecipients(
@@ -295,7 +334,7 @@ async function resolveOverBudgetRecipients(
    *
    * `cou_owner.revoked_at` IS right here — it ends a GRANT, which is a question
    * about responsibility. `teammate.revoked_at` would not be: that column is a
-   * session/emit anchor, not a deactivation flag.
+   * session anchor, not a deactivation flag (#428).
    * See docs/security-sprint/epic-mdash-remediation.md (W2.4).
    */
   const responsibleRows = await db.execute<{ teammate_id: string }>(sql`
@@ -433,9 +472,7 @@ async function deriveAlertRegion(
 async function resolveAdmins(
   db: PostgresJsDatabase<typeof schema>,
   regionId: string | null,
-  opts: { withReportAccess?: boolean } = {},
 ): Promise<string[]> {
-  const reportAccess = opts.withReportAccess ? sql`AND NOT ${activeReportDenySql(sql`teammate.id`)}` : sql``
   const rows = await db.execute<{ id: string }>(sql`
     SELECT id::text AS id
     FROM teammate
@@ -447,7 +484,6 @@ async function resolveAdmins(
         -- only. No explicit null-guard needed.
         OR (role = 'admin' AND region_id = ${regionId}::uuid)
       )
-      ${reportAccess}
   `)
   return [...rows].map((r) => r.id)
 }

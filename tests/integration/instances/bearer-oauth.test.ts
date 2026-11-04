@@ -147,8 +147,10 @@ describe('ADR-0005 — /bearer OAuth emit credential', () => {
   it('mints for an OAuth token whose teammate OWNS the instance', async () => {
     const { instanceId } = await enrolInstance(ownerId, 'bo-owner@x.test')
     const access = await emitAccessTokenFor(ownerId)
-    const out = (await bearerHandler(bearerEvent(instanceId, access) as never)) as { Authorization: string }
+    const ev = bearerEvent(instanceId, access)
+    const out = (await bearerHandler(ev as never)) as { Authorization: string }
     expect(out.Authorization).toMatch(/^Bearer /)
+    expect(ev.node.res.getHeader('cache-control')).toBe('no-store')
   })
 
   it('404s for an OAuth token whose teammate does NOT own the instance (403→404 collapse, server-edge-auth:agentic:0008)', async () => {

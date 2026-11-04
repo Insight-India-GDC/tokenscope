@@ -1,6 +1,6 @@
 /*
- * org-subtree-scope — the in-query authorization predicate for resolving an
- * org_unit root in the org-tree rollup (server/api/v1/rollups/org-tree.get.ts).
+ * org-subtree-scope — the in-query authorization predicate that clamps an
+ * org_unit subtree to the caller (the practice rollup and the reporting layer).
  *
  * RLS is INERT at runtime (the app connects as the table owner, no FORCE ROW
  * LEVEL SECURITY) so this MUST be embedded in-query; a handler that "relies on
@@ -148,8 +148,8 @@ export function callerHomeUnitQuery(): SQL {
 }
 
 /**
- * SIBLING of {@link orgSubtreeScopePredicate} for the manager rollup
- * (server/api/v1/rollups/manager.get.ts). It is deliberately NOT unified with it:
+ * SIBLING of {@link orgSubtreeScopePredicate} for the regional report
+ * (server/reporting/regional.ts). It is deliberately NOT unified with it:
  *
  *   - shape — this scopes by an org_unit_id COLUMN via an `<col> IN (SELECT id
  *     FROM org_unit WHERE …)` subquery (the manager's tables — teammate, project,

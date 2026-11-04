@@ -1,6 +1,6 @@
 /*
  * POST /api/v1/admin/regions/{id}/leaders — assign a region leader
- * (region derivation, mig 0068). admin (region-scoped) / platform-admin.
+ * (region derivation, mig 0068). platform-admin only.
  *
  * The leader is the manager-walk fallback target for unplaced users: an
  * unplaced user's manager chain is walked up to the nearest ancestor that
@@ -11,15 +11,15 @@
  * leader_oid WHERE revoked_at IS NULL means one ACTIVE leader maps to one
  * region; a duplicate active oid 409s.
  *
- * Region-admin scope: a region admin may only manage their OWN region
- * (requireRegionScope); platform-admin may manage any
- * region (cross-region + the Global/Shared region).
+ * platform-admin only, like the other region-derivation inputs
+ * (directory-region-rules): the manager walk is estate-wide,
+ * so a leader named for one region homes people from every region's chain.
  */
 import { defineEventHandler, createError, getRequestIP, getHeader } from 'h3'
 import { readValidated } from '../../../../../utils/validated-body'
 import { sql } from 'drizzle-orm'
 import { z } from 'zod'
-import { requireRole, requireRegionScope } from '../../../../../auth/rbac'
+import { requireRole } from '../../../../../auth/rbac'
 import { assertSameOrigin } from '../../../../../auth/csrf'
 import { withRequestRls } from '../../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../../db/audit'
@@ -35,7 +35,7 @@ const Body = z.object({
 })
 
 export default defineEventHandler(async (event) => {
-  const caller = await requireRole(event, 'admin')
+  const caller = await requireRole(event, 'platform-admin')
   assertSameOrigin(event)
   const id = requireUuidParam(event, 'id', 'region id')
   const body = await readValidated(event, Body)
@@ -50,7 +50,6 @@ export default defineEventHandler(async (event) => {
     if (!regionRow) {
       throw createError({ statusCode: 404, statusMessage: 'Region not found' })
     }
-    await requireRegionScope(event, id)
 
     let created: { id: string } | undefined
     try {

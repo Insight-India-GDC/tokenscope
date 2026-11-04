@@ -10,6 +10,8 @@ import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { assertSameOrigin } from '../../../auth/csrf'
 import { requireRole, requireRegionScope } from '../../../auth/rbac'
+import { canModifyHolderOf } from '../../../auth/admin-guards'
+import type { Role } from '../../../../shared/auth/roles'
 import { schema } from '../../../db'
 import { withRequestRls } from '../../../db/request-rls'
 import { recordAuditEvent } from '../../../db/audit'
@@ -35,16 +37,19 @@ export default defineEventHandler(async (event) => {
       .select({
         instanceId: schema.instanceAttestation.instanceId,
         tsActualEnd: schema.instanceAttestation.tsActualEnd,
-        regionId: schema.instanceAttestation.regionId,
+        regionId: schema.teammate.regionId,
+        teammateRole: schema.teammate.role,
       })
       .from(schema.instanceAttestation)
+      .innerJoin(schema.teammate, eq(schema.teammate.id, schema.instanceAttestation.teammateId))
       .where(eq(schema.instanceAttestation.instanceId, sid))
       .limit(1)
     if (!row) throw createError({ statusCode: 404, statusMessage: 'Instance not found' })
 
-    // Region-bound the admin to the session's region. RLS is inert at runtime
-    // while the app connects as the table OWNER, so without this any admin could
-    // force-end a session in any region by id.
+    // Region-bound the admin to the session's region: the region the device's
+    // teammate sits in now, the same boundary GET /admin/instances lists by. RLS
+    // is inert at runtime while the app connects as the table OWNER, so without
+    // this any admin could force-end a session in any region by id.
     //
     // It does NOT become redundant once enforcement lands, but not for the reason
     // this comment used to give — it claimed `instance_attestation` "carries no
@@ -55,6 +60,9 @@ export default defineEventHandler(async (event) => {
     // table is in RLS_BOOTSTRAP_TABLES — DISABLEd at the role switch — so for
     // that window this app-level gate is the only one running.
     await requireRegionScope(event, row.regionId)
+    if (!canModifyHolderOf(session.role, row.teammateRole as Role)) {
+      throw createError({ statusCode: 403, statusMessage: 'Only an Admin may act on this teammate' })
+    }
 
     if (!row.tsActualEnd) {
       await tx

@@ -4,8 +4,8 @@
  *
  * Mirrors the pattern in tests/integration/auth/persona-override.test.ts
  * §"pure-gate decisions": the function is total + DB-free, so we can
- * exhaust the matrix of (caller, target, count, newRole) without booting
- * Nitro or a testcontainer.
+ * exhaust the matrix of (caller, target, newRole) without booting Nitro
+ * or a testcontainer.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { evaluateRoleChange, evaluateRevokeSessions } from '../../../server/auth/admin-guards'
@@ -31,22 +31,22 @@ const TARGET = (id: string, role: 'admin' | 'developer' | 'manager' | 'finance' 
 
 describe('evaluateRoleChange — pure verdicts', () => {
   it('admin promoting a developer to manager → allowed', () => {
-    const v = evaluateRoleChange(CALLER_ADMIN, TARGET('tm-2', 'developer'), 'manager', 1)
+    const v = evaluateRoleChange(CALLER_ADMIN, TARGET('tm-2', 'developer'), 'manager')
     expect(v).toEqual({ allowed: true })
   })
 
-  it('platform-admin promoting a developer to admin → allowed (admin count goes to 2)', () => {
-    const v = evaluateRoleChange(CALLER_FINOPS, TARGET('tm-2', 'developer'), 'admin', 1)
+  it('the verdict does not refuse granting admin itself (canAssignRole does, at the route)', () => {
+    const v = evaluateRoleChange(CALLER_FINOPS, TARGET('tm-2', 'developer'), 'admin')
     expect(v).toEqual({ allowed: true })
   })
 
-  it('admin demoting another admin while 2 admins exist → allowed', () => {
-    const v = evaluateRoleChange(CALLER_ADMIN, TARGET('tm-2', 'admin'), 'developer', 2)
+  it('admin demoting another admin → allowed', () => {
+    const v = evaluateRoleChange(CALLER_ADMIN, TARGET('tm-2', 'admin'), 'developer')
     expect(v).toEqual({ allowed: true })
   })
 
   it('admin demoting themselves → refused 400 self-demote-blocked', () => {
-    const v = evaluateRoleChange(CALLER_ADMIN, TARGET('admin-1', 'admin'), 'developer', 5)
+    const v = evaluateRoleChange(CALLER_ADMIN, TARGET('admin-1', 'admin'), 'developer')
     expect(v.allowed).toBe(false)
     if (!v.allowed) {
       expect(v.status).toBe(400)
@@ -58,7 +58,7 @@ describe('evaluateRoleChange — pure verdicts', () => {
     // R1 F3: self-role-change predicate is `caller.id === target.id &&
     // caller.role !== newRole`. If newRole equals caller.role the
     // predicate is false and we fall through to same-role-noop.
-    const v = evaluateRoleChange(CALLER_ADMIN, TARGET('admin-1', 'admin'), 'admin', 5)
+    const v = evaluateRoleChange(CALLER_ADMIN, TARGET('admin-1', 'admin'), 'admin')
     expect(v.allowed).toBe(false)
     if (!v.allowed) {
       expect(v.status).toBe(400)
@@ -71,7 +71,7 @@ describe('evaluateRoleChange — pure verdicts', () => {
     // finops with the same lock-out vector. The brief was "Both checks
     // (Recommended)" — interpret strictly: any self-role-change by a
     // privileged caller is refused; a peer must perform it.
-    const v = evaluateRoleChange(CALLER_FINOPS, TARGET('finops-1', 'platform-admin'), 'developer', 1)
+    const v = evaluateRoleChange(CALLER_FINOPS, TARGET('finops-1', 'platform-admin'), 'developer')
     expect(v.allowed).toBe(false)
     if (!v.allowed) {
       expect(v.status).toBe(400)
@@ -82,7 +82,7 @@ describe('evaluateRoleChange — pure verdicts', () => {
   it('admin self-promoting (admin → platform-admin) is also blocked — same-id changes require a peer', () => {
     // R1 F3: self-promote is a privilege-escalation foot-gun. A peer
     // mutator should grant it, not the caller themselves.
-    const v = evaluateRoleChange(CALLER_ADMIN, TARGET('admin-1', 'admin'), 'platform-admin', 3)
+    const v = evaluateRoleChange(CALLER_ADMIN, TARGET('admin-1', 'admin'), 'platform-admin')
     expect(v.allowed).toBe(false)
     if (!v.allowed) {
       expect(v.reason).toBe('self-role-change-blocked')
@@ -90,7 +90,7 @@ describe('evaluateRoleChange — pure verdicts', () => {
   })
 
   it('changing target to its current role → refused 400 same-role-noop', () => {
-    const v = evaluateRoleChange(CALLER_ADMIN, TARGET('tm-2', 'manager'), 'manager', 2)
+    const v = evaluateRoleChange(CALLER_ADMIN, TARGET('tm-2', 'manager'), 'manager')
     expect(v.allowed).toBe(false)
     if (!v.allowed) {
       expect(v.status).toBe(400)
@@ -98,25 +98,13 @@ describe('evaluateRoleChange — pure verdicts', () => {
     }
   })
 
-  it('demoting the sole admin (different teammate) → refused 409 last-admin-protected', () => {
-    const v = evaluateRoleChange(CALLER_FINOPS, TARGET('tm-2', 'admin'), 'developer', 1)
-    expect(v.allowed).toBe(false)
-    if (!v.allowed) {
-      expect(v.status).toBe(409)
-      expect(v.reason).toBe('last-admin-protected')
-    }
+  it('demoting the last Region admin (different teammate) → allowed: the role is no longer grantable, so there is no "promote another first"', () => {
+    const v = evaluateRoleChange(CALLER_FINOPS, TARGET('tm-2', 'admin'), 'developer')
+    expect(v).toEqual({ allowed: true })
   })
 
-  it('demoting the sole admin with adminCount=0 (corrupt state) → still refused 409', () => {
-    const v = evaluateRoleChange(CALLER_FINOPS, TARGET('tm-2', 'admin'), 'developer', 0)
-    expect(v.allowed).toBe(false)
-    if (!v.allowed) {
-      expect(v.status).toBe(409)
-    }
-  })
-
-  it('promoting a developer → admin when 0 admins exist → allowed (recovery path)', () => {
-    const v = evaluateRoleChange(CALLER_FINOPS, TARGET('tm-2', 'developer'), 'admin', 0)
+  it('a platform-admin demoting another platform-admin → allowed (the caller remains; self-change is the refused case)', () => {
+    const v = evaluateRoleChange(CALLER_FINOPS, TARGET('tm-2', 'platform-admin'), 'developer')
     expect(v).toEqual({ allowed: true })
   })
 
@@ -127,15 +115,15 @@ describe('evaluateRoleChange — pure verdicts', () => {
   // regression that erroneously starts blocking allowed mutations (e.g.
   // a future "don't revoke admins" rule) trips here.
   it('Wave-VII: an allowed role change verdict is unchanged (auto-revoke is a handler concern, not a verdict mode)', () => {
-    const v = evaluateRoleChange(CALLER_FINOPS, TARGET('tm-2', 'developer'), 'manager', 3)
+    const v = evaluateRoleChange(CALLER_FINOPS, TARGET('tm-2', 'developer'), 'manager')
     expect(v).toEqual({ allowed: true })
   })
 
   it('verdict refusals always carry both status + reason (RFC-9457 envelope shape)', () => {
     const refusals = [
-      evaluateRoleChange(CALLER_ADMIN, TARGET('admin-1', 'admin'), 'developer', 5),
-      evaluateRoleChange(CALLER_ADMIN, TARGET('tm-2', 'manager'), 'manager', 2),
-      evaluateRoleChange(CALLER_FINOPS, TARGET('tm-2', 'admin'), 'developer', 1),
+      evaluateRoleChange(CALLER_ADMIN, TARGET('admin-1', 'admin'), 'developer'),
+      evaluateRoleChange(CALLER_ADMIN, TARGET('tm-2', 'manager'), 'manager'),
+      evaluateRoleChange(CALLER_FINOPS, TARGET('finops-1', 'platform-admin'), 'manager'),
     ]
     for (const v of refusals) {
       expect(v.allowed).toBe(false)
@@ -153,15 +141,27 @@ describe('evaluateRoleChange — pure verdicts', () => {
 //
 // Pure decision for POST /api/v1/admin/users/:id/revoke-sessions. Per
 // brief Item B: no last-admin-protection (revocation doesn't change
-// role); self-revoke IS allowed; the function currently returns
-// { allowed: true } unconditionally. The tests pin that surface so a
-// future tightening (rate-limit, anti-griefing guard) lands here
-// explicitly instead of silently widening the contract.
+// role); self-revoke IS allowed. The one refusal is a region admin acting
+// on a higher-role holder.
 describe('evaluateRevokeSessions — pure verdicts (Wave VII)', () => {
-  const TARGET_R = (id: string, regionId = 'region-a') => ({ id, regionId })
+  const TARGET_R = (
+    id: string,
+    regionId = 'region-a',
+    role: 'admin' | 'developer' | 'platform-admin' = 'admin',
+  ) => ({ id, regionId, role })
+
+  it('admin revoking a platform-admin → 403 holder-outranks-caller', () => {
+    const v = evaluateRevokeSessions(CALLER_ADMIN, TARGET_R('pa-1', 'region-a', 'platform-admin'))
+    expect(v).toEqual({ allowed: false, status: 403, reason: 'holder-outranks-caller' })
+  })
+
+  it('platform-admin revoking another platform-admin → allowed', () => {
+    const v = evaluateRevokeSessions(CALLER_FINOPS, TARGET_R('pa-1', 'region-a', 'platform-admin'))
+    expect(v).toEqual({ allowed: true })
+  })
 
   it('admin revoking a peer in the same region → allowed', () => {
-    const v = evaluateRevokeSessions(CALLER_ADMIN, TARGET_R('tm-2'))
+    const v = evaluateRevokeSessions(CALLER_ADMIN, TARGET_R('tm-2', 'region-a', 'developer'))
     expect(v).toEqual({ allowed: true })
   })
 
@@ -184,7 +184,7 @@ describe('evaluateRevokeSessions — pure verdicts (Wave VII)', () => {
   })
 
   it('platform-admin revoking themselves → allowed (mirror of admin self-revoke)', () => {
-    const v = evaluateRevokeSessions(CALLER_FINOPS, TARGET_R('finops-1', 'region-a'))
+    const v = evaluateRevokeSessions(CALLER_FINOPS, TARGET_R('finops-1', 'region-a', 'platform-admin'))
     expect(v).toEqual({ allowed: true })
   })
 })

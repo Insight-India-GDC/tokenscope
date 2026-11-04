@@ -16,9 +16,14 @@ import UnallocatedRemediationLink from '../UnallocatedRemediationLink.vue'
 import { fmtUsd } from '../../../composables/useFormat'
 import { UNALLOCATED_KEY } from '#shared/reports/unallocated'
 
-const props = defineProps<{
-  rows: { key: string; label: string; value: number }[]
-}>()
+const props = withDefaults(
+  defineProps<{
+    rows: { key: string; label: string; value: number }[]
+    /** Admin-only "Fix org homing →" (the container decides; fail-closed). */
+    canFixHoming?: boolean
+  }>(),
+  { canFixHoming: false },
+)
 
 const barRows = computed(() =>
   props.rows.map((r) => ({ label: r.label, value: r.value, meta: r.key })),
@@ -29,12 +34,12 @@ const hasUnallocated = computed(() => props.rows.some((r) => r.key === UNALLOCAT
 <template>
   <UiCard data-testid="regional-chargeback-rank">
     <div class="flex items-baseline justify-between gap-3 flex-wrap mb-1">
-      <div class="text-sm font-semibold text-carbon-1">Chargeback by cost-centre</div>
+      <div class="text-sm font-semibold text-carbon-1">Chargeback by Business Unit</div>
       <div class="text-[11px] text-carbon-3">Ranked by chargeback · sums to chargeable</div>
     </div>
     <div class="text-[11px] text-carbon-3 mb-3 flex items-center gap-2 flex-wrap">
-      <span>The real cross-charge homed to each cost-owning unit (bill lane). Per-teammate detail lives in Finance.</span>
-      <UnallocatedRemediationLink v-if="hasUnallocated" />
+      <span>The real cross-charge homed to each Business Unit (bill lane). Per-teammate detail lives in Finance.</span>
+      <UnallocatedRemediationLink v-if="hasUnallocated" :can-fix="props.canFixHoming" />
     </div>
 
     <ChartRankedBar

@@ -426,8 +426,10 @@ export interface MemberProject extends Record<string, unknown> {
   // the subject's region, never the viewer's.
   region_id: string
   // 'member' (current assignment) | 'cou-owner' (active cou_owner row on
-  // the project's lead CC; R1 F1 — the P&L drill-through path).
-  access: 'member' | 'cou-owner'
+  // the project's lead CC; R1 F1 — the P&L drill-through path) | 'admin'
+  // (an admin in scope who is neither: the project page only, aggregates
+  // only, so the no-PM fallback can reach the Manage queue).
+  access: 'member' | 'cou-owner' | 'admin'
 }
 
 /**
@@ -477,7 +479,26 @@ export async function requireProjectMembership(
   return [...rows][0] ?? null
 }
 
-/** MTD project allocation (baseline + top-up), matching the quota model. */
+/**
+ * The same project row as {@link requireProjectMembership}, by code, with no
+ * membership condition. The caller decides whether the viewer is an admin in
+ * scope of `region_id`; this read admits nobody on its own.
+ */
+export async function findProjectForAdmin(tx: Tx, code: string): Promise<MemberProject | null> {
+  const rows = await tx.execute<MemberProject>(sql`
+    SELECT p.id::text AS id, p.code, p.display_name, p.type, p.wbs_code,
+           p.end_date::text AS end_date,
+           (NOT ${activeProjectPredicate('p')}) AS ended,
+           p.region_id::text AS region_id,
+           'admin' AS access
+    FROM project p
+    WHERE p.code = ${code}
+    LIMIT 1
+  `)
+  return [...rows][0] ?? null
+}
+
+/** MTD project allocation (pool baseline + top-up), matching the quota model. */
 export async function fetchProjectAllocation(tx: Tx, projectId: string): Promise<number> {
   const byProject = await fetchProjectAllocations(tx, [projectId])
   return byProject.get(projectId) ?? 0
@@ -487,10 +508,14 @@ export async function fetchProjectAllocation(tx: Tx, projectId: string): Promise
  * {@link fetchProjectAllocation} for MANY projects in ONE round trip. Same
  * predicate, same kinds — a GROUP BY over a set of ids, not N questions.
  * Absent from the map = no effective allocation; callers default to 0.
+ *
+ * `at` is the instant the budget is read at; omitted, SQL's now(). The budget
+ * alert passes its own run clock so its cap is this figure at that instant.
  */
 export async function fetchProjectAllocations(
   tx: Tx,
   projectIds: readonly string[],
+  at?: string,
 ): Promise<Map<string, number>> {
   if (projectIds.length === 0) return new Map()
   const rows = await tx.execute<{ project_id: string; total: string }>(sql`
@@ -502,7 +527,10 @@ export async function fetchProjectAllocations(
         sql`, `,
       )}])
       AND allocation_kind IN ('baseline', 'top-up')
-      AND effective @> now()
+      -- The pool only. Per-developer caps (teammate_id set) are carve-outs of the
+      -- pool, so adding them would count the same budget twice.
+      AND teammate_id IS NULL
+      AND effective @> ${at === undefined ? sql`now()` : sql`${at}::timestamptz`}
     GROUP BY scope_id
   `)
   return new Map([...rows].map((r) => [r.project_id, Number(r.total)]))

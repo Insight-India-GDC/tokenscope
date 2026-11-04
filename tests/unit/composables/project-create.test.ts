@@ -1,95 +1,71 @@
 /*
- * useProjectCreate (FE-3) — idempotent two-step create. The invariant under
- * test: POST /admin/projects runs AT MOST ONCE across submit attempts, so a
- * failed allocation step can be retried without colliding on the unique
- * project code; failedStep distinguishes the two failure messages.
+ * useProjectCreate — one atomic call per submit, routed by who is creating:
+ * admins to /admin/projects, PMO-list holders to /projects.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { useProjectCreate } from '../../../app/composables/useProjectCreate'
+import { afterCreatePath, useProjectCreate } from '../../../app/composables/useProjectCreate'
 
-const PROJECT = {
+const BODY = {
   code: 'ACME-2026',
   display_name: 'Acme platform rebuild',
   type: 'billable',
   region_id: 'r1',
   cost_owning_unit_id: 'cou1',
-}
-const ALLOCATION = {
-  budget_usd: '1000.00',
-  effective: '[2026-06-01T00:00:00+00,2026-07-01T00:00:00+00)',
+  pm_teammate_id: 't1',
+  budget: { amount_usd: '1000.00', from: '2026-06-01T00:00:00Z', to: '2026-07-01T00:00:00Z' },
 }
 
 describe('useProjectCreate', () => {
-  it('happy path: creates project then allocation, returns the allocation id', async () => {
-    const post = vi
-      .fn()
-      .mockResolvedValueOnce({ id: 'proj-1' })
-      .mockResolvedValueOnce({ id: 'alloc-1' })
+  it('admin route: one POST to /admin/projects, returns the created project', async () => {
+    const post = vi.fn().mockResolvedValueOnce({ id: 'p1', code: 'ACME-2026', allocation_id: 'a1' })
     const c = useProjectCreate({ post: post as never })
-
-    const allocId = await c.submit(PROJECT, ALLOCATION)
-
-    expect(allocId).toBe('alloc-1')
-    expect(c.error.value).toBeNull()
-    expect(c.failedStep.value).toBeNull()
-    expect(post).toHaveBeenNthCalledWith(1, '/api/v1/admin/projects', PROJECT)
-    expect(post).toHaveBeenNthCalledWith(2, '/api/v1/allocations', {
-      ...ALLOCATION,
-      project_id: 'proj-1',
-    })
-  })
-
-  it('does NOT re-POST the project when only the allocation step failed', async () => {
-    const post = vi
-      .fn()
-      .mockResolvedValueOnce({ id: 'proj-1' }) // project create OK
-      .mockRejectedValueOnce({ data: { data: { detail: 'Budget overlaps.' } } }) // allocation fails
-      .mockResolvedValueOnce({ id: 'alloc-2' }) // retry: allocation only
-    const c = useProjectCreate({ post: post as never })
-
-    const first = await c.submit(PROJECT, ALLOCATION)
-    expect(first).toBeNull()
-    expect(c.failedStep.value).toBe('allocation')
-    expect(c.error.value).toBe('Budget overlaps.')
-    expect(c.createdProjectId.value).toBe('proj-1')
-
-    const second = await c.submit(PROJECT, ALLOCATION)
-    expect(second).toBe('alloc-2')
-    expect(c.failedStep.value).toBeNull()
-    expect(c.error.value).toBeNull()
-
-    // The crucial invariant: exactly ONE project POST across both attempts.
-    const projectPosts = post.mock.calls.filter(([url]) => url === '/api/v1/admin/projects')
-    expect(projectPosts).toHaveLength(1)
-  })
-
-  it('reports failedStep=project when step 1 fails (nothing created yet)', async () => {
-    const post = vi.fn().mockRejectedValueOnce({ data: { statusMessage: 'Duplicate code' } })
-    const c = useProjectCreate({ post: post as never })
-
-    const result = await c.submit(PROJECT, ALLOCATION)
-
-    expect(result).toBeNull()
-    expect(c.failedStep.value).toBe('project')
-    expect(c.error.value).toBe('Duplicate code')
-    expect(c.createdProjectId.value).toBeNull()
+    expect(await c.submit('admin', BODY)).toEqual({ id: 'p1', code: 'ACME-2026', allocation_id: 'a1' })
     expect(post).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledWith('/api/v1/admin/projects', BODY)
+    expect(c.error.value).toBeNull()
   })
 
-  it('re-entrancy: a submit while one is in flight is a no-op', async () => {
-    let release!: (v: { id: string }) => void
+  it('PMO route: one POST to /projects', async () => {
+    const post = vi.fn().mockResolvedValueOnce({ id: 'p1', code: 'ACME-2026', allocation_id: 'a1' })
+    const c = useProjectCreate({ post: post as never })
+    await c.submit('pmo', BODY)
+    expect(post).toHaveBeenCalledWith('/api/v1/projects', BODY)
+  })
+
+  it('a failure surfaces the server detail and returns null; a retry posts again', async () => {
     const post = vi
       .fn()
-      .mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
-      .mockResolvedValueOnce({ id: 'alloc-1' })
+      .mockRejectedValueOnce({ statusCode: 409, data: { data: { detail: 'Project code taken.' } } })
+      .mockResolvedValueOnce({ id: 'p2', code: 'ACME-2027', allocation_id: 'a2' })
     const c = useProjectCreate({ post: post as never })
+    expect(await c.submit('admin', BODY)).toBeNull()
+    expect(c.error.value).toContain('Project code taken.')
+    expect(c.outcomeUnknown.value).toBe(false)
+    expect(await c.submit('admin', { ...BODY, code: 'ACME-2027' })).toMatchObject({ id: 'p2' })
+    expect(c.error.value).toBeNull()
+    expect(post).toHaveBeenCalledTimes(2)
+  })
 
-    const first = c.submit(PROJECT, ALLOCATION)
-    const second = await c.submit(PROJECT, ALLOCATION) // while first is in flight
-    expect(second).toBeNull()
-    expect(post).toHaveBeenCalledTimes(1)
+  it('a failure with no server refusal behind it marks the outcome unknown (the project may exist)', async () => {
+    const post = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch')).mockRejectedValueOnce({ statusCode: 502, data: {} })
+    const c = useProjectCreate({ post: post as never })
+    expect(await c.submit('admin', BODY)).toBeNull()
+    expect(c.outcomeUnknown.value).toBe(true)
+    expect(await c.submit('admin', BODY)).toBeNull()
+    expect(c.outcomeUnknown.value).toBe(true)
+  })
+})
 
-    release({ id: 'proj-1' })
-    await expect(first).resolves.toBe('alloc-1')
+describe('afterCreatePath', () => {
+  const created = { id: 'p1', code: 'ACME 1', allocation_id: 'a1' }
+  it('an admin lands on the new baseline', () => {
+    expect(afterCreatePath('admin', created, { pmId: 't2', viewerId: 't1' })).toBe('/allocations/a1')
+  })
+  it('a PMO holder who is the PM opens the project page', () => {
+    expect(afterCreatePath('pmo', created, { pmId: 't1', viewerId: 't1' })).toBe('/projects/ACME%201')
+  })
+  it('a PMO holder who named someone else goes to My projects, which names the project (the page would 404)', () => {
+    expect(afterCreatePath('pmo', created, { pmId: 't2', viewerId: 't1' })).toBe('/projects?created=ACME%201')
+    expect(afterCreatePath('pmo', created, { pmId: null, viewerId: null })).toBe('/projects?created=ACME%201')
   })
 })

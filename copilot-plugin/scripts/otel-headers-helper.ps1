@@ -319,6 +319,7 @@ $TokenEp = ''
 $ClientId = ''
 $Resolved = $false
 $TrustedSeenUnusable = $false
+$UnusableWhy = ''
 
 function Invoke-Refuse([string]$SentinelMessage, [string]$Explanation) {
   Write-Err "TokenScope: emission auth REFUSED - $Explanation Telemetry will not emit."
@@ -406,6 +407,12 @@ if (-not $Resolved -and -not [string]::IsNullOrEmpty($ProfileDir)) {
       # for a parsed settings object with an env block that never names the key.
       if (-not ($gsEnv -is [System.Management.Automation.PSCustomObject]) -or $gsText.Contains('TOKENSCOPE_OAUTH_REFRESH_TOKEN')) {
         $TrustedSeenUnusable = $true
+        # Named in the refusal below (#452), as the .sh does.
+        if ($gsText.Contains('TOKENSCOPE_OAUTH_REFRESH_TOKEN')) {
+          $UnusableWhy += " $gsFile mentions a TokenScope credential that could not be read."
+        } else {
+          $UnusableWhy += " $gsFile could not be read as a settings file."
+        }
       }
     } else {
       $gsBear = Get-JsonStr $gsEnv 'TOKENSCOPE_BEARER_ENDPOINT'
@@ -420,7 +427,7 @@ if (-not $Resolved -and -not [string]::IsNullOrEmpty($ProfileDir)) {
 
 $envTok = [string]$env:TOKENSCOPE_OAUTH_REFRESH_TOKEN
 if (-not $Resolved -and $TrustedSeenUnusable -and $envTok -ne '') {
-  Invoke-Refuse 'trusted source unusable, ambient credential present' 'this device has a stored enrolment this lane cannot use, and the session environment is not an acceptable substitute while a durable credential is reachable. Re-run the tokenscope-setup MCP prompt.'
+  Invoke-Refuse 'trusted source unusable, ambient credential present' "this device has a stored enrolment this lane cannot use, and the session environment is not an acceptable substitute while a durable credential is reachable. This lane's device store $Store is missing.$UnusableWhy Re-run the tokenscope-setup MCP prompt."
 }
 
 # -- source 3: the process environment --

@@ -17,6 +17,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+// Windows (#430): skipped on win32 because this file drives the POSIX .sh helper, which Windows does not run; the PowerShell twin is covered by otel-helper-conformance, claude-redeem-ps1 and status-ps1.
+const POSIX_ONLY = process.platform === 'win32'
+
 const HELPER = resolve(__dirname, '../../../plugin/scripts/otel-headers-helper.sh')
 
 let tmp: string
@@ -117,7 +120,7 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(tmp, { recursive: true, force: true }))
 
-describe('otel-headers-helper retry-once-on-401', () => {
+describe.skipIf(POSIX_ONLY)('otel-headers-helper retry-once-on-401', () => {
   it('self-heals a superseded cached token: 401 → force refresh → retry → 200', () => {
     seedBogusCache()
     const r = runHelper({ STUB_BEARER_MODE: 'heal' })
@@ -174,7 +177,7 @@ describe('otel-headers-helper retry-once-on-401', () => {
   })
 })
 
-describe('otel-headers-helper — S1 fix 3: endpoint pre-flight (assert_safe_endpoint)', () => {
+describe.skipIf(POSIX_ONLY)('otel-headers-helper — S1 fix 3: endpoint pre-flight (assert_safe_endpoint)', () => {
   function argvLogEmpty(logPath: string): boolean {
     return !existsSync(logPath) || readFileSync(logPath, 'utf8').trim() === ''
   }
@@ -212,7 +215,7 @@ describe('otel-headers-helper — S1 fix 3: endpoint pre-flight (assert_safe_end
   })
 })
 
-describe('otel-headers-helper — S1 fix 4: the shared device credential store fallback', () => {
+describe.skipIf(POSIX_ONLY)('otel-headers-helper — S1 fix 4: the shared device credential store fallback', () => {
   /** Run the helper WITHOUT TOKENSCOPE_OAUTH_REFRESH_TOKEN in its env at all
    * (unlike runHelper(), which always sets it — a tagged-repo session omits
    * it entirely per tag-repo.mjs's `delete deviceEnv.TOKENSCOPE_OAUTH_REFRESH_TOKEN`). */

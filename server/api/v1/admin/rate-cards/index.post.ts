@@ -137,7 +137,7 @@ export default defineEventHandler(async (event) => {
           type: 'https://tokenscope.example.com/errors/forbidden',
           title: 'Forbidden',
           status: 403,
-          detail: 'A global rate card requires platform-admin.',
+          detail: 'A global rate card requires an Admin.',
         },
       })
     }

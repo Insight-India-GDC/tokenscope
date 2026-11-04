@@ -31,8 +31,9 @@ const REGION_ADMIN_ID = '9a1e0000-0000-4000-8000-0000000000a1'
 // truth rather than hardcoded, so this test follows the list if it changes.
 const UNSCHEDULED = Object.keys(UNSCHEDULED_WORKERS)[0]!
 
-function ev(opts: { session: Session; body?: unknown; method?: string }) {
+function ev(opts: { session: Session; body?: unknown; method?: string; ua?: string }) {
   const headers: Record<string, string> = { host: 'localhost:3450', origin: 'http://localhost:3450' }
+  if (opts.ua) headers['user-agent'] = opts.ua
   const method = opts.method ?? 'GET'
   const e = {
     method,
@@ -141,6 +142,23 @@ describe('admin worker-enablement PUT', () => {
       SELECT enabled, reason FROM worker_enablement WHERE worker_name = 'budget-alert'`
     expect(rows[0]!.enabled).toBe(false)
     expect(rows[0]!.reason).toBe('noisy in dev')
+  })
+
+  it('audits the toggle with the caller IP and user-agent, like every other admin write', async () => {
+    await putHandler(
+      ev({ session: finops(), method: 'PUT', ua: 'ts-test-ua', body: { workerName: 'budget-alert', enabled: false, reason: 'audit me' } }),
+    )
+    const [row] = await t.client<{ user_agent: string | null; ip_address: string | null }[]>`
+      SELECT user_agent, host(ip_address) AS ip_address FROM audit_event
+      WHERE event_type = 'worker-disabled' ORDER BY ts_recorded DESC LIMIT 1`
+    expect(row!.user_agent).toBe('ts-test-ua')
+    expect(row!.ip_address).not.toBeNull()
+  })
+
+  it('a malformed body is a 400 that names the field', async () => {
+    await expect(
+      putHandler(ev({ session: finops(), method: 'PUT', body: { workerName: 'budget-alert', enabled: 'no' } })),
+    ).rejects.toMatchObject({ statusCode: 400, statusMessage: expect.stringContaining('enabled') })
   })
 
   it('requires a reason to disable', async () => {

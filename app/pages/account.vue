@@ -334,7 +334,7 @@ async function revokePersonalSubscription(tool: string) {
               <span :class="i.verified ? 'text-rag-green' : 'text-carbon-3'">{{ i.verified ? 'verified' : 'unverified' }}</span>
             </div>
           </div>
-          <UiButton kind="ghost" size="sm" :disabled="busy" :data-testid="`remove-${i.id}`" @click="removeIdentity(i.id)">
+          <UiButton v-if="i.source === 'self'" kind="ghost" size="sm" :disabled="busy" :data-testid="`remove-${i.id}`" @click="removeIdentity(i.id)">
             Remove
           </UiButton>
         </li>
@@ -359,7 +359,7 @@ async function revokePersonalSubscription(tool: string) {
           v-model="newIdentifier"
           type="text"
           placeholder="name@example.com"
-          class="flex-1 min-w-[220px] px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+          class="flex-1 min-w-[220px] px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
           data-testid="new-identifier"
           @keyup.enter="addIdentity"
         >
@@ -387,7 +387,7 @@ async function revokePersonalSubscription(tool: string) {
       class="mt-5 p-2.5 rounded-md text-sm font-medium"
       :class="provToast.kind === 'ok'
         ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30'
-        : 'bg-brand-hunger/10 text-brand-hunger border border-brand-hunger/30'"
+        : 'bg-brand-hunger/10 text-brand-heart border border-brand-hunger/30'"
     >
       {{ provToast.message }}
     </div>
@@ -456,7 +456,7 @@ async function revokePersonalSubscription(tool: string) {
         class="mt-3 p-2.5 rounded-md text-sm font-medium"
         :class="instToast.kind === 'ok'
           ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30'
-          : 'bg-brand-hunger/10 text-brand-hunger border border-brand-hunger/30'"
+          : 'bg-brand-hunger/10 text-brand-heart border border-brand-hunger/30'"
       >
         {{ instToast.message }}
       </div>
@@ -520,7 +520,7 @@ async function revokePersonalSubscription(tool: string) {
         class="mt-3 p-2.5 rounded-md text-sm font-medium"
         :class="grantToast.kind === 'ok'
           ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30'
-          : 'bg-brand-hunger/10 text-brand-hunger border border-brand-hunger/30'"
+          : 'bg-brand-hunger/10 text-brand-heart border border-brand-hunger/30'"
       >
         {{ grantToast.message }}
       </div>
@@ -640,9 +640,10 @@ async function revokePersonalSubscription(tool: string) {
       <UiEyebrow>Personal subscription</UiEyebrow>
       <p class="text-sm text-carbon-2 mt-1">
         If you pay for your own Claude subscription personally (not through Insight), declare it here.
-        Declared usage stays visible in your usage (showback) but is <strong>never</strong> charged back,
-        and is never flagged as suspicious for having no Insight bill behind it. Scoped exactly to the
-        tool you declare — nothing is ever auto-classified.
+        Declared usage stays visible in your usage (showback) and is never flagged as suspicious for
+        having no Insight bill behind it. Declaring does not by itself change what is charged back:
+        chargeback follows the provider bill, so usage with no Insight invoice behind it is not charged.
+        Scoped exactly to the tool you declare — nothing is ever auto-classified.
       </p>
 
       <ul v-if="subsData?.declarations?.length" class="mt-3 divide-y divide-calm-2" data-testid="personal-subscription-list">

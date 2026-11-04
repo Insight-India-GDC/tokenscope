@@ -2,16 +2,16 @@
  * GET /api/v1/admin/projects/{id}/assignments — list a project's CURRENT
  * members (open assignments, `upper_inf(effective)`).
  *
- * Same scope as the POST/DELETE on this path: manager / admin / platform-admin,
- * bound to the project (admin → region, manager → org subtree). Powers the
- * "Manage members" panel on Admin → Region → Projects so assignment isn't
- * buried in the allocation editor.
+ * Same gate as the POST/DELETE on this path: manager / admin / platform-admin,
+ * bound to the project (admin → region, manager → org subtree), OR a current PM
+ * of this project (spec A1). Powers the "Manage members" panel on Admin → Region
+ * → Projects and the project page's Manage section.
  */
 import { defineEventHandler, createError, getRouterParam } from 'h3'
 import { sql } from 'drizzle-orm'
 import { z } from 'zod'
-import { requireRole } from '../../../../../auth/rbac'
-import { assertProjectScope } from '../../../../../auth/project-scope'
+import { requireAuth } from '../../../../../auth/rbac'
+import { assertProjectScopeOrManager, loadProjectTarget } from '../../../../../auth/project-authority'
 import { withRequestRls } from '../../../../../db/request-rls'
 
 interface MemberRow extends Record<string, unknown> {
@@ -25,25 +25,18 @@ interface MemberRow extends Record<string, unknown> {
 }
 
 export default defineEventHandler(async (event) => {
-  await requireRole(event, 'manager', 'admin')
+  await requireAuth(event)
   const id = getRouterParam(event, 'id')
   if (!id || !z.string().uuid().safeParse(id).success) {
     throw createError({ statusCode: 400, statusMessage: 'Invalid project id' })
   }
 
   return await withRequestRls(event, async (tx) => {
-    const projRows = await tx.execute<{ region_id: string; cou_path: string }>(sql`
-      SELECT p.region_id::text AS region_id, cou.path::text AS cou_path
-      FROM project p
-      JOIN org_unit cou ON cou.id = p.cost_owning_unit_id
-      WHERE p.id = ${id}::uuid
-      LIMIT 1
-    `)
-    const proj = [...projRows][0]
+    const proj = await loadProjectTarget(tx, id)
     if (!proj) {
       throw createError({ statusCode: 404, statusMessage: 'Project not found' })
     }
-    await assertProjectScope(event, { regionId: proj.region_id, couPath: proj.cou_path }, tx)
+    await assertProjectScopeOrManager(event, tx, proj)
 
     // J2: each member's HOME cost-owning unit — the nearest CoU ancestor of
     // their org unit (or the unit itself). Cross-CC membership is normal

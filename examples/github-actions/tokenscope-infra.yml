@@ -64,12 +64,20 @@ jobs:
       ENTRA_CLIENT_SECRET: ${{ secrets.ENTRA_CLIENT_SECRET }}
       # Optional provider credentials; unset = not configured.
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GH_PAT_1: ${{ secrets.GH_PAT_1 }}
+      GH_PAT_2: ${{ secrets.GH_PAT_2 }}
+      GH_PAT_3: ${{ secrets.GH_PAT_3 }}
+      GH_APP_KEY_1: ${{ secrets.GH_APP_KEY_1 }}
+      # DEPRECATED: the earlier named GitHub secrets, still passed for now so a
+      # deployment that set them keeps working (CHANGELOG.md has the upgrade note).
       GH_PAT_PARTNER_DEMO: ${{ secrets.GH_PAT_PARTNER_DEMO }}
       GH_PAT_PRODUCTION: ${{ secrets.GH_PAT_PRODUCTION }}
       GH_PAT_ENTERPRISE_NFR: ${{ secrets.GH_PAT_ENTERPRISE_NFR }}
       GH_APP_KEY_PARTNER_DEMO: ${{ secrets.GH_APP_KEY_PARTNER_DEMO }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Check configuration
         env:
@@ -103,20 +111,108 @@ jobs:
             --result-format ResourceIdOnly
 
       - name: Apply
+        id: apply1
         if: inputs.mode == 'apply'
         # Started without waiting so the script below can approve Front Door
         # Premium's Private Link request while the apply runs: the Front Door
         # origin does not finish until it is approved. For any other posture
         # the script just waits for the deployment and reports its result.
+        # Exit 4 from the script means only Azure's platform failed (an
+        # InternalError, a timeout, a conflict) or Front Door is not routing
+        # yet: the template is idempotent, so the apply runs again, up to two
+        # more times, each after a fresh sign-in (one lasts about an hour).
         run: |
           az deployment group create --resource-group "$RG" \
             --template-file infra/main.bicep --parameters "$PARAMS" --no-wait
           rc=0
+          # A retry may approve the one Private Link request Front Door filed
+          # during the attempt before (the script records it there on exit 4).
+          export APPROVE_CARRY="$RUNNER_TEMP/tokenscope-fd-pending"
           bash infra/scripts/approve-front-door-private-link.sh "$RG" || rc=$?
           if [ "$rc" = 3 ]; then
             echo "::notice::First apply: the Container App waits for its image. Run TokenScope deploy, then apply again to create what depends on the app (alerts, worker jobs, Front Door)."
             exit 0
           fi
+          if [ "$rc" = 4 ]; then
+            echo "retry=yes" >> "$GITHUB_OUTPUT"
+            echo "::warning::Apply attempt 1 hit an Azure platform error or Front Door was not routing yet (see above); retrying after a fresh sign-in."
+            echo "- Apply attempt 1: Azure platform error or Front Door not routing yet; retried." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           [ "$rc" = 0 ] || exit "$rc"
+          echo "::notice::containerAppUrl = $(az deployment group show -g "$RG" -n main \
+            --query properties.outputs.containerAppUrl.value -o tsv)"
+
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        if: steps.apply1.outputs.retry == 'yes'
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Apply again (retry 1 of 2)
+        id: apply2
+        if: steps.apply1.outputs.retry == 'yes'
+        run: |
+          sleep 60
+          az deployment group create --resource-group "$RG" \
+            --template-file infra/main.bicep --parameters "$PARAMS" --no-wait
+          rc=0
+          # A retry may approve the one Private Link request Front Door filed
+          # during the attempt before (the script records it there on exit 4).
+          export APPROVE_CARRY="$RUNNER_TEMP/tokenscope-fd-pending"
+          # Shorter waits on a retry keep all three attempts inside the hosted
+          # job's six hours (90 + 2 x 50 minutes, plus Front Door's 45).
+          export APPROVE_TIMEOUT_MIN=50
+          bash infra/scripts/approve-front-door-private-link.sh "$RG" || rc=$?
+          if [ "$rc" = 3 ]; then
+            echo "::notice::First apply: the Container App waits for its image. Run TokenScope deploy, then apply again to create what depends on the app (alerts, worker jobs, Front Door)."
+            exit 0
+          fi
+          if [ "$rc" = 4 ]; then
+            echo "retry=yes" >> "$GITHUB_OUTPUT"
+            echo "::warning::Apply attempt 2 hit an Azure platform error or Front Door was not routing yet (see above); retrying after a fresh sign-in."
+            echo "- Apply attempt 2: Azure platform error or Front Door not routing yet; retried." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          [ "$rc" = 0 ] || exit "$rc"
+          echo "::notice::The apply passed after 1 retry."
+          echo "- The apply passed after 1 retry." >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::containerAppUrl = $(az deployment group show -g "$RG" -n main \
+            --query properties.outputs.containerAppUrl.value -o tsv)"
+
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        if: steps.apply2.outputs.retry == 'yes'
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Apply again (retry 2 of 2)
+        id: apply3
+        if: steps.apply2.outputs.retry == 'yes'
+        run: |
+          sleep 60
+          az deployment group create --resource-group "$RG" \
+            --template-file infra/main.bicep --parameters "$PARAMS" --no-wait
+          rc=0
+          # A retry may approve the one Private Link request Front Door filed
+          # during the attempt before (the script records it there on exit 4).
+          export APPROVE_CARRY="$RUNNER_TEMP/tokenscope-fd-pending"
+          # Shorter waits on a retry keep all three attempts inside the hosted
+          # job's six hours (90 + 2 x 50 minutes, plus Front Door's 45).
+          export APPROVE_TIMEOUT_MIN=50
+          bash infra/scripts/approve-front-door-private-link.sh "$RG" || rc=$?
+          if [ "$rc" = 3 ]; then
+            echo "::notice::First apply: the Container App waits for its image. Run TokenScope deploy, then apply again to create what depends on the app (alerts, worker jobs, Front Door)."
+            exit 0
+          fi
+          if [ "$rc" = 4 ]; then
+            echo "::error::The apply still failed on Azure's side after 2 retries (see above)."
+            exit 4
+          fi
+          [ "$rc" = 0 ] || exit "$rc"
+          echo "::notice::The apply passed after 2 retries."
+          echo "- The apply passed after 2 retries." >> "$GITHUB_STEP_SUMMARY"
           echo "::notice::containerAppUrl = $(az deployment group show -g "$RG" -n main \
             --query properties.outputs.containerAppUrl.value -o tsv)"

@@ -20,7 +20,6 @@ const meta = {
     { vendor: 'github' as const, state: 'settling' as const, settlesAt: '2026-06-07', invoiceReconciled: false, closeRun: false as const },
   ],
   scope: 'finance' as const,
-  pointInTimeDims: false,
 }
 
 const HOMING = 'Chargeback rows are homed to the current org structure.'

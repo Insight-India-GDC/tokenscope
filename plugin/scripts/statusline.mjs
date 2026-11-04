@@ -74,7 +74,19 @@ import {
   readMcpAuthCache,
   readMcpAuthStamp,
 } from './claude-credentials.mjs'
-import { readEmitDegraded, readEmitSentinel, trustedGlobalSettingsEnv, trustedStateDir } from './plugin-runtime.mjs'
+import {
+  attrsInstance,
+  claudeInstallStateDir,
+  keptRepoTagEnrolment,
+  readEmitDegraded,
+  readEmitSentinel,
+  readSettingsEnv,
+  trustedGlobalSettingsEnv,
+  trustedStateDir,
+} from './plugin-runtime.mjs'
+import { resolveRepoRoot, resolveRepoProjectCode } from './tag-repo.mjs'
+import { readFolderActivity } from './tokenscope-project.mjs'
+import { readSessionActivity } from './session-activity.mjs'
 
 const C = {
   green: '\x1b[32m',
@@ -279,12 +291,20 @@ export function formatStatusLine({
   envLabel = null,
   color = true,
   degraded = false,
+  project = null,
+  activity = null,
 }) {
   const paint = (c, s) => (color ? `${c}${s}${C.reset}` : s)
   if (!configured) return paint(C.dim, 'TokenScope · not configured')
   const sid = sessionId ? ` ${paint(C.dim, `#${String(sessionId).slice(0, 8)}`)}` : ''
   const tag = envLabel ? ` ${paint(C.dim, `(${envLabel})`)}` : ''
-  const line = (c, label) => `${paint(c, `TokenScope ${label}`)}${sid}${tag}`
+  // #475: what the work is, after the health label (nothing when unset).
+  const what = [project, activity]
+    .filter((v) => typeof v === 'string' && v.trim())
+    // eslint-disable-next-line no-control-regex -- a label is display text: drop control characters
+    .map((v) => ` · ${v.replace(/[\u0000-\u001f\u007f]/g, '').trim()}`)
+    .join('')
+  const line = (c, label) => `${paint(c, `TokenScope ${label}`)}${what}${sid}${tag}`
   // 1. Auth itself broken — can't even mint a bearer. Root cause; outranks all.
   if (!emitting) return line(C.red, '✗ emit-auth failing')
   // 1b. Emitting on the CACHED bearer because TokenScope is unreachable (#409):
@@ -396,17 +416,62 @@ function instanceIdOf(env) {
 }
 
 /**
- * Read the last-landed cache (`<state>/last-landed.json`) — the parsed object, or
- * null on any failure. landed-check.mjs writes it from the server /health response;
- * the always-on statusline only READS it here (never a synchronous network call).
- * classifyLanding() turns it into the render state.
+ * Read the last-landed cache (`<state>/last-landed.claude-code.json`) — the parsed
+ * object, or null on any failure. landed-check.mjs writes it from the server
+ * /health response; the always-on statusline only READS it here (never a
+ * synchronous network call). classifyLanding() turns it into the render state.
+ *
+ * Until the first refresh after an upgrade only the old shared name exists, so it
+ * is read as a fallback (#453). It may hold the Copilot plugin's record; that is
+ * safe because classifyLanding() rejects a cache naming another instance.
  */
-function readLandedCache() {
-  try {
-    return JSON.parse(readFileSync(join(trustedStateDir(), 'last-landed.json'), 'utf8'))
-  } catch {
-    return null
+export function readLandedCache(dir = claudeInstallStateDir()) {
+  for (const name of ['last-landed.claude-code.json', 'last-landed.json']) {
+    try {
+      return JSON.parse(readFileSync(join(dir, name), 'utf8'))
+    } catch {
+      /* try the next name */
+    }
   }
+  return null
+}
+
+/**
+ * The landing state of the instance a session in `cwd` emits under.
+ *
+ * The session's own resource attributes are not readable here: Claude Code
+ * 2.1.300 starts the status-line command without the `OTEL_*` settings env
+ * (other settings env keys do reach it). So the repo tag's CURRENT instance
+ * stands in for the one the session froze at startup:
+ *   - none, or this install's own: this install's cache.
+ *   - another local install's, kept by keptRepoTagEnrolment: that install's
+ *     cache, which this process does not refresh (`tagged`), so one older than
+ *     NEVER_LANDED_GRACE_MS reads 'unknown'.
+ *   - any other: 'unknown'. Session start replaces it, or refuses a git-tracked
+ *     file, and either way the session may be emitting under it.
+ * A tag session start rewrote after this session read it is not visible here;
+ * session start warns about that case itself.
+ */
+export function sessionLanding(
+  env,
+  cwd = process.cwd(),
+  { now = Date.now(), ownDir = claudeInstallStateDir(), storeRoot = trustedStateDir() } = {},
+) {
+  const own = instanceIdOf(env)
+  const repoRoot = resolveRepoRoot(cwd)
+  const tagInstance = repoRoot
+    ? attrsInstance(readSettingsEnv(join(repoRoot, '.claude', 'settings.local.json')).OTEL_RESOURCE_ATTRIBUTES)
+    : ''
+  if (!tagInstance || tagInstance === own) {
+    const cache = readLandedCache(ownDir)
+    return { landing: classifyLanding(cache, own, now), cache, tagged: false }
+  }
+  const kept = keptRepoTagEnrolment(tagInstance, own, env?.TOKENSCOPE_BEARER_ENDPOINT, storeRoot)
+  if (!kept) return { landing: 'unknown', cache: readLandedCache(ownDir), tagged: false }
+  const cache = readLandedCache(kept.dir)
+  const checked = parseTs(cache?.checkedAt)
+  const fresh = checked !== null && now - checked <= NEVER_LANDED_GRACE_MS
+  return { landing: fresh ? classifyLanding(cache, kept.instanceId, now) : 'unknown', cache, tagged: true }
 }
 
 /**
@@ -422,7 +487,7 @@ export const POLL_INTERVAL_MS = 5 * 60 * 1000
 /** The last spawn-attempt timestamp from the poll stamp file (or null). */
 function readPollStamp() {
   try {
-    return JSON.parse(readFileSync(join(trustedStateDir(), 'landed-poll.stamp'), 'utf8'))?.at ?? null
+    return JSON.parse(readFileSync(join(claudeInstallStateDir(), 'landed-poll.stamp'), 'utf8'))?.at ?? null
   } catch {
     return null
   }
@@ -452,15 +517,16 @@ function maybeSpawnLandedRefresh(env, cache) {
   try {
     if (!landedRefreshDue(cache)) return
     /*
-     * trustedStateDir() everywhere in this file, reads included. stateDir()
+     * claudeInstallStateDir() for this lane's files, reads included. stateDir()
      * honours TOKENSCOPE_STATE_DIR, which a repository's settings env can set —
      * so a repo could choose where this stamp is written AND pre-seed the
      * delivery cache that landedRefreshDue() consults, making the status line
      * report healthy delivery while suppressing the refresh that would discover
      * otherwise. landed-check.mjs defaults to the same trusted directory, so
-     * reader and writer stay on one store.
+     * reader and writer stay on one store: this install's own
+     * (claudeInstallStateDir), which no environment variable chooses.
      */
-    const dir = trustedStateDir()
+    const dir = claudeInstallStateDir()
     try {
       mkdirSync(dir, { recursive: true })
       writeFileSync(
@@ -489,6 +555,31 @@ function maybeSpawnLandedRefresh(env, cache) {
   }
 }
 
+/**
+ * #475: the project and activity this session's work is tagged with, as far as
+ * this install knows: what /tokenscope:activity recorded for the session, else
+ * the repo's `.tokenscope` code and the folder's default activity. Never throws.
+ * Exported for tests.
+ */
+export function sessionWork(sessionId, cwd, stateDir = claudeInstallStateDir()) {
+  const out = { project: null, activity: null }
+  try {
+    const set = sessionId ? readSessionActivity(sessionId, stateDir) : null
+    let code = null
+    try {
+      code = resolveRepoProjectCode({ arg: '', cwd }).code
+    } catch {
+      /* untagged repo */
+    }
+    const root = resolveRepoRoot(cwd)
+    out.project = set?.project ?? code ?? null
+    out.activity = set?.activity ?? (root ? readFolderActivity(root) : null)
+  } catch {
+    /* never break the render */
+  }
+  return out
+}
+
 function main() {
   let out = ''
   try {
@@ -499,29 +590,30 @@ function main() {
     const configured = isConfigured(env)
     let landing = 'unknown'
     if (configured) {
-      const cache = readLandedCache()
-      landing = classifyLanding(cache, instanceIdOf(env))
+      const s = sessionLanding(env)
+      landing = s.landing
       // Keep the /health cache fresh for the NEXT render — throttled + detached, so
       // this render never blocks on the network. Only when we have a live endpoint.
-      if ((env.TOKENSCOPE_BEARER_ENDPOINT ?? '').trim()) maybeSpawnLandedRefresh(env, cache)
+      if (!s.tagged && (env.TOKENSCOPE_BEARER_ENDPOINT ?? '').trim()) maybeSpawnLandedRefresh(env, s.cache)
     }
     out = formatStatusLine({
       configured,
       // Emitting = configured AND no live failure sentinel (no sentinel = healthy).
-      // trustedStateDir(): this call used the ambient process.env, so a repo-set
+      // claudeInstallStateDir(): this call used the ambient process.env, so a repo-set
       // TOKENSCOPE_STATE_DIR chose which directory was searched for the failure
       // sentinel — point it at an empty one and "no sentinel" reads as healthy
       // emission. Same forgery as the delivery cache above, on the other input.
-      emitting: configured && !readEmitSentinel(process.env, trustedStateDir()),
+      emitting: configured && !readEmitSentinel(process.env, claudeInstallStateDir()),
       // Degraded = the helper is handing back its CACHED bearer because TokenScope
       // is unreachable (#409). Same trusted directory, same forgery argument.
-      degraded: configured && Boolean(readEmitDegraded(process.env, trustedStateDir())),
+      degraded: configured && Boolean(readEmitDegraded(process.env, claudeInstallStateDir())),
       mcpAuthed: isMcpAuthed(),
       // Landing = the delivery-confirmation state derived from the cached /health.
       landing,
       sessionId: input.session_id ?? null,
       // Where this client emits OTel — derived from the configured endpoint.
       envLabel: configured ? emitEnvLabel(env) : null,
+      ...sessionWork(input.session_id ?? null, process.cwd()),
     })
   } catch {
     // Never break the UI — `out` stays '' from the initializer.

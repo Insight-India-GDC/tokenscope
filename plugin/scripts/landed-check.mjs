@@ -14,10 +14,10 @@
  * a synchronous network call.
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
-import { accessCachePath, readBoundAccessToken } from './device-store.mjs'
+import { join, sep } from 'node:path'
+import { accessCachePath, bearerInstance, readBoundAccessToken } from './device-store.mjs'
 import { isMainModule } from './is-main.mjs'
-import { trustedStateDir, trustedGlobalSettingsEnv } from './plugin-runtime.mjs'
+import { claudeInstallStateDir, trustedStateDir, trustedGlobalSettingsEnv } from './plugin-runtime.mjs'
 import { assertSafeEndpoint } from './endpoint-guard.mjs'
 
 const TIMEOUT_MS = 4000
@@ -51,7 +51,7 @@ export async function refreshLanded({ env = {}, stateDir } = {}) {
    * tests sandbox it.
    */
   const pinned = trustedGlobalSettingsEnv().TOKENSCOPE_STATE_DIR
-  const dir = stateDir || (pinned && String(pinned).trim()) || trustedStateDir()
+  const dir = stateDir || (pinned && String(pinned).trim()) || claudeInstallStateDir()
   /*
    * A TEST MUST NEVER WRITE THE REAL DEVICE STORE. Moving this default off the
    * ambient env means any caller that used to redirect it with
@@ -63,7 +63,7 @@ export async function refreshLanded({ env = {}, stateDir } = {}) {
    */
   const underVitest =
     typeof globalThis.__vitest_worker__ === 'object' && globalThis.__vitest_worker__ !== null
-  if (underVitest && dir === trustedStateDir()) {
+  if (underVitest && (dir === trustedStateDir() || dir.startsWith(trustedStateDir() + sep))) {
     return { ok: false, reason: 'refusing to write the real device store from a test' }
   }
   /*
@@ -90,6 +90,9 @@ export async function refreshLanded({ env = {}, stateDir } = {}) {
   } catch {
     return { ok: false, reason: 'bad-endpoint' }
   }
+  // The cache labels the answer with `instanceId`, and the answer is about the
+  // instance this endpoint addresses. A repo tag can name another local install's.
+  if (bearerInstance(bearerEndpoint) !== instanceId) return { ok: false, reason: 'instance-mismatch' }
 
   const access = readJson(accessCachePath('claude-code', dir))
   // Only a cache bound to this destination may be presented.
@@ -103,6 +106,8 @@ export async function refreshLanded({ env = {}, stateDir } = {}) {
     res = await fetch(healthUrl, {
       headers: { Authorization: `Bearer ${token}` },
       signal: ctrl.signal,
+      // Never follow: the scheme guard checked only this URL (curl/PowerShell lanes agree).
+      redirect: 'error',
     })
     clearTimeout(t)
   } catch {
@@ -133,7 +138,9 @@ export async function refreshLanded({ env = {}, stateDir } = {}) {
   try {
     mkdirSync(dir, { recursive: true })
     writeFileSync(
-      join(dir, 'last-landed.json'),
+      // Per tool (#453): the Copilot plugin writes its own landing record into the
+      // same ~/.tokenscope, and a shared name let each overwrite the other's.
+      join(dir, 'last-landed.claude-code.json'),
       // `ok:true` records that /health was REACHED (auth + read path both work) —
       // it lets the statusline tell a live-but-stale answer (dead export) apart
       // from an unreachable endpoint (unknown). `checkedAt` doubles as the poll

@@ -11,6 +11,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+// Windows (#430): skipped on win32 because this file drives the POSIX .sh helper, which Windows does not run; the PowerShell twin is covered by otel-helper-conformance, claude-redeem-ps1 and status-ps1.
+const POSIX_ONLY = process.platform === 'win32'
+
 const HELPER = resolve(__dirname, '../../../plugin/scripts/otel-headers-helper.sh')
 
 const CLAUDE_INSTANCE = 'claude-one'
@@ -118,7 +121,7 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(tmp, { recursive: true, force: true }))
 
-describe('each lane reads its OWN store', () => {
+describe.skipIf(POSIX_ONLY)('each lane reads its OWN store', () => {
   it('the claude lane uses config.claude-code.json even when a copilot store sits beside it', () => {
     writeFileSync(join(stateDir, 'config.claude-code.json'), v2('claude-code', CLAUDE_INSTANCE))
     writeFileSync(join(stateDir, 'config.copilot-cli.json'), v2('copilot-cli', COPILOT_INSTANCE))
@@ -159,7 +162,7 @@ describe('each lane reads its OWN store', () => {
   })
 })
 
-describe('a legacy shared store is claimed only by the lane that can prove it', () => {
+describe.skipIf(POSIX_ONLY)('a legacy shared store is claimed only by the lane that can prove it', () => {
   /*
    * THE 2026-09-09 SHAPE, exactly: the pre-split file holds the COPILOT
    * enrolment, and the Claude lane must not pair its credential with it.
@@ -274,7 +277,7 @@ describe('a legacy shared store is claimed only by the lane that can prove it', 
   })
 })
 
-describe('a present store that cannot be read is NOT treated as no store', () => {
+describe.skipIf(POSIX_ONLY)('a present store that cannot be read is NOT treated as no store', () => {
   /*
    * The boundary this whole design states: only a device with NO store of any
    * kind uses the environment. Every consistency check below is conditional on a
@@ -298,7 +301,7 @@ describe('a present store that cannot be read is NOT treated as no store', () =>
   })
 })
 
-describe('a store that contradicts itself is refused, not used', () => {
+describe.skipIf(POSIX_ONLY)('a store that contradicts itself is refused, not used', () => {
   it('refuses when the file declares a different tool than the lane reading it', () => {
     writeFileSync(join(stateDir, 'config.claude-code.json'), v2('copilot-cli', CLAUDE_INSTANCE))
     const r = run('claude-code')

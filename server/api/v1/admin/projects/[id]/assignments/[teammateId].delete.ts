@@ -1,39 +1,51 @@
 /*
  * DELETE /api/v1/admin/projects/{id}/assignments/{teammateId} — end a
  * teammate's assignment (close the effective range rather than hard-
- * delete, preserving attribution history). manager / admin / global-
- * finops, scoped to the project.
+ * delete, preserving attribution history).
+ *
+ * Gate (spec A1): today's gate — manager / admin / platform-admin scoped to the
+ * project — OR a current PM of this project. Last-PM rule (A5): a caller who is
+ * not an admin of the project's region cannot end the last open-ended PM.
  */
 import { defineEventHandler, createError, setResponseStatus, getRequestIP, getHeader } from 'h3'
 import { sql } from 'drizzle-orm'
-import { requireRole } from '../../../../../../auth/rbac'
-import { assertProjectScope } from '../../../../../../auth/project-scope'
+import { requireAuth } from '../../../../../../auth/rbac'
+import {
+  assertProjectScopeOrManager,
+  isProjectAdmin,
+  loadProjectTarget,
+} from '../../../../../../auth/project-authority'
 import { assertSameOrigin } from '../../../../../../auth/csrf'
 import { withRequestRls } from '../../../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../../../db/audit'
 import { requireUuidParam } from '../../../../../../utils/require-uuid-param'
+import { requestClock } from '../../../../../../utils/request-clock'
+import {
+  countOpenEndedManagers,
+  lastManagerConflict,
+  lockProjectRowAt,
+} from '../../../../../../projects/last-manager'
 
 export default defineEventHandler(async (event) => {
-  const caller = await requireRole(event, 'manager', 'admin')
+  const caller = await requireAuth(event)
   assertSameOrigin(event)
+  const at = requestClock(event).now
   const id = requireUuidParam(event, 'id', 'project id')
   const teammateId = requireUuidParam(event, 'teammateId', 'teammate id')
   const ip = getRequestIP(event, { xForwardedFor: true }) ?? null
   const ua = getHeader(event, 'user-agent') ?? null
 
   return await withRequestRls(event, async (tx) => {
-    const projRows = await tx.execute<{ region_id: string; cou_path: string }>(sql`
-      SELECT p.region_id::text AS region_id, cou.path::text AS cou_path
-      FROM project p
-      JOIN org_unit cou ON cou.id = p.cost_owning_unit_id
-      WHERE p.id = ${id}::uuid
-      LIMIT 1
-    `)
-    const proj = [...projRows][0]
+    const proj = await loadProjectTarget(tx, id)
     if (!proj) {
       throw createError({ statusCode: 404, statusMessage: 'Project not found' })
     }
-    await assertProjectScope(event, { regionId: proj.region_id, couPath: proj.cou_path }, tx)
+    // Lock before the gate. The caller's own PM standing and the manager counts
+    // are judged at the post-lock instant, so a removal through the remove route
+    // that this request waited on, or a manager added meanwhile, is seen.
+    const lockedAt = await lockProjectRowAt(tx, id, at)
+    const via = await assertProjectScopeOrManager(event, tx, proj, lockedAt)
+    const managersBefore = await countOpenEndedManagers(tx, id, lockedAt)
 
     // End the open assignment range at now().
     const ended = await tx.execute<{ id: string }>(sql`
@@ -44,6 +56,13 @@ export default defineEventHandler(async (event) => {
     `)
     if (![...ended][0]) {
       throw createError({ statusCode: 404, statusMessage: 'Active assignment not found' })
+    }
+    if (
+      managersBefore > 0 &&
+      (await countOpenEndedManagers(tx, id, lockedAt)) === 0 &&
+      !isProjectAdmin(caller, proj.regionId)
+    ) {
+      throw lastManagerConflict()
     }
 
     // Drop any per-dev cap for this teammate on this project — a cap is
@@ -60,7 +79,7 @@ export default defineEventHandler(async (event) => {
       actorTeammateId: caller.teammateId,
       subjectKind: 'project',
       subjectId: id,
-      payload: { teammate_id: teammateId },
+      payload: { teammate_id: teammateId, via },
       ipAddress: ip,
       userAgent: ua,
     })

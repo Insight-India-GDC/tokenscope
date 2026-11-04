@@ -118,6 +118,16 @@ export function utcDaysInMonth(day: string): number {
   return new Date(Date.UTC(y, m, 0)).getUTCDate()
 }
 
+/**
+ * The Monday (`YYYY-MM-DD`) of the ISO week a UTC day belongs to: the same
+ * bucket Postgres `date_trunc('week', …)` gives, computed from a server-resolved
+ * day instead of the database's own `NOW()`.
+ */
+export function utcWeekStart(day: string): string {
+  const dow = new Date(dayMs(day)).getUTCDay() // 0=Sun..6=Sat
+  return shiftUtcDay(day, -((dow + 6) % 7)) // Mon→0 … Sun→6
+}
+
 /** The last UTC day (`YYYY-MM-DD`) of the month a day belongs to. */
 export function utcMonthEnd(day: string): string {
   return `${utcMonthOf(day)}-${String(utcDaysInMonth(day)).padStart(2, '0')}`

@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
 /*
- * OAuth consent page loopback delivery: the callback goes to a tab opened on the
- * Approve click (this page never navigates away), /oauth/code-status decides
- * delivered vs undelivered, and nothing outside the scheme guard is opened.
+ * OAuth consent page loopback delivery: the callback goes to a small popup
+ * opened on the Approve click (this page never navigates away, and stays in view
+ * behind it), /oauth/code-status decides delivered vs undelivered, the popup is
+ * closed once that is known (#478), and nothing outside the scheme guard is
+ * opened.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { defineComponent, ref, computed, onBeforeUnmount } from 'vue'
@@ -102,18 +104,21 @@ afterEach(() => {
 })
 
 describe('/oauth/authorize — loopback delivery', () => {
-  it('delivers in a tab opened on the click; this page stays, then shows Connected once redeemed', async () => {
+  it('delivers in a popup opened on the click; this page stays, then closes it and shows Connected once redeemed', async () => {
     const w = await mountAndSubmit()
-    expect(open).toHaveBeenCalledWith('', '_blank')
+    expect(open).toHaveBeenCalledWith('', '_blank', 'popup,width=480,height=360')
     expect(tab!.opener).toBeNull()
     expect(tab!.location.href).toBe(CB)
     expect(assign).not.toHaveBeenCalled()
     expect(w.find('[data-testid="authorize-delivering"]').exists()).toBe(true)
     expect(w.find('[data-testid="authorize-callback-url"]').text()).toBe(CB)
 
+    expect(tab!.close).not.toHaveBeenCalled()
+
     redeemed = true
     await vi.advanceTimersByTimeAsync(1000)
     expect(w.find('[data-testid="authorize-delivered"]').exists()).toBe(true)
+    expect(tab!.close).toHaveBeenCalledTimes(1)
     const calls = statusCalls
     await vi.advanceTimersByTimeAsync(10_000)
     expect(statusCalls).toBe(calls)
@@ -123,9 +128,18 @@ describe('/oauth/authorize — loopback delivery', () => {
     const w = await mountAndSubmit()
     await vi.advanceTimersByTimeAsync(7000)
     expect(w.find('[data-testid="authorize-delivering"]').exists()).toBe(true)
+    expect(tab!.close).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(2000)
     expect(w.find('[data-testid="authorize-undelivered"]').exists()).toBe(true)
     expect(w.find('[data-testid="authorize-copy"]').exists()).toBe(true)
+    // The popup's browser error page would sit in front of these steps (#478).
+    expect(tab!.close).toHaveBeenCalledTimes(1)
+    // The steps lead, in the words of Claude Code's own `URL >` prompt.
+    const steps = w.find('[data-testid="authorize-undelivered"]').text()
+    expect(steps).toContain('Finish signing in from your terminal')
+    expect(steps).toContain("the URL from your browser's address bar")
+    expect(steps).toContain('URL >')
+    expect(w.find('[data-testid="authorize-delivering"]').exists()).toBe(false)
 
     redeemed = true
     await vi.advanceTimersByTimeAsync(5000)
@@ -139,6 +153,18 @@ describe('/oauth/authorize — loopback delivery', () => {
     expect(w.find('[data-testid="authorize-callback-url"]').text()).toBe(CB)
     await vi.advanceTimersByTimeAsync(1000)
     expect(statusCalls).toBe(1)
+  })
+
+  it('the paste-back URL carries a "works like a password" warning in both approved branches', async () => {
+    tab = null
+    const undelivered = await mountAndSubmit()
+    expect(undelivered.find('[data-testid="authorize-undelivered"]').exists()).toBe(true)
+    expect(undelivered.find('[data-testid="authorize-url-warning"]').text()).toContain('works like a password')
+    undelivered.unmount()
+
+    const https = await mountAndSubmit({ redirectUri: 'https://client.example/cb', redirectUrl: `https://client.example/cb?code=${CODE}` })
+    expect(https.find('[data-testid="authorize-callback-url"]').exists()).toBe(true)
+    expect(https.find('[data-testid="authorize-url-warning"]').text()).toContain('works like a password')
   })
 
   it('no status request starts at or after the 2-minute deadline', async () => {
@@ -343,4 +369,43 @@ describe('/oauth/authorize — loopback delivery', () => {
   })
 
 
+})
+
+describe('/oauth/authorize — the paste-back is expected, not a surprise (#478)', () => {
+  it('a loopback client gets the container/SSH hint under Approve, gone once approved', async () => {
+    const w = await mountAndSubmit({ postHangs: true })
+    // Still submitting: the buttons and hint are up.
+    expect(w.find('[data-testid="authorize-paste-hint"]').exists()).toBe(true)
+    const done = await mountAndSubmit()
+    expect(done.find('[data-testid="authorize-paste-hint"]').exists()).toBe(false)
+  })
+
+  it('an https client gets no hint (it is never asked to paste)', async () => {
+    const w = await mountAndSubmit({ redirectUri: 'https://client.example/cb', postHangs: true })
+    expect(w.find('[data-testid="authorize-paste-hint"]').exists()).toBe(false)
+  })
+
+  it('a blocked popup names the browser as the cause, not a container', async () => {
+    tab = null
+    const w = await mountAndSubmit()
+    expect(w.find('[data-testid="authorize-popup-missing"]').exists()).toBe(true)
+    expect(w.find('[data-testid="authorize-undelivered"]').text()).not.toContain('container')
+  })
+
+  it('an unreachable client (popup opened, nothing redeemed) names the container/SSH cause', async () => {
+    const w = await mountAndSubmit()
+    await vi.advanceTimersByTimeAsync(9000)
+    expect(w.find('[data-testid="authorize-popup-missing"]').exists()).toBe(false)
+    expect(w.find('[data-testid="authorize-undelivered"]').text()).toContain('container or over SSH')
+  })
+
+  it('a close() that throws (a severed handle) does not stop Connected', async () => {
+    const w = await mountAndSubmit()
+    tab!.close.mockImplementation(() => {
+      throw new Error('severed')
+    })
+    redeemed = true
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(w.find('[data-testid="authorize-delivered"]').exists()).toBe(true)
+  })
 })

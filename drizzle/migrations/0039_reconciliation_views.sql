@@ -5,7 +5,7 @@
 -- v_effective_spend       = immutable OTel truth (attribution_record) UNION applied
 --                           reconciliation deltas. The SINGLE money surface.
 -- v_finance_reportable_spend = v_effective_spend minus indicative (the cross-charge
---                           gate: only billed/estimated may feed PSR).
+--                           gate: only billed/estimated may feed Pathway).
 --
 -- spend_class is DERIVED here from attribution_record.cost_basis (rate-card /
 -- estimated -> estimated [reconcilable]; telemetry-only -> indicative). cost_basis

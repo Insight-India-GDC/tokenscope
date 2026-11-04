@@ -1,7 +1,10 @@
 /*
  * DELETE /api/v1/me/identities/{id} — unlink one of my identities. Scoped to
- * the caller (you can only remove your own rows); the primary teammate email
- * isn't a map row, so it can't be removed here. Audited.
+ * the caller (you can only remove your own rows), and to rows the caller linked
+ * themselves (source='self'): directory-sync and admin bindings decide which
+ * Business Unit carries the person's Copilot usage, so only an admin removes
+ * them. The primary teammate email isn't a map row, so it can't be removed
+ * here. Audited.
  */
 import { createError, defineEventHandler, getRouterParam } from 'h3'
 import { z } from 'zod'
@@ -21,7 +24,7 @@ export default defineEventHandler(async (event) => {
   await withRequestRls(event, async (tx) => {
     const deleted = await tx.execute<{ identifier: string }>(sql`
       DELETE FROM teammate_identity_map
-      WHERE id = ${id.data}::uuid AND teammate_id = ${session.teammateId}::uuid
+      WHERE id = ${id.data}::uuid AND teammate_id = ${session.teammateId}::uuid AND source = 'self'
       RETURNING identifier
     `)
     if (deleted.length === 0) throw createError({ statusCode: 404, statusMessage: 'Identity not found' })

@@ -289,6 +289,122 @@ describe('OAuth happy path', () => {
   })
 })
 
+describe('RFC 7009 revoke by access token, and the teammate on refresh/revoke audit rows', () => {
+  async function auditRows(eventType: string, clientId: string) {
+    return t.client<{ actor_teammate_id: string | null; grant_type: string | null }[]>`
+      SELECT actor_teammate_id::text AS actor_teammate_id, payload->>'grant_type' AS grant_type
+        FROM audit_event
+       WHERE event_type = ${eventType} AND payload->>'client_id' = ${clientId}`
+  }
+
+  it('revoking the ACCESS token ends the bearer and the refresh; both audit rows name the teammate', async () => {
+    const client = await registerClient()
+    const other = await registerClient()
+    const { verifier, challenge } = makePkce()
+    const { code } = await authorizeForCode(client.client_id, challenge)
+    const tok = await call<{ access_token: string; refresh_token: string }>(
+      tokenHandler,
+      ev({
+        body: {
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: REDIRECT_URI,
+          code_verifier: verifier,
+          client_id: client.client_id,
+          client_secret: client.client_secret,
+        },
+      }),
+    )
+    const refreshed = await call<{ access_token: string; teammateId?: string }>(
+      tokenHandler,
+      ev({
+        body: {
+          grant_type: 'refresh_token',
+          refresh_token: tok.refresh_token,
+          client_id: client.client_id,
+          client_secret: client.client_secret,
+        },
+      }),
+    )
+    expect(refreshed.access_token).toBeTruthy()
+    expect(refreshed.teammateId).toBeUndefined() // not leaked into the token response
+    const refreshAudit = (await auditRows('oauth_token_issue', client.client_id)).filter((r) => r.grant_type === 'refresh_token')
+    expect(refreshAudit).toHaveLength(1)
+    expect(refreshAudit[0]!.actor_teammate_id).toBe(teammateId)
+
+    const bearer = () =>
+      requireOAuthBearer(
+        ev({ method: 'GET', headers: { authorization: `Bearer ${refreshed.access_token}` } }) as never,
+        undefined,
+        t.db as never,
+      )
+    expect((await bearer()).teammateId).toBe(teammateId)
+
+    // Another client's credentials revoke nothing, and write no audit row.
+    const foreign = await call(revokeHandler, ev({
+      body: { token: refreshed.access_token, client_id: other.client_id, client_secret: other.client_secret },
+    }))
+    expect(foreign).toEqual({})
+    expect((await bearer()).teammateId).toBe(teammateId)
+    expect(await auditRows('oauth_token_revoke', other.client_id)).toHaveLength(0)
+
+    const revRes = await call(revokeHandler, ev({
+      body: { token: refreshed.access_token, client_id: client.client_id, client_secret: client.client_secret },
+    }))
+    expect(revRes).toEqual({})
+    await expect(bearer()).rejects.toMatchObject({ statusCode: 401 })
+    const afterRefresh = await call<{ error?: string }>(
+      tokenHandler,
+      ev({
+        body: {
+          grant_type: 'refresh_token',
+          refresh_token: tok.refresh_token,
+          client_id: client.client_id,
+          client_secret: client.client_secret,
+        },
+      }),
+    )
+    expect(afterRefresh.error).toBe('invalid_grant')
+
+    const revokeAudit = await auditRows('oauth_token_revoke', client.client_id)
+    expect(revokeAudit).toHaveLength(1)
+    expect(revokeAudit[0]!.actor_teammate_id).toBe(teammateId)
+  })
+
+  it('revoking the access token a refresh just superseded also ends the row', async () => {
+    const client = await registerClient()
+    const { verifier, challenge } = makePkce()
+    const { code } = await authorizeForCode(client.client_id, challenge)
+    const tok = await call<{ access_token: string; refresh_token: string }>(
+      tokenHandler,
+      ev({
+        body: {
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: REDIRECT_URI,
+          code_verifier: verifier,
+          client_id: client.client_id,
+          client_secret: client.client_secret,
+        },
+      }),
+    )
+    await call(tokenHandler, ev({
+      body: {
+        grant_type: 'refresh_token',
+        refresh_token: tok.refresh_token,
+        client_id: client.client_id,
+        client_secret: client.client_secret,
+      },
+    }))
+    await call(revokeHandler, ev({
+      body: { token: tok.access_token, client_id: client.client_id, client_secret: client.client_secret },
+    }))
+    const [row] = await t.client<{ revoked: boolean }[]>`
+      SELECT revoked_at IS NOT NULL AS revoked FROM oauth_token WHERE client_id = ${client.client_id}::uuid`
+    expect(row!.revoked).toBe(true)
+  })
+})
+
 describe('POST /oauth/authorize JSON result carries an explicit outcome', () => {
   async function post(redirectUri: string, action: 'approve' | 'deny', scope = 'tokenscope.read') {
     const client = await call<{ client_id: string }>(

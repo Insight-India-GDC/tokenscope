@@ -94,6 +94,9 @@ describe('tagSessionTx — activity-only tag preserves the successor project (CO
     // textually-largest ledger project (the ended X).
     expect(result.project_id).toBe(PROJ_Y_SUCCESSOR)
     expect(result.activity).toBe('testing')
+    // Copilot review on PR 496: an activity-only tag names the kept project's
+    // code, so /tokenscope:activity does not report "no project".
+    expect(result.project_code).toBe('NEW-Y')
 
     const [row] = await t.client<{ project_id: string; activity: string }[]>`
       SELECT project_id::text AS project_id, activity FROM session_assignment

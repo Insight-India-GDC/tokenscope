@@ -17,8 +17,8 @@
  *   3. AZURE_FRONT_DOOR_ID set + wrong header → throws 403
  *   4. AZURE_FRONT_DOOR_ID set + no header → throws 403
  *   5. /api/health bypasses the check regardless of env / header
- *   6. AZURE_FRONT_DOOR_REQUIRED truth table (code-half only; inert until
- *      an operator/UF-4 wires it): REQUIRED unset + ID empty → allow;
+ *   6. AZURE_FRONT_DOOR_REQUIRED truth table (no template sets it):
+ *      REQUIRED unset + ID empty → allow;
  *      REQUIRED=true + ID empty → deny (except /api/health, still allowed);
  *      REQUIRED=true + ID set + matching header → allow; mismatched → 403.
  */

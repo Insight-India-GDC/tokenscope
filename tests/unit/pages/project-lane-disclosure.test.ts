@@ -97,6 +97,7 @@ async function mountPage(data: Record<string, unknown>) {
   vi.stubGlobal('fmtTokens', fmtTokens)
   vi.stubGlobal('fmtTimeAgo', fmtTimeAgo)
   vi.stubGlobal('useRoute', () => ({ params: { code: 'ACME-1' }, query: {} }))
+  vi.stubGlobal('useRouter', () => ({ replace: vi.fn() }))
   vi.stubGlobal('useSession', () => ({ session: ref({ teammateId: 't1' }), ensure: async () => {} }))
   vi.stubGlobal('useReportState', () => ({
     month: ref<string | null>(null),

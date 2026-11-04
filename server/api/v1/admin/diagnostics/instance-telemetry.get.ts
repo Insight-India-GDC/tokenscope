@@ -28,8 +28,9 @@
  * must move up with it.
  *
  * REGION CLAMP: the instance lookup is hoisted to the top of the handler and
- * gated with an EXPLICIT `requireRegionScope(event, inst.region_id)` before
- * either the ledger count or the ingest probe runs. This is NOT backstopped by
+ * gated with an EXPLICIT `requireRegionScope` on the region its teammate sits
+ * in NOW (current-org-lens §3.2, the same clamp as attribution-gaps, whose
+ * "Diagnose" lands here) before either the ledger count or the ingest probe runs. This is NOT backstopped by
  * RLS — the app connects as the table owner, which Postgres never subjects to
  * RLS regardless of policy or GUCs (see instances/[instanceId].delete.ts's
  * identical note) — so the app-level check is the only gate.
@@ -64,7 +65,7 @@ export default defineEventHandler(async (event) => {
 
   return withRequestRls(event, async (db) => {
     // ── The instance itself, HOISTED to the top: liveness, what it CLAIMS to be
-    // running, and now its region — fetched BEFORE anything else this endpoint
+    // running, and its teammate's current region — fetched BEFORE anything else this endpoint
     // does. RLS on instance_attestation is INERT at runtime (the app connects
     // as the table owner, which Postgres never subjects to RLS regardless of
     // policy or GUCs — see instances/[instanceId].delete.ts's identical note),
@@ -90,7 +91,7 @@ export default defineEventHandler(async (event) => {
       setup_mode: string | null
     }>(sql`
       SELECT ia.instance_id::text        AS instance_id,
-             ia.region_id::text          AS region_id,
+             t.region_id::text           AS region_id,
              t.email                     AS teammate_email,
              ia.last_bearer_at::text     AS last_bearer_at,
              ia.ts_actual_end::text      AS ts_actual_end,
@@ -121,11 +122,9 @@ export default defineEventHandler(async (event) => {
     // ── OUR side: what the ledger holds for this instance in the SAME window ──
     // Same instance, same window as the ingest probe below — a comparison across
     // two different windows would be worse than no comparison, because it would
-    // look authoritative while contrasting unrelated populations. The region_id
-    // predicate is defense-in-depth (mirrors diagnostics/index.get.ts's
-    // regionFilter/regionAnd pattern): instance_id alone already pins the
-    // region by schema, but an explicit clamp costs nothing and does not rely
-    // on that invariant holding.
+    // look authoritative while contrasting unrelated populations. No placement
+    // predicate: the instance gate above is the clamp, and a row's stamped
+    // region would hide the records of someone who has since moved.
     const ledgerRows = await db.execute<{
       records: string
       first_ts: string | null
@@ -137,7 +136,6 @@ export default defineEventHandler(async (event) => {
         FROM attribution_record
        WHERE instance_id = ${instanceId}::uuid
          AND ts_event >= NOW() - (${hours} * INTERVAL '1 hour')
-         ${inst !== null ? sql`AND region_id = ${inst.region_id}::uuid` : sql``}
     `)
     const ledger = [...ledgerRows][0]
     const attributedRecords = Number(ledger?.records ?? 0)

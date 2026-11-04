@@ -84,6 +84,10 @@ export const PERSONAL_LENS_COPY: Readonly<Record<SpendLens, SpendLensCopy>> = {
      */
     basis: 'attributed usage · connected and provider-reported surfaces, at our rate card · month to date',
     /*
+     * The caption follows the basis line: "across all your AI surfaces" made
+     * the same universal claim the basis was corrected away from (an
+     * unconnected tool is absent), so it names what TokenScope can see.
+     *
      * NO INVOICE QUALIFICATION HERE. ADR 0012 decision 6: the primary figure is
      * presented as real spend, present tense, unhedged — "what is actually
      * invoiced" is a real question with a real answer and it lives behind the
@@ -92,7 +96,7 @@ export const PERSONAL_LENS_COPY: Readonly<Record<SpendLens, SpendLensCopy>> = {
      * developer to discount the figure, which defeats the mechanism the product
      * is built on: the teaching has to land while it is still free to learn.
      */
-    caption: 'Every token you spent this month, across all your AI surfaces, valued at our rate card.',
+    caption: 'Every token you spent this month on the tools and providers TokenScope can see, valued at our rate card.',
   },
   chargeback: {
     label: 'Chargeback',

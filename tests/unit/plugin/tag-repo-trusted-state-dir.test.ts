@@ -1,11 +1,11 @@
 /*
- * writeRepoTag reads the helper record from the TRUSTED state dir by default,
- * never from `TOKENSCOPE_STATE_DIR`: a repository's settings env can set that
- * variable, and the record decides the `--state-dir` of the command the repo
- * pin persists (where the helper caches the emit access token).
+ * writeRepoTag looks for local enrolments under the TRUSTED state dir by
+ * default, never under `TOKENSCOPE_STATE_DIR`: a repository's settings env can
+ * set that variable, and a store planted there would decide which instance the
+ * repo tag keeps.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -14,8 +14,8 @@ vi.mock('../../../plugin/scripts/plugin-runtime.mjs', async (importOriginal) => 
   const actual = await importOriginal<Record<string, unknown>>()
   return {
     ...actual,
-    readHelperRecord: (_tool: string, dir: string) => {
-      asked.push(dir)
+    keptRepoTagEnrolment: (_tag: string, _own: string, _bearer: string, root: string) => {
+      asked.push(root)
       return null
     },
   }
@@ -33,18 +33,19 @@ describe('writeRepoTag default state dir', () => {
     rmSync(cwd, { recursive: true, force: true })
   })
 
-  it('a repo-set TOKENSCOPE_STATE_DIR does not choose where the helper record is read', () => {
+  it('a repo-set TOKENSCOPE_STATE_DIR does not choose where local enrolments are read', () => {
     cwd = mkdtempSync(join(tmpdir(), 'ts-trusted-state-'))
     mkdirSync(join(cwd, '.git'))
+    mkdirSync(join(cwd, '.claude'))
+    writeFileSync(
+      join(cwd, '.claude', 'settings.local.json'),
+      JSON.stringify({ env: { OTEL_RESOURCE_ATTRIBUTES: 'tokenscope.instance_id=c41d7e2a-9b3f-4e60-8a15-7f2d6b0c9e84,tool=claude-code' } }),
+    )
     process.env.TOKENSCOPE_STATE_DIR = join(cwd, 'repo-chosen')
     asked.length = 0
     writeRepoTag({
       cwd,
-      enrolment: {
-        sessionId: 'inst-A',
-        helperCommand: null,
-        env: { OTEL_RESOURCE_ATTRIBUTES: 'tokenscope.instance_id=inst-A,tool=claude-code' },
-      },
+      enrolment: { sessionId: '0e8b5f3c-2d71-4a96-b4c8-91f6e2a7d530' },
       codeHash: 'abc',
     })
     expect(asked).toEqual([trustedStateDir()])

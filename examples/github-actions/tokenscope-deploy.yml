@@ -4,7 +4,8 @@
 # Builds the image under the commit tag, rolls the Container App to it, waits
 # until that commit is the one serving, and only then moves `latest` (which the
 # worker jobs and every infra apply use). On failure it rolls the app back to
-# the image it was running before, pinned by digest, and leaves `latest` alone.
+# the image it was running before, pinned by digest, and leaves `latest` alone
+# (a new deployment, which has never run a build, has nothing to roll back to).
 name: TokenScope deploy
 
 on:
@@ -60,6 +61,8 @@ jobs:
       AGENT_POOL: ${{ vars.TOKENSCOPE_ACR_AGENT_POOL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
@@ -77,20 +80,48 @@ jobs:
             acr-task|docker|acr-agent-pool|prebuilt) ;;
             *) echo "::error::Unknown build '$BUILD'"; exit 1 ;;
           esac
-          ACR=$(az acr list -g "$RG" --query "[0].name" -o tsv)
-          APP=$(az containerapp list -g "$RG" --query "[0].name" -o tsv)
-          [ -n "$ACR" ] && [ -n "$APP" ] || { echo "::error::No registry or Container App in $RG: run the infra workflow first"; exit 1; }
-          # The image running now, the rollback target. Pinned by digest where
-          # the registry is readable from this runner; a private registry is
-          # not, and the tag is then safe too: deploys run unique commit tags,
-          # and `latest` only moves after a verified deploy.
-          CUR=$(az containerapp show -g "$RG" -n "$APP" --query "properties.template.containers[0].image" -o tsv 2>/dev/null || true)
-          PREV="$CUR"
-          case "$CUR" in
+          # One TokenScope deployment per resource group: with two Container
+          # Apps there is no telling which to roll, so say so rather than guess.
+          APPS=$(az containerapp list -g "$RG" --query "[].name" -o tsv)
+          [ -n "$APPS" ] || { echo "::error::No Container App in $RG: run the infra workflow first"; exit 1; }
+          [ "$(printf '%s\n' "$APPS" | wc -l)" -eq 1 ] || { echo "::error::$RG holds more than one Container App ($(echo $APPS)): keep one TokenScope deployment per resource group"; exit 1; }
+          APP="$APPS"
+          # The registry is the one the app pulls from, not whichever the group
+          # lists first: a group can also hold an older or unrelated registry.
+          # Only when the app names none yet, the group's one registry. A failed
+          # read ends the step (nothing has changed yet) rather than guessing.
+          SERVER=$(az containerapp show -g "$RG" -n "$APP" --query "properties.configuration.registries[0].server" -o tsv)
+          if [ -n "$SERVER" ]; then
+            ACR="${SERVER%%.*}"
+          else
+            ACRS=$(az acr list -g "$RG" --query "[].name" -o tsv)
+            [ -n "$ACRS" ] || { echo "::error::No registry for $APP and none in $RG: run the infra workflow first"; exit 1; }
+            [ "$(printf '%s\n' "$ACRS" | wc -l)" -eq 1 ] || { echo "::error::$APP names no registry and $RG holds several ($(echo $ACRS)): run the infra workflow first"; exit 1; }
+            ACR="$ACRS"
+          fi
+          echo "Container App $APP, registry $ACR"
+          # The rollback target: the image of the app's latest READY revision,
+          # the last build that came up (the app's template may already name a
+          # newer one that never did). A new deployment has none: the first
+          # apply leaves the app on a `latest` that does not exist yet. A failed
+          # read ends the step, so a passing blip cannot silently drop the
+          # rollback. Pinned by digest where the registry is readable from this
+          # runner; a private registry is not, and the tag is then safe too:
+          # deploys run unique commit tags, and `latest` only moves after a
+          # verified deploy.
+          READY=$(az containerapp show -g "$RG" -n "$APP" --query properties.latestReadyRevisionName -o tsv)
+          PREV=""
+          if [ -n "$READY" ]; then
+            PREV=$(az containerapp revision show -g "$RG" -n "$APP" --revision "$READY" \
+              --query "properties.template.containers[0].image" -o tsv)
+          else
+            echo "::notice::$APP has no working revision yet; a failed deploy has nothing to roll back to"
+          fi
+          case "$PREV" in
             "$ACR.azurecr.io/tokenscope:"*)
-              DIGEST=$(az acr repository show -n "$ACR" --image "tokenscope:${CUR##*:}" --query digest -o tsv 2>/dev/null || true)
+              DIGEST=$(az acr repository show -n "$ACR" --image "tokenscope:${PREV##*:}" --query digest -o tsv 2>/dev/null || true)
               if [ -n "$DIGEST" ]; then PREV="$ACR.azurecr.io/tokenscope@$DIGEST"
-              else echo "::notice::Registry not readable from this runner; rollback target is the tag $CUR"; fi ;;
+              else echo "::notice::Registry not readable from this runner; rollback target is the tag $PREV"; fi ;;
           esac
           {
             echo "acr=$ACR"

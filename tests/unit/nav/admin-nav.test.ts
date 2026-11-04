@@ -11,6 +11,7 @@ import {
   matchAdminNavItem,
   groupForItem,
   roleMeetsAccess,
+  policyNavItemsFor,
 } from '../../../shared/nav/admin-nav'
 
 /** Every .vue file under `dir`, recursively, as absolute paths. */
@@ -35,6 +36,12 @@ describe('every admin page opts into the admin route middleware', () => {
 
   it.each(adminPages)('%s declares middleware: admin', (file) => {
     expect(readFileSync(file, 'utf8')).toMatch(/middleware:\s*'admin'/)
+  })
+  // The admin layout renders the linked breadcrumb trail for every admin page.
+  // A page that also hands UiPageHead its own `crumbs` draws a second trail
+  // (the project request detail page did, #490).
+  it.each(adminPages)('%s leaves the breadcrumb trail to the admin layout', (file) => {
+    expect(readFileSync(file, 'utf8')).not.toMatch(/<UiPageHead[^>]*[\s:]crumbs=/)
   })
 })
 
@@ -138,5 +145,28 @@ describe('IA invariants', () => {
     const items = allAdminNavItems()
     expect(new Set(items.map((i) => i.to)).size).toBe(items.length)
     expect(new Set(items.map((i) => i.testid)).size).toBe(items.length)
+  })
+})
+
+describe('policyNavItemsFor — the System info "Policies" links', () => {
+  const policies = ADMIN_NAV.find((g) => g.label === 'Policies')!.items
+
+  it('offers a platform admin every Policies page, in sidebar order', () => {
+    expect(policyNavItemsFor('platform-admin').map((i) => i.to)).toEqual(policies.map((i) => i.to))
+    // The two pages the hand-written list had missed (#490).
+    expect(policyNavItemsFor('platform-admin').map((i) => i.to)).toEqual(
+      expect.arrayContaining(['/admin/policies/provider-governance', '/admin/policies/client-connection']),
+    )
+  })
+
+  it('offers a region admin only the pages a region admin can open', () => {
+    const tos = policyNavItemsFor('admin').map((i) => i.to)
+    expect(tos).toEqual(policies.filter((i) => i.access === 'admin').map((i) => i.to))
+    expect(tos).not.toContain('/admin/policies/client-connection')
+  })
+
+  it('offers a non-admin nothing', () => {
+    expect(policyNavItemsFor('developer')).toEqual([])
+    expect(policyNavItemsFor(null)).toEqual([])
   })
 })

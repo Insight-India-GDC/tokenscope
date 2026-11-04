@@ -143,18 +143,22 @@ remove it from the file and the next apply unhooks it from the app.
   organisation under **Admin → Reconciliation**.
 - **GitHub** (Copilot usage and billing): a classic PAT with
   `manage_billing:enterprise` and `read:org`, or a GitHub App private key
-  (base64-encoded PEM). The template has fixed slots, each tied to the
-  credential name you then use when registering the enterprise:
+  (base64-encoded PEM). The template has three PAT slots and one App key
+  slot, each tied to the credential name you then use when registering the
+  enterprise:
 
   | Secrets-file variable | Credential name |
   |---|---|
-  | `GH_PAT_PARTNER_DEMO` | `partner-demo` |
-  | `GH_PAT_PRODUCTION` | `production` |
-  | `GH_PAT_ENTERPRISE_NFR` | `enterprise-nfr` |
-  | `GH_APP_KEY_PARTNER_DEMO` (App key) | `partner-demo` |
+  | `GH_PAT_1` | `github-1` |
+  | `GH_PAT_2` | `github-2` |
+  | `GH_PAT_3` | `github-3` |
+  | `GH_APP_KEY_1` (App key) | `github-1` |
 
-  Any other credential name needs a template change
-  (`infra/modules/container-app.bicep`). See [PROVIDERS.md](PROVIDERS.md).
+  An App key and a PAT can share a credential name: the enterprise's GitHub
+  App id decides which one it uses. Any other credential name needs a template
+  change (`infra/modules/container-app.bicep`). Upgrading from a release that
+  used the earlier named GitHub secrets: see the upgrade note in
+  [CHANGELOG.md](../CHANGELOG.md). See [PROVIDERS.md](PROVIDERS.md).
 
 Both can be added later: add the value and apply again.
 
@@ -177,9 +181,24 @@ infra/scripts/approve-front-door-private-link.sh "$RG"
 The script waits for the deployment and exits non-zero with Azure's error if it
 fails. It exits 3 when the only failure is a new Container App's missing
 image (`MANIFEST_UNKNOWN`), which is how a first apply ends: build the image,
-then apply again. With Front Door Premium on a VNet deployment it also approves Front
+then apply again. It exits 4 when only Azure's platform failed (every failed
+resource reports an error such as `InternalError`, a timeout, `Conflict` or
+`AnotherOperationInProgress`), or when the deployment succeeded but Front Door
+still does not serve the app after 30 minutes: run the same apply again (the
+template is idempotent; the example infra workflow does this up to twice). Any
+other error names the template or your parameters, and applying again would
+fail the same way. With Front Door Premium on a VNet deployment it also approves Front
 Door's Private Link request while the apply runs: Front Door does not finish
-until that request is approved. For every other posture it only waits.
+until that request is approved. Front Door files one request per origin, so
+the script approves it only when it is the only one. If another request
+carries the same message, one is already approved, or the request was already
+waiting before the script started, the script approves none and stops. It
+lists each request with the command that approves it. Neither the order nor
+the message shows which request is Front Door's. Its private endpoint is in a
+Microsoft-managed subscription, while an outsider's is in their own. Reject
+any request that is not Front Door's, approve Front Door's with the printed
+command (an approval in the portal replaces the message the script looks
+for), and run the script again. For every other posture it only waits.
 
 Preview any apply with `az deployment group what-if` and the same `--parameters`.
 
@@ -204,7 +223,10 @@ Preview any apply with `az deployment group what-if` and the same `--parameters`
 3. **Build the image into the new registry.**
 
    ```bash
-   ACR=$(az acr list -g "$RG" --query "[0].name" -o tsv)
+   # The registry the Container App from step 2 pulls from (it exists, failing):
+   APP=$(az containerapp list -g "$RG" --query "[0].name" -o tsv)
+   ACR=$(az containerapp show -g "$RG" -n "$APP" --query "properties.configuration.registries[0].server" -o tsv)
+   ACR=${ACR%%.*}
    az acr build --registry "$ACR" --image tokenscope:latest \
      --build-arg GIT_COMMIT_SHA="$(git rev-parse HEAD)" --file Dockerfile .
    ```
@@ -262,10 +284,13 @@ each side needs the other's identity:
    workers must call Front Door too.
 
 With Standard the app's own address stays public, and the header check is the
-only thing keeping callers on Front Door. The ID it checks is not a secret, so
-this deters casual bypass of the WAF but is not a network boundary. That is
-fine for a sandbox; for production use the VNet posture with Front Door
-Premium, where the app has no public address at all.
+only thing keeping callers on Front Door. Between applies 2 and 3 there is no
+check at all: the app answers on its own address and the WAF can be walked
+around. After apply 3 the ID it checks is not a secret, so this deters casual
+bypass of the WAF but is not a network boundary; a caller who skips Front Door
+also picks the address the rate limiter counts against. App sign-in still
+applies either way. That is fine for a sandbox; for production use the VNet
+posture with Front Door Premium, where the app has no public address at all.
 
 ## 4. Staging and production (VNet-integrated)
 
@@ -343,7 +368,10 @@ that combination before deploying anything.
    workflow (`docker` on your runner, or `acr-agent-pool`) or by hand:
 
    ```bash
-   ACR=$(az acr list -g "$RG" --query "[0].name" -o tsv)
+   # The registry the Container App from step 2 pulls from (it exists, failing):
+   APP=$(az containerapp list -g "$RG" --query "[0].name" -o tsv)
+   ACR=$(az containerapp show -g "$RG" -n "$APP" --query "properties.configuration.registries[0].server" -o tsv)
+   ACR=${ACR%%.*}
    # agent pool (created once; see examples/github-actions/README.md)
    az acr build --registry "$ACR" --agent-pool tokenscope-builds \
      --image tokenscope:latest --build-arg GIT_COMMIT_SHA="$(git rev-parse HEAD)" --file Dockerfile .
@@ -483,14 +511,16 @@ works).
 
 ```bash
 TAG=$(git rev-parse --short HEAD)
-ACR=$(az acr list -g "$RG" --query "[0].name" -o tsv)
+APP=$(az containerapp list -g "$RG" --query "[0].name" -o tsv)   # one TokenScope app per group
+# The registry the app pulls from (a group can also hold an older registry):
+ACR=$(az containerapp show -g "$RG" -n "$APP" --query "properties.configuration.registries[0].server" -o tsv)
+ACR=${ACR%%.*}
 
 # Sandbox: build in Azure
 az acr build --registry "$ACR" --image "tokenscope:$TAG" \
   --build-arg GIT_COMMIT_SHA="$(git rev-parse HEAD)" --file Dockerfile .
 # VNet: build inside the network instead (runner or agent pool; see the examples README)
 
-APP=$(az containerapp list -g "$RG" --query "[0].name" -o tsv)
 az containerapp update -g "$RG" -n "$APP" --image "$ACR.azurecr.io/tokenscope:$TAG"
 
 # Check https://<public-host>/api/v1/meta/build reports $TAG, then:
@@ -517,7 +547,8 @@ Re-run the apply command only when parameters or infrastructure change.
 | Dashboards stay at $0 while developers are enrolled | `workerBaseUrl` is empty, or points at a host the jobs cannot reach. |
 | VNet with your own WAF: the app FQDN does not resolve | The Container Apps environment's DNS zone is missing or not linked to the querying network. |
 | Front Door Premium apply sits on the origin for many minutes | Its Private Link request is waiting for approval; run the apply with the approval script (§2). |
-| Front Door endpoint answers its own `404` "Page not found" after a successful apply | Front Door is not routing to the Private Link origin yet. The approval script waits for it and re-approves the connection meanwhile; if it persists, run the script again. |
+| Front Door endpoint answers its own `404` "Page not found" after a successful apply | Front Door is not routing to the Private Link origin yet. The approval script waits 30 minutes for it, re-approving the connection meanwhile, then exits 4; run the apply again (the example infra workflow retries it twice). |
+| Apply fails with `InternalError` and "Sorry, it looks like there was an error on our end" | An Azure platform fault. The approval script exits 4; apply again. The example infra workflow retries it twice. |
 | Apply fails with `ServerIsBusy` on a Postgres setting | Two writes reached the server at once. Current templates write them one at a time; apply again. |
 | A self-hosted build runner goes offline mid-build | It ran out of memory; the build needs at least 8 GB of RAM. |
 | Apply fails before creating anything: "Front Door Standard cannot reach a VNet" | Standard cannot reach an internal environment: set `frontDoorSku = 'Premium'`, or use your own WAF. |

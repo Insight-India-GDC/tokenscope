@@ -307,6 +307,31 @@ describe('POST /api/v1/admin/users/:id/revoke-sessions (Wave VII)', () => {
     expect(rows[0]!.revoked_at).not.toBeNull()
   })
 
+  it('region admin revoking a platform-admin homed in their region → 403, nothing revoked; a platform-admin may', async () => {
+    const handler = await loadHandler()
+    const refused = makeEvent({
+      method: 'POST',
+      path: `/api/v1/admin/users/${finopsId}/revoke-sessions`,
+      body: {},
+      routerParams: { id: finopsId },
+      initialSession: adminASession(),
+    })
+    await expect(handler(refused as never)).rejects.toMatchObject({ statusCode: 403 })
+    const [before] = await t.client<{ revoked_at: Date | null }[]>`SELECT revoked_at FROM teammate WHERE id = ${finopsId}`
+    expect(before!.revoked_at).toBeNull()
+    const audit = await t.client<{ count: string }[]>`SELECT COUNT(*)::text AS count FROM audit_event WHERE event_type = 'teammate-sessions-revoked'`
+    expect(Number(audit[0]!.count)).toBe(0)
+
+    const allowed = makeEvent({
+      method: 'POST',
+      path: `/api/v1/admin/users/${finopsId}/revoke-sessions`,
+      body: {},
+      routerParams: { id: finopsId },
+      initialSession: orgWideSession(),
+    })
+    expect(await handler(allowed as never)).toEqual({ ok: true })
+  })
+
   it('admin in region A revoking a region-B teammate → 403 region-scope', async () => {
     const handler = await loadHandler()
     const ev = makeEvent({

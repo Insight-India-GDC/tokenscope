@@ -7,7 +7,7 @@
  * Mirrors the Claude landed-check contract (plugin/scripts/landed-check.mjs):
  * calls GET /api/v1/instances/{id}/health (emit-credential authed — the SAME gate
  * as /bearer) using the emit access token the headers-helper already cached
- * (~/.tokenscope/oauth-access.copilot-cli.json), then writes a small last-landed.json cache.
+ * (~/.tokenscope/oauth-access.copilot-cli.json), then writes a small last-landed.copilot-cli.json cache.
  * Best-effort + short timeout: ANY failure leaves the last-landed cache untouched
  * and returns a typed `{ ok:false, reason }` — it NEVER throws, so a status probe
  * can fail-open to "unconfirmed" rather than red.
@@ -112,6 +112,8 @@ export async function refreshLanded({ dir } = {}) {
     res = await fetch(healthUrl, {
       headers: { Authorization: `Bearer ${token}` },
       signal: ctrl.signal,
+      // Never follow: the scheme guard checked only this URL (curl/PowerShell lanes agree).
+      redirect: 'error',
     })
     clearTimeout(t)
   } catch {
@@ -131,7 +133,9 @@ export async function refreshLanded({ dir } = {}) {
   try {
     mkdirSync(stateD, { recursive: true })
     writeFileSync(
-      join(stateD, 'last-landed.json'),
+      // Per tool (#453): the Claude plugin writes its own landing record into the
+      // same ~/.tokenscope, and a shared name let each overwrite the other's.
+      join(stateD, 'last-landed.copilot-cli.json'),
       `${JSON.stringify({ instanceId, lastEmission, silent, revoked, checkedAt: new Date().toISOString() })}\n`,
       { mode: 0o600 },
     )

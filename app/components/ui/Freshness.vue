@@ -2,7 +2,8 @@
 /*
  * UiFreshness — "updated N min ago" indicator.
  *
- * Copy is intentionally tone-matched (per design-notes.md §Microcopy):
+ * Copy is intentionally tone-matched (per the prototype's design notes,
+ * docs/archive/ux-pilot/tokenscope-pilot-design/project/design-notes.md §Microcopy posture):
  * action over alarm.
  *
  * It used to carry "· Anthropic actuals lag ~1 hr" on every render. That is a

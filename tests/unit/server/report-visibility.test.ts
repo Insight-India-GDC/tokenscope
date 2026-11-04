@@ -9,19 +9,16 @@
  * (developer/manager/admin/cost-centre-owner) are BYTE-IDENTICAL to the retired
  * standard grants (no-change-for-non-elevated-roles proof); proves totality and
  * monotonicity over the full (role × ownership × permission-subset) space; the
- * zombie `finance` role, the unknown-role fail-closed default; the mig-0130
- * 'revoke-all' DENY (deny-wins over role default AND positive grant); and the
- * CHECK literals of BOTH migrations — 0129 against REPORT_ACCESS_PERMISSIONS and
- * 0130's replacement against REPORT_ACCESS_GRANT_VALUES (0084-style).
+ * zombie `finance` role, the unknown-role fail-closed default; and the CHECK
+ * literals of the live constraint (mig 0158, which re-narrowed 0130's) against
+ * REPORT_ACCESS_PERMISSIONS (0084-style).
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  REPORT_ACCESS_GRANT_VALUES,
   REPORT_ACCESS_PERMISSIONS,
-  REPORT_ACCESS_REVOKE,
   REPORT_VISIBILITY_PERSONAS,
   WHO_SEES_WHAT_BASELINE,
   WHO_SEES_WHAT_ELEVATED,
@@ -177,44 +174,6 @@ describe('effectiveReportGrants — single-permission overlays for developer (no
   })
 })
 
-describe('effectiveReportGrants — the REVOKE deny (mig 0130): deny-wins over role and grant', () => {
-  const EMPTY = {
-    across: false,
-    regional: false,
-    costCentre: false,
-    finance: false,
-    teammate: false,
-    project: 'membership', // the me/* floor everyone keeps; a revoke removes REPORT depth, not membership
-  } satisfies ReportScopeGrants
-
-  it('revokes an org-wide admin below their full-access role default', () => {
-    expect(
-      effectiveReportGrants({ role: 'platform-admin', ownsCostCentre: false, permissions: [], revoked: true }),
-    ).toEqual(EMPTY)
-    expect(
-      effectiveReportGrants({ role: 'admin', ownsCostCentre: false, permissions: [], revoked: true }),
-    ).toEqual(EMPTY)
-  })
-
-  it('deny WINS over a positive grant (revoke + operational ⇒ nothing)', () => {
-    expect(
-      effectiveReportGrants({
-        role: 'platform-admin',
-        ownsCostCentre: true,
-        permissions: ['operational', 'finance'],
-        revoked: true,
-      }),
-    ).toEqual(EMPTY)
-  })
-
-  it('revoked:false / omitted ⇒ unchanged (the flag is opt-in, never a narrowing by default)', () => {
-    const base = effectiveReportGrants({ role: 'admin', ownsCostCentre: false, permissions: [] })
-    expect(effectiveReportGrants({ role: 'admin', ownsCostCentre: false, permissions: [], revoked: false })).toEqual(
-      base,
-    )
-  })
-})
-
 /*
  * ── Union totality & monotonicity ─────────────────────────────────────────
  * Every (role × ownership × permission-subset) — 6 × 2 × 4 = 48 — must yield a
@@ -307,15 +266,15 @@ describe('fail-closed on an unrecognised role', () => {
 /*
  * The POST body schema is built from the SAME constant the enforcement layer
  * reads, and it must agree with it at BOTH levels. `z.enum` was previously fed
- * `REPORT_ACCESS_GRANT_VALUES as unknown as [string, ...string[]]`, which kept
+ * the tuple `as unknown as [string, ...string[]]`, which kept
  * runtime validation correct while widening the inferred type to plain `string`
  * — so a typo'd literal at a call site compiled. The cast is gone; these pin
  * both halves, and the `satisfies` line below is the compile-time half (it stops
  * type-checking the moment the union widens back to `string`).
  */
-describe('ReportAccessGrantBody.permission — runtime and TYPE agree on the 3 literals', () => {
-  it('accepts every REPORT_ACCESS_GRANT_VALUES literal, including the deny', () => {
-    for (const v of REPORT_ACCESS_GRANT_VALUES) {
+describe('ReportAccessGrantBody.permission — runtime and TYPE agree on the 2 literals', () => {
+  it('accepts every REPORT_ACCESS_PERMISSIONS literal', () => {
+    for (const v of REPORT_ACCESS_PERMISSIONS) {
       const parsed = ReportAccessGrantBody.parse({
         teammate_id: '9a1e0000-0000-4000-8000-000000000001',
         permission: v,
@@ -324,23 +283,25 @@ describe('ReportAccessGrantBody.permission — runtime and TYPE agree on the 3 l
     }
   })
 
-  it('rejects a value outside the three literals, naming the field', () => {
-    const r = ReportAccessGrantBody.safeParse({
-      teammate_id: '9a1e0000-0000-4000-8000-000000000001',
-      permission: 'revoke-finance',
-    })
-    expect(r.success).toBe(false)
-    expect(r.error!.issues.some((i) => i.path.join('.') === 'permission')).toBe(true)
+  it('rejects a value outside the two literals, naming the field — the retired deny included', () => {
+    for (const permission of ['revoke-finance', 'revoke-all']) {
+      const r = ReportAccessGrantBody.safeParse({
+        teammate_id: '9a1e0000-0000-4000-8000-000000000001',
+        permission,
+      })
+      expect(r.success).toBe(false)
+      expect(r.error!.issues.some((i) => i.path.join('.') === 'permission')).toBe(true)
+    }
   })
 
-  it('the INFERRED type is the 3-literal union, not `string`', () => {
+  it('the INFERRED type is the 2-literal union, not `string`', () => {
     // Compile-time pin. `satisfies` here is exact-assignable-both-ways in
     // practice: if the inferred type widened to `string`, the second line stops
     // compiling (string is not assignable to the union), and if a literal were
     // dropped from the constant the first stops compiling.
-    const fromType: ReportAccessGrantBody['permission'] = 'revoke-all'
-    const backToUnion: (typeof REPORT_ACCESS_GRANT_VALUES)[number] = fromType
-    expect(backToUnion).toBe(REPORT_ACCESS_REVOKE)
+    const fromType: ReportAccessGrantBody['permission'] = 'finance'
+    const backToUnion: ReportAccessPermission = fromType
+    expect(backToUnion).toBe('finance')
   })
 })
 
@@ -367,33 +328,27 @@ describe('migration 0129 CHECK literals pinned to REPORT_ACCESS_PERMISSIONS (008
   })
 
   /*
-   * 0129's CHECK is no longer the live one — mig 0130 DROPs it and ADDs a
-   * three-literal replacement. The pin has to follow the constraint that is
-   * actually in force, or a fourth value added to REPORT_ACCESS_GRANT_VALUES
-   * ships an app that writes a value the DB rejects with a 23514 at runtime.
-   * Read 0130 and compare the REPLACEMENT literals to the module constant.
+   * 0129's CHECK is no longer the live one: 0130 widened it and 0158 re-narrowed
+   * it. The pin follows the constraint in force, or a value added to
+   * REPORT_ACCESS_PERMISSIONS ships an app that writes a value the DB rejects
+   * with a 23514 at runtime.
    */
-  it('mig 0130 REPLACES that CHECK with exactly REPORT_ACCESS_GRANT_VALUES (all three literals)', () => {
-    const m0130 = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '../../../drizzle/migrations/0130_report_access_revoke.sql'),
+  it('mig 0158 REPLACES the CHECK with exactly REPORT_ACCESS_PERMISSIONS, after deleting revoke-all rows', () => {
+    const m0158 = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../../../drizzle/migrations/0158_report_access_drop_revoke.sql'),
       'utf8',
     )
-    // The old constraint must be dropped, or the ADD below cannot widen anything.
-    expect(m0130).toMatch(/DROP CONSTRAINT report_access_grant_permission_check/i)
+    const del = m0158.search(/DELETE FROM report_access_grant WHERE permission = 'revoke-all'/)
+    const drop = m0158.search(/DROP CONSTRAINT report_access_grant_permission_check/i)
+    expect(del, 'revoke-all rows must be deleted before the CHECK narrows').toBeGreaterThanOrEqual(0)
+    expect(drop).toBeGreaterThan(del)
 
-    const m = m0130.match(
+    const m = m0158.match(
       /ADD CONSTRAINT report_access_grant_permission_check\s+CHECK \(permission IN \(([^)]*)\)\)/i,
     )
-    expect(m, 'replacement permission CHECK not found in 0130').toBeTruthy()
+    expect(m, 'replacement permission CHECK not found in 0158').toBeTruthy()
     const literals = m![1]!.split(',').map((s) => s.trim().replace(/^'|'$/g, ''))
-    // Exact, ORDER-SENSITIVE equality with the module constant: a value the app
-    // can mint but the CHECK rejects (or vice-versa) fails here, not in prod.
-    expect(literals).toEqual([...REPORT_ACCESS_GRANT_VALUES])
-    expect(literals).toContain(REPORT_ACCESS_REVOKE)
-    // …and the deny is NOT one of the positive permissions — the two sets are
-    // disjoint, which is what lets resolveReportPermissions filter it out.
-    expect(isReportAccessPermission(REPORT_ACCESS_REVOKE)).toBe(false)
-    expect(REPORT_ACCESS_GRANT_VALUES).toEqual([...REPORT_ACCESS_PERMISSIONS, REPORT_ACCESS_REVOKE])
+    expect(literals).toEqual([...REPORT_ACCESS_PERMISSIONS])
   })
 
   it('the revoke-shape CHECK requires the actor in the revoked arm (an actorless revocation is unrepresentable)', () => {

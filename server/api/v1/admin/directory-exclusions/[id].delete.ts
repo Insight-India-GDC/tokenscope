@@ -23,7 +23,7 @@ export default defineEventHandler(async (event) => {
         type: 'https://tokenscope.example.com/errors/forbidden',
         title: 'Forbidden',
         status: 403,
-        detail: 'Directory-exclusion patterns are org-wide config; requires platform-admin.',
+        detail: 'Directory-exclusion patterns are org-wide config; requires an Admin.',
       },
     })
   }

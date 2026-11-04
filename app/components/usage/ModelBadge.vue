@@ -28,8 +28,8 @@ const title = computed(() => modelMixTitle(slices.value))
 const FAMILY_CLASS: Record<string, string> = {
   fable: 'bg-brand-harmony-lite text-brand-harmony',
   opus: 'bg-brand-hunger-lite text-brand-heart',
-  sonnet: 'bg-brand-vision-lite text-[#1f4ea3]',
-  haiku: 'bg-brand-zeal-lite text-[#0b7290]',
+  sonnet: 'bg-brand-vision-lite text-brand-vision-ink',
+  haiku: 'bg-brand-zeal-lite text-brand-zeal-ink',
   gpt: 'bg-[#DCFCE7] text-[#166534]',
   other: 'bg-calm-2 text-carbon-2',
 }

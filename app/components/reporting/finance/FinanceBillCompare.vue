@@ -185,7 +185,7 @@ const TRACK: Record<'hunger' | 'vision', string> = {
             <span
               v-if="r.pending"
               class="px-1.5 py-px rounded bg-rag-amber/12 text-[#92400E] text-[10px] font-bold uppercase tracking-wide"
-              title="Copilot pooled chargeback is held back from the per-CoU column until validated on Dev (Σ=bill)."
+              title="Copilot pooled chargeback is held back from the per-Business Unit column until it is validated against the bill."
             >pending cutover</span>
             <!-- The reconciliation verdict is withheld on a row with no money on
                  either bar (kept only because it is pending). "matched" there would
@@ -260,7 +260,7 @@ const TRACK: Record<'hunger' | 'vision', string> = {
               kind="rag-amber"
               dot="amber"
               data-testid="finance-compare-unclassified-badge"
-              title="Copilot bill lines matching no SKU classifier — in the Σ=bill footing but excluded from every chargeable total until classified."
+              title="Copilot bill lines matching no SKU classifier — in the bill total but excluded from every chargeable total until classified."
             >needs mapping</UiBadge>
           </span>
         </div>

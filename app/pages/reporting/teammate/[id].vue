@@ -34,6 +34,7 @@ import DrillName from '../../../components/reporting/DrillName.vue'
 import { entryReportRoute, projectDrillTarget } from '../../../components/reporting/drill-contract'
 import { useDrillGrants } from '../../../composables/useDrillContract'
 import { fmtUsd, fmtPct } from '../../../composables/useFormat'
+import { apiErrorDetail, isConfirmedRejection } from '../../../composables/useApiError'
 import type { ProviderState, ReportCoverageMeta } from '#shared/reports/types'
 
 interface MixSlice {
@@ -107,7 +108,7 @@ const query = computed(() => ({
   to: rs.to.value ?? undefined,
 }))
 
-const { data, error, pending } = await useFetch<TeammateReport>(
+const { data, error, pending, refresh } = await useFetch<TeammateReport>(
   () => `/api/v1/reports/teammate/${encodeURIComponent(subjectId.value)}`,
   {
     query,
@@ -119,6 +120,16 @@ const { data, error, pending } = await useFetch<TeammateReport>(
 )
 
 const forbidden = computed(() => (error.value as { statusCode?: number } | null)?.statusCode === 403)
+/*
+ * Every OTHER error used to leave a blank body. Refused (a 4xx with a reason,
+ * e.g. a malformed window) says the server's reason; anything else (no answer,
+ * a 5xx) says the view failed and nothing is known about this person's figures.
+ */
+const loadError = computed<'refused' | 'failed' | null>(() => {
+  if (!error.value || forbidden.value) return null
+  return isConfirmedRejection(error.value) ? 'refused' : 'failed'
+})
+const refusedDetail = computed(() => apiErrorDetail(error.value, 'none').replace(/\.$/, ''))
 
 const frame = computed(() => ({
   src: src.value,
@@ -192,7 +203,7 @@ const exportParams = computed(() => ({
         scope is not a smaller answer, it is a different one.
         <InfoDot
           label="Why a scope is required"
-        >The same person's month can be $100 inside one cost centre and $350 across the company. Without the entry scope this page could not tell you which question it was answering.</InfoDot>
+        >The same person's month can be $100 inside one Business Unit and $350 across the company. Without the entry scope this page could not tell you which question it was answering.</InfoDot>
       </p>
       <NuxtLink to="/reporting" class="inline-block mt-3 text-sm font-semibold text-brand-harmony hover:underline">
         Go to Reporting →
@@ -209,6 +220,26 @@ const exportParams = computed(() => ({
           label="Why you never saw a link here"
         >On your own surfaces teammate names render as plain text, not links — the drill contract never shows a door you cannot open.</InfoDot>
       </p>
+    </UiCard>
+
+    <!-- REFUSED for another reason — say the server's reason, never a blank body. -->
+    <UiCard v-else-if="loadError === 'refused'" data-testid="teammate-refused">
+      <div class="text-sm font-semibold text-rag-red">The server refused this view</div>
+      <p class="text-[13px] text-carbon-2 mt-1">Reason given: {{ refusedDetail }}.</p>
+      <NuxtLink :to="backRoute" class="inline-block mt-3 text-sm font-semibold text-brand-harmony hover:underline">
+        Back to the report →
+      </NuxtLink>
+    </UiCard>
+
+    <!-- FAILED — no answer, or a server error. Nothing is known, so nothing is shown. -->
+    <UiCard v-else-if="loadError === 'failed'" data-testid="teammate-failed">
+      <div class="text-sm font-semibold text-rag-red">This view didn't load</div>
+      <p class="text-[13px] text-carbon-2 mt-1">
+        We couldn't get an answer from the server, so no figures are shown for this teammate.
+      </p>
+      <UiButton class="mt-3" kind="secondary" size="sm" data-testid="teammate-retry" @click="refresh()">
+        Try again
+      </UiButton>
     </UiCard>
 
     <template v-else>
@@ -286,7 +317,7 @@ const exportParams = computed(() => ({
             class="mt-4"
             :provider-states="data.meta.providerStates"
             :coverage="data.meta.coverage ?? undefined"
-            :point-in-time-dims="true"
+            placement-note
             lane="usage"
           />
 

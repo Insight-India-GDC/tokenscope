@@ -26,6 +26,7 @@
  */
 import { VENDOR_LANES, VENDOR_LABELS, toolToVendor } from '#shared/usage/vendor'
 import { CLAUDE_CODE_TOOL } from '#shared/usage/surface'
+import { utcWeekStart } from '#shared/reports/clock'
 import { allocateCents } from '#shared/usage/allocate-cents'
 import { foldLaneTotals, FOLDED_LANE_ID, FOLDED_LANE_LABEL, MAX_CHART_LANES } from './fold-lanes'
 
@@ -99,12 +100,13 @@ function laneLabel(lane: string): string {
 
 const DAY_MS = 86_400_000
 
-/** The ISO week's Monday (`YYYY-MM-DD`) for a UTC day — matches Postgres `date_trunc('week')`. */
+/**
+ * The ISO week's Monday (`YYYY-MM-DD`) for a UTC day — matches Postgres
+ * `date_trunc('week')`. The shared definition, so the practice endpoint's week
+ * buckets and this axis cannot drift apart.
+ */
 export function mondayOf(day: string): string {
-  const t = Date.parse(`${day}T00:00:00.000Z`)
-  const dow = new Date(t).getUTCDay() // 0=Sun..6=Sat
-  const back = (dow + 6) % 7 // Mon→0 … Sun→6
-  return new Date(t - back * DAY_MS).toISOString().slice(0, 10)
+  return utcWeekStart(day)
 }
 
 /**

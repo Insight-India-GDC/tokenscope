@@ -208,3 +208,97 @@ describe('GET /api/v1/rollups/practice/:ouId', () => {
     expect(r.vendorSplit.reduce((a, v) => a + v.billUsd, 0)).toBe(26) // conservation across lanes
   })
 })
+
+/*
+ * Current-org lens (docs/design/current-org-lens/00-design.md §3.2): every panel groups a
+ * person's usage by where they sit NOW. Eve's rows are all stamped region D / unit X (live
+ * attribution, unaccounted Copilot, and an ARCHIVED day served from spend_rollup_daily), but she
+ * now sits in region E / unit Y, so every panel counts her under Y and none under X.
+ */
+describe('practice page — current placement, not the stamped one', () => {
+  let regionD = ''
+  let regionE = ''
+  let unitX = '' // region D: where eve's rows were stamped, fay still sits
+  let unitY = '' // region E: where eve sits now
+  let unitY2 = '' // region E: Y's sibling, gus
+  interface Panels extends Resp {
+    topModels: { model: string; usageUsd: number }[]
+    comparison: { code: string; isSelf: boolean; usageUsd: number }[]
+  }
+  const sum = (r: Panels, k: 'claudeUsd' | 'copilotUsd') => r.trend.reduce((a, w) => a + w[k], 0)
+
+  beforeAll(async () => {
+    const mkRegion = async (code: string) => {
+      await t.client`INSERT INTO region (code, display_name) VALUES (${code}, ${code})`
+      const [r] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM region WHERE code=${code}`
+      return r!.id
+    }
+    const mkUnit = async (region: string, path: string, code: string, cou: boolean, parent: string | null) => {
+      const [r] = await t.client<{ id: string }[]>`INSERT INTO org_unit (region_id, parent_id, path, code, display_name, unit_type, is_cost_owning_unit)
+        VALUES (${region}::uuid, ${parent}::uuid, ${path}::ltree, ${code}, ${code}, 'practice', ${cou}) RETURNING id::text AS id`
+      return r!.id
+    }
+    const mkTeammate = async (id: string, region: string, unit: string, email: string) => {
+      await t.client`INSERT INTO teammate (id, entra_oid, email, display_name, region_id, org_unit_id)
+        VALUES (${id}::uuid, 'oid-'||${email}, ${email}, ${email}, ${region}::uuid, ${unit}::uuid)`
+      return id
+    }
+    const attribute = async (tm: string, region: string, unit: string, cost: number, model: string) => {
+      const [ia] = await t.client<{ id: string }[]>`INSERT INTO instance_attestation (instance_id, principal_oid, teammate_id, tool, region_id, org_unit_id, project_code_hash, raw_project_code)
+        VALUES (gen_random_uuid(), 'p', ${tm}::uuid, 'claude-code', ${region}::uuid, ${unit}::uuid, 'h', 'P') RETURNING instance_id::text AS id`
+      await t.client`INSERT INTO attribution_record (instance_id, teammate_id, region_id, org_unit_id, tool, model, token_type, tokens, cost_usd, fidelity_tier, cost_basis, ts_event)
+        VALUES (${ia!.id}::uuid, ${tm}::uuid, ${region}::uuid, ${unit}::uuid, 'claude-code', ${model}, 'input', 1000, ${cost}, 'tier-1', 'estimated', now())`
+    }
+    regionD = await mkRegion('prd')
+    regionE = await mkRegion('pre')
+    unitX = await mkUnit(regionD, 'pdx', 'pdx', true, null)
+    const rootE = await mkUnit(regionE, 'pe_root', 'pe-root', false, null)
+    unitY = await mkUnit(regionE, 'pe_root.pey', 'pey', true, rootE)
+    unitY2 = await mkUnit(regionE, 'pe_root.pey2', 'pey2', true, rootE)
+
+    const eve = await mkTeammate('9a1e0000-0000-4000-8000-0000000000e1', regionE, unitY, 'eve@d.test')
+    const fay = await mkTeammate('9a1e0000-0000-4000-8000-0000000000f1', regionD, unitX, 'fay@d.test')
+    const gus = await mkTeammate('9a1e0000-0000-4000-8000-0000000000a1', regionE, unitY2, 'gus@e.test')
+    await attribute(eve, regionD, unitX, 40, 'claude-mover-model')
+    await t.client`INSERT INTO unaccounted_usage (teammate_id, region_id, org_unit_id, day, tool, cost_usd, tokens, source)
+      VALUES (${eve}::uuid, ${regionD}::uuid, ${unitX}::uuid, CURRENT_DATE, 'copilot-cli', 5, 0, 'api-reconciled')`
+    // An ARCHIVED day: older than the watermark, so v_effective_spend serves it from the rollup.
+    await t.client`UPDATE ledger_archive_state SET archived_through = date_trunc('week', now()) - INTERVAL '6 weeks' WHERE id = 'singleton'`
+    await t.client`INSERT INTO spend_rollup_daily (period_start, teammate_id, region_id, org_unit_id, tool, model, token_type, total_tokens, total_cost_usd, record_count)
+      VALUES (date_trunc('week', now()) - INTERVAL '9 weeks', ${eve}::uuid, ${regionD}::uuid, ${unitX}::uuid, 'claude-code', 'claude-mover-model', 'input', 1000, 11, 1)`
+    await attribute(fay, regionD, unitX, 3, 'claude-sonnet-4-6')
+    await attribute(gus, regionE, unitY2, 6, 'claude-sonnet-4-6')
+  })
+
+  it('the practice she sits in now shows her usage in every panel, archived trend days included', async () => {
+    const r = (await handler(ev(sess('admin', 'pe_root.pey', regionE), unitY))) as Panels
+    expect(r.header.usageUsd).toBe(45) // attribution 40 + unaccounted Copilot 5, both stamped D/X
+    expect(r.header.users).toBe(1)
+    expect(r.users.map((u) => u.name)).toEqual(['eve@d.test'])
+    expect(r.topModels).toEqual([{ model: 'claude-mover-model', usageUsd: 40 }])
+    expect(r.header.pctOfRegion).toBeCloseTo(45 / 51) // region E = eve 45 + gus 6
+    expect(sum(r, 'claudeUsd')).toBe(51) // live 40 + the archived rollup day 11
+    expect(r.trend.length).toBe(2) // this week and the archived week
+    const byCode = new Map(r.comparison.map((c) => [c.code, c.usageUsd]))
+    expect(byCode.get('pey')).toBe(45)
+    expect(byCode.get('pey2')).toBe(6)
+  })
+
+  it('the practice her rows were stamped with no longer counts her; totals are conserved', async () => {
+    const x = (await handler(ev(sess('admin', 'pdx', regionD), unitX))) as Panels
+    expect(x.header.usageUsd).toBe(3)
+    expect(x.users.map((u) => u.name)).toEqual(['fay@d.test'])
+    expect(x.topModels.map((m) => m.model)).not.toContain('claude-mover-model')
+    expect(x.header.pctOfRegion).toBe(1) // region D is fay alone
+    expect(sum(x, 'claudeUsd')).toBe(3)
+    expect(x.comparison.find((c) => c.code === 'pdx')!.usageUsd).toBe(3)
+
+    const y = (await handler(ev(sess('admin', 'pe_root.pey', regionE), unitY))) as Panels
+    const y2 = (await handler(ev(sess('admin', 'pe_root.pey2', regionE), unitY2))) as Panels
+    expect(x.header.usageUsd + y.header.usageUsd + y2.header.usageUsd).toBe(40 + 5 + 3 + 6)
+  })
+
+  it('a region-D admin can no longer see the practice she moved to', async () => {
+    await expect(handler(ev(sess('admin', 'pdx', regionD), unitY))).rejects.toMatchObject({ statusCode: 403 })
+  })
+})

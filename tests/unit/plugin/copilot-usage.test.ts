@@ -22,6 +22,9 @@ import { compare, jsonl } from '../../../scripts/copilot-usage-parity.mjs'
 import { extensionsEnabled } from '../../../plugin/scripts/copilot-emit.mjs'
 import { SIGNAL_WIRE_COLUMNS } from '../../../server/azure/reader'
 
+// Windows (#430): skipped on win32 because this file asserts POSIX file mode 0600; Windows reports 0666.
+const POSIX_ONLY = process.platform === 'win32'
+
 const SID = '81bf258d-aca2-45b1-b317-c964b6c98390'
 const INSTANCE = '9a1e0000-0000-4000-8000-000000000001'
 // Reader bound for request_id / session.id (server/azure/reader.ts).
@@ -57,7 +60,7 @@ function usage(over: Record<string, unknown> = {}, env: Record<string, unknown> 
   }
 }
 
-describe('mapUsageEvent', () => {
+describe.skipIf(POSIX_ONLY)('mapUsageEvent', () => {
   it('maps assistant.usage onto the forwarder api_request shape', () => {
     const r = mapUsageEvent(usage(), SID) as Rec
     expect(attr(r, 'event.name')).toBe('api_request')
@@ -107,7 +110,7 @@ describe('mapUsageEvent', () => {
   })
 })
 
-describe('lanes, context, mode', () => {
+describe.skipIf(POSIX_ONLY)('lanes, context, mode', () => {
   it('classifies conversation turns (incl. subagents) as main, others as their own aux token', () => {
     expect(querySourceFor({ interactionType: 'conversation-agent', initiator: 'agent' })).toBe('main')
     expect(querySourceFor({ interactionType: 'conversation-subagent' })).toBe('main')
@@ -153,7 +156,7 @@ describe('lanes, context, mode', () => {
   })
 })
 
-describe('buildBatches', () => {
+describe.skipIf(POSIX_ONLY)('buildBatches', () => {
   it('groups by (code hash, org), stamps instance + emitter from the caller, never the entry', () => {
     const r = mapUsageEvent(usage(), SID)
     const batches = buildBatches(
@@ -198,7 +201,7 @@ describe('buildBatches', () => {
   })
 })
 
-describe('createUsageEmitter', () => {
+describe.skipIf(POSIX_ONLY)('createUsageEmitter', () => {
   let dir: string
   const posts: Array<{ url: string; headers: Record<string, string>; body: Uint8Array }> = []
   let status = 204
@@ -338,7 +341,7 @@ describe('createUsageEmitter', () => {
   })
 })
 
-describe('usage extension: liveness, drift and the shared lane predicate', () => {
+describe.skipIf(POSIX_ONLY)('usage extension: liveness, drift and the shared lane predicate', () => {
   let dir: string
   beforeEach(() => {
     dir = fs.mkdtempSync(join(os.tmpdir(), 'ts-usage-x-'))
@@ -391,6 +394,25 @@ describe('usage extension: liveness, drift and the shared lane predicate', () =>
     const sd = join(dir, 'copilot-usage-spool')
     expect(fs.existsSync(join(sd, '.hb-wa0001'))).toBe(false)
     expect(createSpool({ stateDir: dir, sessionId: 'other', writerId: 'wb0001' }).claim()).toHaveLength(1)
+  })
+
+  // Copilot review on PR 496: a new session that only flushed another session's
+  // leftovers must not be noted as the folder's last session (#475).
+  it("notes this session only when a sent batch carried its own records", async () => {
+    const dead = make({ post: async () => ({ status: 503 }) })
+    dead.onEvent(usage())
+    await dead.close()
+
+    const OTHER = '0c4e9a2b-7d31-4f58-9b6a-2e8d1c5f7a90'
+    const noted: string[] = []
+    const fresh = make({ sessionId: OTHER, writerId: 'wb0001', recordLastSession: (id: string) => noted.push(id) })
+    await fresh.flush()
+    expect(noted).toEqual([])
+
+    fresh.onEvent(usage())
+    await fresh.flush()
+    expect(noted).toEqual([OTHER])
+    await fresh.close()
   })
 
   it('an unenrolled device grows no spool or heartbeat', () => {
@@ -768,7 +790,7 @@ describe('usage extension: liveness, drift and the shared lane predicate', () =>
   })
 })
 
-describe('createSpool', () => {
+describe.skipIf(POSIX_ONLY)('createSpool', () => {
   let dir: string
   beforeEach(() => (dir = fs.mkdtempSync(join(os.tmpdir(), 'ts-spool-'))))
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }))
@@ -837,7 +859,7 @@ describe('createSpool', () => {
   })
 })
 
-describe('parity checker', () => {
+describe.skipIf(POSIX_ONLY)('parity checker', () => {
   // Main calls map 1:1; the CLI folds a subagent's calls into ONE chat span, so parity
   // is on per-session totals. The forwarder reads no cache-write key the CLI emits.
   const spans = [

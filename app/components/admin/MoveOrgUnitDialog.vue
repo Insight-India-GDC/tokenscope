@@ -7,10 +7,11 @@
  * open, Tab cycles within the dialog (focus trap), and the error is an aria-live
  * alert.
  *
- * The new-parent picker lists the OTHER units in the same region plus a
- * "— Top level —" option (value ''/null = move under the region). The unit being
- * moved and its descendants are excluded: a candidate is a descendant when its
- * `path` starts with `<unit.path>.` (the moved subtree can't host its own root).
+ * The new-parent picker lists the OTHER units in the same region. There is no
+ * "top level": a region's only parentless units are its `default` unit and its
+ * Unplaced holding node, so a stray top-level unit is moved under `default`. The
+ * unit being moved and its descendants are excluded (a descendant's `path` starts
+ * with `<unit.path>.`), and so are the holding node and anything beneath it.
  * The candidate list is reused from the region tree the parent already loaded —
  * no extra fetch.
  *
@@ -22,6 +23,8 @@ import { ref, computed } from 'vue'
 import UiButton from '../ui/Button.vue'
 import { useModalA11y } from '../../composables/useModalA11y'
 import { apiErrorDetail } from '../../composables/useApiError'
+// `#shared`, never a relative path — see the note in app/pages/admin/regions/[id].vue.
+import { HOLDING_UNIT_TYPE } from '#shared/placement/holding-nodes'
 import type { OrgNode } from './OrgTree.vue'
 
 const props = defineProps<{
@@ -39,14 +42,15 @@ const firstField = ref<HTMLElement | null>(null)
 const dialogEl = ref<HTMLElement | null>(null)
 const titleId = 'move-org-unit-dialog-title'
 
-// Candidate parents: every OTHER active unit in the region, MINUS the unit
-// itself and its descendants (a descendant's path starts with `<unit.path>.`).
 // Pre-select the unit's current parent so the picker opens reflecting reality.
 const candidates = computed<OrgNode[]>(() => {
-  const selfPath = props.node.path
-  const descendantPrefix = `${selfPath}.`
+  const descendantPrefix = `${props.node.path}.`
+  const holdingPaths = props.units.filter((u) => u.unit_type === HOLDING_UNIT_TYPE).map((u) => u.path)
   return props.units.filter(
-    (u) => u.id !== props.node.id && !u.path.startsWith(descendantPrefix),
+    (u) =>
+      u.id !== props.node.id
+      && !u.path.startsWith(descendantPrefix)
+      && !holdingPaths.some((h) => u.path === h || u.path.startsWith(`${h}.`)),
   )
 })
 
@@ -68,7 +72,7 @@ useModalA11y({
 
 // The unit's current parent label for the "Currently under" read-only line.
 function currentParentLabel(): string {
-  if (!props.node.parent_id) return '— Top level —'
+  if (!props.node.parent_id) return 'The top of the region'
   const p = props.units.find((n) => n.id === props.node.parent_id)
   return p ? `${p.display_name} (${p.code})` : props.node.parent_id
 }
@@ -79,7 +83,7 @@ async function move() {
   try {
     await $fetch(`/api/v1/admin/org-units/${props.node.id}/move`, {
       method: 'POST',
-      body: { new_parent_id: newParentId.value || null },
+      body: { new_parent_id: newParentId.value },
     })
     emit('moved')
   } catch (e: unknown) {
@@ -126,10 +130,10 @@ async function move() {
           id="mou-parent"
           ref="firstField"
           v-model="newParentId"
-          class="mt-1 mb-2 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+          class="mt-1 mb-2 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
           data-testid="move-parent-select"
         >
-          <option value="">— Top level —</option>
+          <option value="" disabled>Choose a parent</option>
           <option v-for="p in candidates" :key="p.id" :value="p.id">
             {{ '— '.repeat(p.depth) }}{{ p.display_name }} ({{ p.code }})
           </option>
@@ -143,7 +147,7 @@ async function move() {
 
         <div class="flex justify-end gap-2 mt-5">
           <UiButton kind="ghost" data-testid="mou-cancel" @click="emit('close')">Cancel</UiButton>
-          <UiButton kind="primary" :disabled="saving" data-testid="move-submit" @click="move">
+          <UiButton kind="primary" :disabled="saving || !newParentId" data-testid="move-submit" @click="move">
             {{ saving ? 'Moving…' : 'Move' }}
           </UiButton>
         </div>

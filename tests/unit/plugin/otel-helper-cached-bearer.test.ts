@@ -35,6 +35,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+// Windows (#430): skipped on win32 because this file drives the POSIX .sh helper, which Windows does not run; the PowerShell twin is covered by otel-helper-conformance, claude-redeem-ps1 and status-ps1.
+const POSIX_ONLY = process.platform === 'win32'
+
 // OTEL_HELPER_PATH lets a mutation run point this suite at another copy of the
 // helper (e.g. `git show main:…`) without touching the working tree.
 const HELPER = process.env.OTEL_HELPER_PATH ?? resolve(__dirname, '../../../plugin/scripts/otel-headers-helper.sh')
@@ -148,7 +151,7 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(tmp, { recursive: true, force: true }))
 
-describe('otel-headers-helper — cached Azure bearer (#409): clean mint', () => {
+describe.skipIf(POSIX_ONLY)('otel-headers-helper — cached Azure bearer (#409): clean mint', () => {
   it('caches the minted bearer, bound to the endpoint, with the expiry from the response header', () => {
     const r = runHelper({ STUB_EXPIRES: '1900000000' })
     expect(r.status).toBe(0)
@@ -185,7 +188,7 @@ describe('otel-headers-helper — cached Azure bearer (#409): clean mint', () =>
   })
 })
 
-describe('otel-headers-helper — cached Azure bearer (#409): unreachable → cache', () => {
+describe.skipIf(POSIX_ONLY)('otel-headers-helper — cached Azure bearer (#409): unreachable → cache', () => {
   it('hands back the cached bearer when /bearer is unreachable — degraded, NOT failed', () => {
     seedAccessCache()
     seedAzureCache()
@@ -256,7 +259,7 @@ describe('otel-headers-helper — cached Azure bearer (#409): unreachable → ca
   })
 })
 
-describe('otel-headers-helper — cached Azure bearer (#409): verdicts never fall back', () => {
+describe.skipIf(POSIX_ONLY)('otel-headers-helper — cached Azure bearer (#409): verdicts never fall back', () => {
   it('a 401 from /bearer stops emission and drops the cached bearer', () => {
     seedAccessCache()
     seedAzureCache()

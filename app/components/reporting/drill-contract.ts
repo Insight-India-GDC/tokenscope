@@ -23,8 +23,10 @@
 import type { RouteLocationRaw } from 'vue-router'
 import {
   teammateDrillAdmission,
+  type DrillWindow,
   type ReportScopeGrants,
 } from '#shared/auth/report-visibility'
+import { utcMonthOf } from '#shared/reports/clock'
 
 /** The grants subset the contract needs. Fail-closed when meta has not loaded. */
 export interface DrillGrants {
@@ -45,6 +47,14 @@ export interface DrillFrame {
   month?: string | null
   from?: string | null
   to?: string | null
+  /**
+   * The SERVER's UTC day (`useServerClock().today`), read ONLY to name the
+   * default window when the frame carries no `month`/`from`/`to`. Never put on
+   * the link: the destination re-resolves its own default from the same absent
+   * keys. Absent or null (the clock has not landed) means the frame has no
+   * window yet, and no teammate name is a link until it has one.
+   */
+  today?: string | null
 }
 
 export type DrillTarget =
@@ -59,17 +69,19 @@ export type DrillTarget =
 
 /**
  * The window a frame is at, in the shape the admission rule takes. A frame with
- * no explicit window is at the CURRENT month — every report's own default — so
- * the rule is told that rather than told nothing.
+ * no explicit window is at the CURRENT month, every report's own default, so the
+ * rule is told that rather than told nothing.
+ *
+ * "Current" is the SERVER's month (`frame.today`), never the browser's: for
+ * hours a day in APAC the browser's UTC month and the server's differ around a
+ * month boundary, and the admission would then name a month the report is not
+ * at (clock-and-day-boundary.md D3). With no server day yet the answer is "no
+ * window", which the rule refuses, so names stay plain text until it lands.
  */
-function frameWindow(frame: DrillFrame): { from: string; to: string } {
+export function frameWindow(frame: DrillFrame): DrillWindow | null {
   if (frame.from && frame.to) return { from: frame.from, to: frame.to }
-  const month =
-    frame.month ??
-    (() => {
-      const n = new Date()
-      return `${n.getUTCFullYear()}-${String(n.getUTCMonth() + 1).padStart(2, '0')}`
-    })()
+  const month = frame.month ?? (frame.today ? utcMonthOf(frame.today) : null)
+  if (!month) return null
   return { from: `${month}-01`, to: `${month}-01` }
 }
 
@@ -88,7 +100,7 @@ export function drillQuery(frame: DrillFrame): Record<string, string> {
  *
  * `hasInScopeWindowRow` DEFAULTS to `true` — on a scope-clamped report the row
  * was computed over exactly the predicate its `?src=` frame names, so the row's
- * own existence IS D34's emit-time evidence.
+ * own existence IS D34's in-frame evidence.
  *
  * IT IS NOT ALWAYS TRUE, AND THE DEFAULT IS NOT A LICENCE (r3-M4). A surface
  * whose rows are computed over a DIFFERENT predicate than the frame it carries

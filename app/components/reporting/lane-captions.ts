@@ -13,6 +13,16 @@
  * rewritten, and each one was argued for where it was written.
  */
 import type { ReportLane } from '../../composables/useReportState'
+import { BU_LABEL } from '#shared/reports/vocabulary'
+
+/*
+ * Where a person's usage is counted (docs/design/current-org-lens/00-design.md
+ * §3.5). Every report groups a person's usage by their CURRENT placement; the
+ * Business Unit pages keep project-tagged usage on the project's unit; and the
+ * figures a month was reported with live in finance's export, not here.
+ */
+export const PLACEMENT_NOTE =
+  `Usage is grouped by where each person sits now. On ${BU_LABEL} pages, usage tagged to a project counts toward the project's ${BU_LABEL}. A reported month's own figures are finance's export.`
 
 export const REPORT_LANE_CAPTIONS: Record<ReportLane, string> = {
   usage: 'Provider usage truth — what was consumed. Not an invoice; includes NFR/exempt.',
@@ -24,5 +34,5 @@ export const REPORT_LANE_CAPTIONS: Record<ReportLane, string> = {
    * that every breakdown under this lens was still both providers.
    */
   chargeback:
-    'Cost-of-record — what cross-charges to cost-centres. Copilot bills one pooled invoice per cost centre (pending validation), so per-person and per-model breakdowns are Anthropic’s charge alone.',
+    'Cost-of-record — what cross-charges to Business Units. Copilot bills one pooled invoice per Business Unit (pending validation), so per-person and per-model breakdowns are Anthropic’s charge alone.',
 }

@@ -69,21 +69,22 @@
  *
  * ── ONE CLAMP, TWO RELATIONS, AND WHY THAT IS SOUND ──────────────────────────
  *
- * Callers pass the SAME scope predicate the attributed axes use, aliased `u`
- * over `(u.region_id, u.org_unit_id)`. That is not a shortcut: the billed lane
- * carries those columns with the SAME meaning as the usage lane — historical
- * homing, stamped at INSERT from the teammate's placement and never refreshed
- * (mig 0118:60-79). The scope resolves through the fact table's OWN homing,
- * never by joining back to a teammate's current placement, so a reorg cannot
- * restate a historical month.
+ * Callers pass the SAME scope predicate the attributed axes use, aliased `u`:
+ * the people who sit in the scope now (`currentPlacementTeammates`), or a
+ * current-lens column. Both lanes read placement the same way — the teammate's
+ * CURRENT region and unit, joined in by `v_provider_usage_fact_current` — so a
+ * restructure moves billed and attributed rows together
+ * (docs/design/current-org-lens/00-design.md §3.3). The ingest stamps on the
+ * table are recorded placement and are not read here.
  *
  * Reusing the USAGE clamp (rather than a §B `cost_owning_unit_id` one) is also
  * what makes the toggle honest: both lanes answer for the same population of
  * rows, so a reader flipping the toggle sees the same scope measured two ways
  * rather than two scopes.
  *
- * A row with no resolved teammate homes NOWHERE (all three columns NULL), so it
- * is in the whole-company figure and in no region or cost centre. The design
+ * A row with no resolved teammate keeps its stamped homing, which is NULL on all
+ * three columns: it is in the whole-company figure and in no region or Business
+ * Unit — an org identifier does not establish a person's placement. The design
  * states the consequence rather than hiding it: Σ(cost-centre totals) < org
  * total by exactly the unresolved amount.
  *
@@ -204,13 +205,9 @@ function axisSelect(axis: BilledAxis): { key: SQL; label: SQL; join: SQL; groupB
       }
     case 'practice':
       /*
-       * The billed lane stamps `cost_owning_unit_id` AT INGEST (0118:61-79), so
-       * this axis reads it directly rather than re-deriving the cost owner from
-       * `org_unit_id` through `v_org_unit_cost_owner` the way the attributed
-       * axis must. That is not a divergence: the ingest stamp IS that
-       * resolution, taken at the time the money was spent, which is the answer a
-       * historical month wants. Re-deriving it now would restate a closed month
-       * whenever the org tree moves.
+       * `cost_owning_unit_id` on the current-lens view is already the person's
+       * current Business Unit (v_org_unit_cost_owner of their unit), the same
+       * resolution the attributed practice axis makes, so it is read directly.
        */
       return {
         key: sql`u.cost_owning_unit_id::text`,
@@ -274,8 +271,8 @@ function nullKeyFor(axis: BilledAxis): string {
  * Ranked billed-lane drivers for one axis over one scope and window, split by
  * provider.
  *
- * `clamp` is a boolean SQL fragment over the alias `u`, addressing the homing
- * columns both lanes share (`u.region_id` / `u.org_unit_id`). `scopeSql(scope)`
+ * `clamp` is a boolean SQL fragment over the alias `u`, addressing columns both
+ * lanes carry (`u.teammate_id`, or the current-lens placement columns). `scopeSql(scope)`
  * produces exactly that, and `TRUE` for whole-company.
  */
 export async function fetchBilledAxis(
@@ -311,7 +308,7 @@ export async function fetchBilledAxis(
            ${label}                                       AS label,
            COALESCE(SUM(u.cost_usd), 0)::text             AS value,
            COUNT(*) FILTER (WHERE u.cost_usd IS NOT NULL)::text AS cost_rows
-    FROM provider_usage_fact u
+    FROM v_provider_usage_fact_current u
     ${join}
     WHERE ${clamp}
       AND u.date >= ${startDate}::date

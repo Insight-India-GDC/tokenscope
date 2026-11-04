@@ -124,6 +124,8 @@ const props = withDefaults(
      */
     drillGrants?: DrillGrants
     drillWindow?: Omit<DrillFrame, 'src'>
+    /** Admin-only "Fix org homing →" — from the container's session; fail-closed. */
+    canFixHoming?: boolean
   }>(),
   {
     error: undefined,
@@ -132,6 +134,7 @@ const props = withDefaults(
     refetching: false,
     drillGrants: () => NO_DRILL_GRANTS,
     drillWindow: () => ({}),
+    canFixHoming: false,
   },
 )
 
@@ -430,7 +433,7 @@ function driversDrillable(row: DriverRow): DrillTarget | null {
           <ReportHeaderNotes
             :provider-states="providerStates"
             :coverage="coverage"
-            :point-in-time-dims="report?.meta.pointInTimeDims === true"
+            placement-note
             :lane="lane"
           />
           <!--
@@ -533,6 +536,7 @@ function driversDrillable(row: DriverRow): DrillTarget | null {
           <RegionalChargebackRank
             v-else-if="isChargeback"
             :rows="report.chargebackByCostCentre"
+            :can-fix-homing="props.canFixHoming"
           />
         </template>
 

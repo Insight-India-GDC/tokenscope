@@ -88,6 +88,24 @@ function codeOf(err: unknown): string | undefined {
   return undefined
 }
 
+/**
+ * One log-line rendering of an error WITH its cause chain. undici reports every
+ * transport failure (TLS verification, DNS, refused) as a bare
+ * `TypeError: fetch failed` and puts the reason on `.cause`, so `String(err)`
+ * alone hides exactly what an operator needs. For server logs only, never a
+ * response. URL query strings are dropped: a signed link's signature lives there.
+ */
+export function describeError(err: unknown): string {
+  const parts: string[] = []
+  let cur: unknown = err
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && cur !== undefined && cur !== null; depth++) {
+    const code = typeof cur === 'object' && 'code' in cur ? (cur as { code?: unknown }).code : undefined
+    parts.push(`${typeof code === 'string' ? `[${code}] ` : ''}${String(cur)}`)
+    cur = typeof cur === 'object' ? (cur as { cause?: unknown }).cause : undefined
+  }
+  return parts.join(' <- caused by: ').replace(/(https?:\/\/[^\s?#]*)[?#]\S*/g, '$1?<redacted>')
+}
+
 function classify(err: unknown): ProbeErrorReason {
   const code = codeOf(err)
   if (!code) return 'unknown'

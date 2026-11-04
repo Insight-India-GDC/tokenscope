@@ -18,6 +18,12 @@
  * org-homed figure `v_finance_copilot_pool_chargeback` falls back to when no
  * allocation has been computed yet — see the migration rewriting that view).
  *
+ * WHICH UNIT: the Business Unit the teammate sits in WHEN THIS RUNS
+ * (v_org_unit_cost_owner of teammate.org_unit_id; NULL when there is none),
+ * never the rows' stamped placement (current-org-lens §3.3). The split is
+ * persisted, so a month outside copilot-pool-bill's default window keeps its
+ * homing until an operator re-runs that month.
+ *
  * LOCKING + THE MONTH'S SNAPSHOT (design §8.4): every persist call acquires the
  * `reportingSnapshot` advisory lock (keyed on the month) THEN the
  * `copilotOverageAllocation` lock (keyed on `${enterpriseId}:${month}`) —
@@ -41,8 +47,16 @@
  *     whole-month showback row — written for EVERY seat regardless of usage,
  *     which is exactly the roster seat-share needs and reconciliation_record,
  *     usage-driven, cannot provide).
+ *
+ * VERIFIED LOGINS ONLY. A weight homes on a Business Unit only when its GitHub
+ * login has a directory-sync or admin binding (this enterprise's lane of
+ * teammate_identity_map) to the same teammate. A login known only through the
+ * self-service lane (POST /me/identities, unverified) still shows as that
+ * person's usage, but its weight goes to the unallocated (NULL) bucket: anyone
+ * can claim a login, and a claim must not move a billed overage between units.
+ * An admin bind (map.post) verifies it and the next recompute homes it.
  */
-import { sql } from 'drizzle-orm'
+import { sql, type SQL } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { advisoryXactLock } from '../db/advisory-lock'
 import { recordAuditEvent, type AuditActor } from '../db/audit'
@@ -108,6 +122,17 @@ function makeAccumulator() {
   }
 }
 
+/** TRUE when `login` is bound to `teammateId` in this enterprise's directory/admin lane. */
+function enterpriseBoundSql(providerEnterpriseId: string, login: SQL, teammateId: SQL): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM teammate_identity_map m
+    JOIN provider_enterprise pe ON pe.id = ${providerEnterpriseId}::uuid
+    WHERE m.system = 'github'
+      AND lower(m.enterprise_slug) = lower(pe.external_id)
+      AND lower(m.identifier) = lower(${login})
+      AND m.teammate_id = ${teammateId})`
+}
+
 async function computeCopilotOverageAllocationWeights(tx: Tx, args: WeightArgs): Promise<Map<string | null, number>> {
   const { add, weights } = makeAccumulator()
 
@@ -115,15 +140,19 @@ async function computeCopilotOverageAllocationWeights(tx: Tx, args: WeightArgs):
     // The active-seat roster (weight = 1 per seat-holding teammate), NOT
     // usage-weighted — seat-share treats the pool as a shared facility cost.
     // DISTINCT ON collapses a teammate holding seats in >1 org under this
-    // enterprise to their single most-recently-written homing snapshot.
+    // enterprise to one seat; its login decides verification.
     const rows = await tx.execute<{ teammate_id: string; cost_owning_unit_id: string | null }>(sql`
-      SELECT DISTINCT ON (teammate_id) teammate_id::text AS teammate_id, cost_owning_unit_id::text AS cost_owning_unit_id
-      FROM actual_spend
-      WHERE category = 'seat-license'
-        AND provider_enterprise_id = ${args.providerEnterpriseId}::uuid
-        AND date_trunc('month', date)::date = ${args.month}::date
-        AND NOT chargeback_exempt
-      ORDER BY teammate_id, pulled_at DESC
+      SELECT DISTINCT ON (s.teammate_id) s.teammate_id::text AS teammate_id,
+             CASE WHEN ${enterpriseBoundSql(args.providerEnterpriseId, sql`s.raw_payload->>'login'`, sql`s.teammate_id`)}
+                  THEN c.cost_owning_unit_id::text END AS cost_owning_unit_id
+      FROM actual_spend s
+      JOIN teammate t ON t.id = s.teammate_id
+      LEFT JOIN v_org_unit_cost_owner c ON c.org_unit_id = t.org_unit_id
+      WHERE s.category = 'seat-license'
+        AND s.provider_enterprise_id = ${args.providerEnterpriseId}::uuid
+        AND date_trunc('month', s.date)::date = ${args.month}::date
+        AND NOT s.chargeback_exempt
+      ORDER BY s.teammate_id, s.pulled_at DESC
     `)
     for (const r of rows) add(r.cost_owning_unit_id, 1)
     return weights
@@ -135,6 +164,13 @@ async function computeCopilotOverageAllocationWeights(tx: Tx, args: WeightArgs):
   // 0086/0101) — one row per logical (provider, enterprise_ref, period_date,
   // category, scope, teammate) key, highest-precedence non-terminal status,
   // newest computed_at as tiebreak.
+  //
+  // Homed on the Business Unit of the teammate's CURRENT unit (see header), NULL
+  // when that unit has no cost-owning ancestor. `raw` is one adapter line, or an array of
+  // them when several lines merged on the conflict key: the row is verified only
+  // when every login in it is enterprise-bound. So a teammate with one bound and
+  // one self-only login on the same day is wholly Unallocated until an admin
+  // binds the second; totals still sum to the bill.
   const rows = await tx.execute<{
     teammate_id: string
     cost_owning_unit_id: string | null
@@ -145,16 +181,29 @@ async function computeCopilotOverageAllocationWeights(tx: Tx, args: WeightArgs):
     SELECT teammate_id::text AS teammate_id, cost_owning_unit_id::text AS cost_owning_unit_id,
            license_org, category, SUM(actual_usd)::text AS actual_usd
     FROM (
-      SELECT DISTINCT ON (r.provider, r.enterprise_ref, r.period_date, r.category, r.scope, r.teammate_id)
-        r.teammate_id, r.cost_owning_unit_id, r.license_org, r.category, r.actual_usd
-      FROM reconciliation_record r
-      WHERE r.provider = 'github' AND r.scope = 'teammate' AND r.teammate_id IS NOT NULL
-        AND r.provider_enterprise_id = ${args.providerEnterpriseId}::uuid
-        AND date_trunc('month', r.period_date)::date = ${args.month}::date
-        AND r.status NOT IN ('rejected', 'superseded')
-      ORDER BY r.provider, r.enterprise_ref, r.period_date, r.category, r.scope, r.teammate_id,
-               CASE r.status WHEN 'applied' THEN 0 WHEN 'proposed' THEN 1 ELSE 2 END, r.computed_at DESC
-    ) dedup
+      SELECT dedup.teammate_id, dedup.license_org, dedup.category, dedup.actual_usd,
+             CASE WHEN NOT EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(
+                      CASE jsonb_typeof(dedup.raw) WHEN 'array' THEN dedup.raw ELSE jsonb_build_array(dedup.raw) END
+                    ) AS line(v)
+                    WHERE NOT ${enterpriseBoundSql(args.providerEnterpriseId, sql`line.v->>'login'`, sql`dedup.teammate_id`)}
+                  )
+                  THEN c.cost_owning_unit_id END AS cost_owning_unit_id
+      FROM (
+        SELECT DISTINCT ON (r.provider, r.enterprise_ref, r.period_date, r.category, r.scope, r.teammate_id)
+          r.teammate_id, r.license_org, r.category, r.actual_usd, r.raw
+        FROM reconciliation_record r
+        WHERE r.provider = 'github' AND r.scope = 'teammate' AND r.teammate_id IS NOT NULL
+          AND r.provider_enterprise_id = ${args.providerEnterpriseId}::uuid
+          AND date_trunc('month', r.period_date)::date = ${args.month}::date
+          AND r.status NOT IN ('rejected', 'superseded')
+        ORDER BY r.provider, r.enterprise_ref, r.period_date, r.category, r.scope, r.teammate_id,
+                 CASE r.status WHEN 'applied' THEN 0 WHEN 'proposed' THEN 1 ELSE 2 END, r.computed_at DESC
+      ) dedup
+      JOIN teammate t ON t.id = dedup.teammate_id
+      LEFT JOIN v_org_unit_cost_owner c ON c.org_unit_id = t.org_unit_id
+    ) homed
     GROUP BY teammate_id, cost_owning_unit_id, license_org, category
   `)
 

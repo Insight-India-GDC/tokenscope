@@ -101,7 +101,7 @@
   <line class="e" x1="410" y1="251" x2="420" y2="251" marker-end="url(#ah)"/>
   <rect class="node" x="426" y="284" width="322" height="46" rx="6"/>
   <text class="tm" x="440" y="303">/api/v1/internal/run-worker/{name}</text>
-  <text class="s" x="440" y="320">HMAC-SHA256 · ±300 s · identical 401s</text>
+  <text class="s" x="440" y="320">HMAC-SHA256 · ±60 s · identical 401s</text>
   <line class="e" x1="410" y1="307" x2="420" y2="307" marker-end="url(#ah)"/>
   <rect class="node" x="426" y="344" width="214" height="40" rx="6"/>
   <text class="tm" x="440" y="361">caj-ts-* · 32 cron jobs</text>

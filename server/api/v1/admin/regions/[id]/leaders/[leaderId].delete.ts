@@ -3,18 +3,18 @@
  * leader (region derivation, mig 0068). Soft-revoke: the row keeps its
  * history (revoked_at/revoked_by); re-assignment later is a new row, which
  * the partial-unique index permits once the old one is revoked.
- * admin (region-scoped) / platform-admin.
+ * platform-admin only (see leaders.post.ts).
  */
 import { defineEventHandler, createError, getRequestIP, getHeader } from 'h3'
 import { sql } from 'drizzle-orm'
-import { requireRole, requireRegionScope } from '../../../../../../auth/rbac'
+import { requireRole } from '../../../../../../auth/rbac'
 import { assertSameOrigin } from '../../../../../../auth/csrf'
 import { withRequestRls } from '../../../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../../../db/audit'
 import { requireUuidParam } from '../../../../../../utils/require-uuid-param'
 
 export default defineEventHandler(async (event) => {
-  const caller = await requireRole(event, 'admin')
+  const caller = await requireRole(event, 'platform-admin')
   assertSameOrigin(event)
   const id = requireUuidParam(event, 'id', 'region id')
   const leaderId = requireUuidParam(event, 'leaderId', 'leader id')
@@ -29,7 +29,6 @@ export default defineEventHandler(async (event) => {
     if (!regionRow) {
       throw createError({ statusCode: 404, statusMessage: 'Region not found' })
     }
-    await requireRegionScope(event, id)
 
     // Soft-revoke by region_leader.id, scoped to the region in the path so a
     // leader id from another region can't be revoked through this region's URL.

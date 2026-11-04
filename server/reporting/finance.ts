@@ -18,20 +18,10 @@
  * and the Overage-Drivers per-teammate usage weight (`v_teammate_usage_daily` copilot
  * branch) — a §A DISPLAY weight, NEVER a charge (D-Q6 layer 3).
  *
- * HOMING (D-Homing = point-in-time) — CURRENT-ORG INTERIM. The canonical Anthropic
- * chargeback view homes teammate bill rows to their CURRENT org (mig 0059/0081); the
- * owner decision is point-in-time (home to the CoU AS-OF the billing month so a
- * teammate move never restates a closed month). Point-in-time teammate→CoU homing is
- * NOT cleanly derivable from existing data: `actual_spend` (the Anthropic bill, the
- * chargeback source of record) captures NO org dimension at bill time (only
- * teammate/date/tool/cost/source); there is NO teammate→org placement history table
- * (`teammate.org_unit_id` is overwritten in place by the placement workers); and
- * `spend_rollup_daily`'s point-in-time org context is the rate-carded USAGE lane, not
- * the bill, and is incomplete for un-enrolled days. So we consume the current-org
- * views AS-IS, label every finance surface "homed to current org structure", and the
- * report FLAGS point-in-time as needing a scoped org-history (SCD) follow-up. This is
- * acceptable for the build because chargeback MODE is separately gated on Wave-0
- * live-validation (`copilot.mode`); see build-design §0(5), risk 3, mig 0079 note.
+ * HOMING — CURRENT ORG. Every finance view groups a teammate's bill rows by where
+ * they sit NOW (mig 0059/0081 join teammate; the current-org lens,
+ * docs/design/current-org-lens/00-design.md, made every other report do the same).
+ * A reported month's own figures are finance's export, not a recomputation here.
  *
  * No reporting query here touches `attribution_record` or raw provider-bill tables
  * (the lane firewall, build-design §7(7) — test-enforced over `server/reporting/**`;
@@ -82,9 +72,9 @@ type Tx = PostgresJsDatabase<Record<string, unknown>>
 const GITHUB_LANE_SET: ReadonlySet<string> = new Set(GITHUB_FIREWALL_EXCLUSIONS)
 const GITHUB_CHARGEABLE_LANE_SET: ReadonlySet<string> = new Set(GITHUB_CHARGEABLE_LANES)
 
-/** On-surface homing disclosure (D-Homing interim — see the file header). */
+/** On-surface homing disclosure (see the file header). */
 export const HOMING_NOTE =
-  'Chargeback rows are homed to the current org structure. Point-in-time homing (charging to the CoU as-of the billing month, so a teammate move never restates a closed month) needs an org-history mechanism — a scoped follow-up.'
+  "Chargeback rows are homed to the current org structure: each person's charge is grouped by where they sit now. A reported month's own figures are finance's export."
 
 /**
  * The last COMPLETE calendar month (the month before `now`'s UTC month) as
@@ -415,7 +405,7 @@ export async function fetchFinanceExemptGap(
   const [usage] = [
     ...(await tx.execute<{ usage: string }>(sql`
       SELECT COALESCE(SUM(cost_usd), 0)::text AS usage
-      FROM v_complete_usage
+      FROM v_complete_usage_current
       WHERE ts_event >= ${range.startIso}::timestamptz
         AND ts_event <  ${range.endIso}::timestamptz
         AND (${region}::uuid IS NULL OR region_id = ${region}::uuid)`)),
@@ -471,7 +461,7 @@ export async function resolveFinanceCou(tx: Tx, couId: string): Promise<FinanceC
     WHERE ou.id = ${couId}::uuid AND ou.is_cost_owning_unit = TRUE AND ou.retired_at IS NULL
     LIMIT 1`)
   const cou = [...rows][0]
-  if (!cou) throw createError({ statusCode: 404, statusMessage: 'cost-owning unit not found' })
+  if (!cou) throw createError({ statusCode: 404, statusMessage: 'Business Unit not found' })
   return {
     id: cou.id,
     code: cou.code,

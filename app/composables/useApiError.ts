@@ -20,6 +20,25 @@ interface ApiErrorShape {
   message?: string
 }
 
+/**
+ * True only when the server answered and refused: a 4xx with a body. Then the
+ * change did not happen. Anything else (no response, a 5xx, a gateway timeout)
+ * and the client cannot know whether the change landed before it failed.
+ */
+export function isConfirmedRejection(err: unknown): boolean {
+  const e = err as { statusCode?: number; status?: number; data?: unknown } | null | undefined
+  const status = e?.statusCode ?? e?.status
+  return typeof status === 'number' && status >= 400 && status < 500 && e?.data != null
+}
+
+/**
+ * The text for a failed change: the server's own reason when it refused, else
+ * `unknown`, which must say the outcome is unknown and where to check it.
+ */
+export function mutationErrorDetail(err: unknown, rejectedFallback: string, unknown: string): string {
+  return isConfirmedRejection(err) ? apiErrorDetail(err, rejectedFallback) : unknown
+}
+
 export function apiErrorDetail(err: unknown, fallback: string): string {
   const e = err as ApiErrorShape | null | undefined
   return (

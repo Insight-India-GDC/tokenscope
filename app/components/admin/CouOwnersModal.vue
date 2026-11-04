@@ -9,7 +9,8 @@
  * The owner is typically 2-3 levels removed from the unit in the org chart and
  * may not have signed in yet — so the picker searches the Entra DIRECTORY (the
  * same people-picker as region leaders), not just existing teammates. Assigning a
- * directory person who isn't a teammate find-or-provisions them server-side.
+ * directory person who isn't a teammate find-or-provisions them server-side;
+ * only a platform admin may do that (a region admin gets the server's 403 detail).
  * Ownership grants the P&L view (/cost-centres); it does not change their role.
  */
 import { ref, watch } from 'vue'
@@ -158,7 +159,7 @@ watch(
           v-model="query"
           type="search"
           placeholder="Search the directory by name or email…"
-          class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+          class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
           data-testid="cou-owners-search"
           @input="search"
         >
@@ -262,7 +263,7 @@ watch(
             </li>
           </ul>
           <p v-else class="text-[12px] text-carbon-3 mt-2">
-            No owners yet — this centre's projects have no P&L viewer.
+            No owners yet — this Business Unit's projects have no P&L viewer.
           </p>
         </div>
       </div>

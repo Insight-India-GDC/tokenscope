@@ -73,6 +73,7 @@ import {
   DIMENSION_SOURCE_INGEST_SNAPSHOT,
 } from '../reconciliation/dimension-snapshot'
 import { recordAuditEvent } from '../db/audit'
+import { describeError } from '../utils/redact-probe-error'
 
 type Db = PostgresJsDatabase<typeof schema>
 
@@ -152,8 +153,8 @@ export function monthStartIso(now: Date): string {
  * ENTERPRISE lane wins (DISTINCT ON + `(enterprise_slug IS NULL) ASC`) — a self-link only ever
  * ADDS a login, never overrides the authoritative binding. Mirrors resolveGithubRoster in
  * server/reconciliation/adapters/github.ts (kept in lock-step — both feed Copilot attribution).
- * §A/§B CAVEAT: the self lane is estate-global + unverified — deliberate for §A showback, but
- * reconfirm before F2 makes Copilot §B chargeable (see resolveGithubRoster's fuller note). */
+ * The self lane is estate-global + unverified: §A showback only. The seat-share overage split
+ * reads these rows but homes a self-only seat as Unallocated (see resolveGithubRoster). */
 async function resolveRoster(db: Db, enterpriseSlug: string): Promise<Map<string, string>> {
   const rows = await db.execute<{ login: string; teammate_id: string }>(sql`
     SELECT DISTINCT ON (lower(identifier))
@@ -332,7 +333,7 @@ async function pullSeatRoster(
       rosterIncomplete = rosterIncomplete || pull.rosterIncomplete
     } catch (err) {
       orgsUnavailable += 1
-      consola.warn(`[copilot-bill] ${enterpriseSlug} App mode: seat pull failed for license org '${org}': ${String(err)}`)
+      consola.warn(`[copilot-bill] ${enterpriseSlug} App mode: seat pull failed for license org '${org}': ${describeError(err)}`)
     }
   }
   return { seats, pagesCapped, shortPageBreak, rosterIncomplete, orgsUnavailable }

@@ -154,8 +154,8 @@ function addConsumption(acc: Acc, value: number, counted: boolean): void {
  * surface it serves.
  *
  * SCOPE CLAMP: a §B (`finance`-lane) clamp addressing `(region_id,
- * cost_owning_unit_id)` — the columns `provider_usage_fact` stamps at ingest
- * (`0118:70-79`). The table is NOT aliased, so callers build their predicate as
+ * cost_owning_unit_id)` on `v_provider_usage_fact_current` — the person's current
+ * region and Business Unit. The view is NOT aliased, so callers build their predicate as
  * `scope.financeScope('region_id', 'cost_owning_unit_id')`; that is part of this
  * function's contract with them, exactly as `fetchDailyMetrics`' `u.` alias is
  * part of its own.
@@ -204,7 +204,7 @@ export async function fetchTierExposure(
                                OR output_tokens IS NOT NULL)::int                 AS token_rows,
            COALESCE(SUM(COALESCE(requests, 0)), 0)::text                          AS interactions,
            COUNT(*) FILTER (WHERE requests IS NOT NULL)::int                      AS interaction_rows
-    FROM provider_usage_fact
+    FROM v_provider_usage_fact_current
     WHERE ${scopeSql(scope)}
       AND date >= ${startDate}::date
       AND date <  ${endDate}::date

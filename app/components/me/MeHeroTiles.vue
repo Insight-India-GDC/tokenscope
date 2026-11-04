@@ -110,7 +110,7 @@ interface TileView {
   spark?: number[]
 }
 
-const chargebackSuffix = computed(() => (props.lane === 'chargeback' ? ' — §A in both lenses' : ''))
+const chargebackSuffix = computed(() => (props.lane === 'chargeback' ? ' — attributed usage in both lenses' : ''))
 
 /**
  * The spark's frame: the whole month, from the SERVER's window echo (F2/D7,

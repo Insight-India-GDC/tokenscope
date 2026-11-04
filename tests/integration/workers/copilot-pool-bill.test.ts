@@ -499,9 +499,14 @@ describe('copilot-pool-bill Wave-0 invariants', () => {
     // instead of couA. Seed ONE teammate's reconciliation_record row, homed to couA under this
     // enterprise — the ONLY org/teammate with activity this month, so 100% of the weight (and
     // therefore the overage) resolves back to couA, reproducing the pre-allocation split this
-    // test pins.
+    // test pins. The login is directory-bound: a self-only login would weigh as unallocated.
     const tm12 = await mkTeammate(couA)
+    await t.db.insert(schema.teammateIdentityMap).values({
+      teammateId: tm12, system: 'github', identifier: 'tm12-gh', identifierKind: 'username',
+      enterpriseSlug: ENT, source: 'directory-sync', verifiedAt: new Date(),
+    })
     await t.db.insert(schema.reconciliationRecord).values({
+      raw: { login: 'tm12-gh' },
       teammateId: tm12, provider: 'github', enterpriseRef: ENT, licenseOrg: 'acme',
       periodDate: '2026-06-10', category: 'copilot_interactive', scope: 'teammate',
       costOwningUnitId: couA, providerEnterpriseId: entId,

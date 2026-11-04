@@ -189,10 +189,11 @@ async function handleRefreshToken(
     return err(event, 400, 'invalid_request', 'refresh_token is required for refresh_token grant')
   }
 
-  const tokens = await refreshAccessToken(db, body.refresh_token, body.client_id)
+  const { teammateId, ...tokens } = await refreshAccessToken(db, body.refresh_token, body.client_id)
 
   await recordAuditEvent(db, {
     eventType: 'oauth_token_issue',
+    actorTeammateId: teammateId,
     actorSystem: 'oauth',
     subjectKind: 'oauth_client',
     payload: { client_id: body.client_id, grant_type: 'refresh_token', scope: tokens.scope },

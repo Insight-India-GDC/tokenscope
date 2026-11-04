@@ -34,6 +34,7 @@ import { sql, type SQL } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { recordAuditEvent } from '../db/audit'
 import { conversationKeyExpr, unallocatedConversationSpendExpr } from '../db/conversation-key'
+import { sessionTagXactLock } from '../db/advisory-lock'
 import { tagSessionTx } from './tag-session'
 import { tagUnaccountedTx } from './tag-unaccounted'
 import type { WorklistBulkBody, WorklistBulkResult } from '#shared/schemas/worklist'
@@ -114,7 +115,7 @@ export async function applyWorklistBulk(
   // lane by copying the other's mechanism; they are different because the
   // things being locked are different.
   for (const sid of [...sessions].sort()) {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${sid} || '|' || ${teammateId}::text))`)
+    await tx.execute(sessionTagXactLock(sid, teammateId))
   }
 
   // ── Ownership pre-flight (both kinds, before any write) ───────────────────

@@ -33,7 +33,7 @@ const breakLabel = computed(() => (props.check.unsettled ? 'unsettled' : 'does n
 
 <template>
   <section
-    class="bg-white rounded-xl border border-brand-harmony/[0.04] shadow-[0_4px_24px_rgba(88,40,115,0.08)] overflow-hidden"
+    class="bg-white rounded-xl border border-brand-harmony/[0.04] shadow-[var(--shadow-card)] overflow-hidden"
     data-testid="finance-bill-check"
     :data-matched="check.matched"
   >
@@ -48,7 +48,7 @@ const breakLabel = computed(() => (props.check.unsettled ? 'unsettled' : 'does n
       <div class="flex items-start justify-between gap-4 flex-wrap">
         <div class="min-w-0">
           <div class="text-[11px] font-bold uppercase tracking-[1.2px] text-carbon-3">
-            Σ chargeback = bill
+            Chargeback total = bill
           </div>
           <div class="mt-1.5 flex items-baseline gap-2.5 flex-wrap">
             <span class="text-[34px] leading-none font-extrabold tracking-[-1px] text-carbon tabular-nums">
@@ -120,7 +120,7 @@ const breakLabel = computed(() => (props.check.unsettled ? 'unsettled' : 'does n
         class="mt-2.5 text-[11px] text-carbon-3 italic leading-snug"
         data-testid="finance-bill-copilot-caption"
       >
-        Σ includes Copilot pooled net pending cutover ({{ fmtUsd(check.copilotChargebackUsd) }})
+        The total includes Copilot pooled net pending cutover ({{ fmtUsd(check.copilotChargebackUsd) }})
         not yet in the Chargeable column.
       </p>
     </div>

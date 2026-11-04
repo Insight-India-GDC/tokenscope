@@ -263,6 +263,24 @@ describe('runRegionReenrichment', () => {
     await t.client`DELETE FROM teammate WHERE id = ${tmId}::uuid`
   })
 
+  it('a placeholder in its region rule\'s region whose chain reaches another region\'s leader moves to that region', async () => {
+    await t.client`INSERT INTO region (id, code, display_name) VALUES (gen_random_uuid(), 'zz-led', 'ZZ Led') ON CONFLICT (code) DO NOTHING`
+    const [apac] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM region WHERE code='zz-led'`
+    await t.client`INSERT INTO region_leader (region_id, leader_oid, leader_email)
+      VALUES (${apac!.id}::uuid, 'oid-apac-leader', 'apac-leader@example.com')`
+    const store = makePlacementStore(t.db)
+    const tm = await store.createBillTeammate({
+      email: 'ruled-but-led@example.com', displayName: null,
+      orgUnitId: await store.unplacedOrgUnitIdForRegion(emeaId),
+    })
+    await runRegionReenrichment(t.db, {
+      lookupDirectory: enrich('EMEA Data & AI'),
+      getManager: async (oid) => (oid === 'oid-ruled-but-led@example.com' ? { oid: 'oid-apac-leader', email: null } : null),
+    })
+    expect(await regionCodeOf(tm)).toBe('zz-led')
+    await t.client`DELETE FROM region_leader WHERE leader_oid = 'oid-apac-leader'`
+  })
+
   it('an admin move clears provenance → re-enrichment does NOT revert it (admin authority wins)', async () => {
     const store = makePlacementStore(t.db)
     await t.client`INSERT INTO org_unit (region_id, path, code, display_name, unit_type, is_cost_owning_unit, cost_centre_code)

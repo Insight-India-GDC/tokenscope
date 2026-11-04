@@ -207,7 +207,7 @@ const emptyCopy = computed(() => {
       class="mt-2 text-[11px] leading-snug text-carbon-3"
       data-testid="model-split-lane-note"
     >
-      Σ billed <b class="text-carbon-2">{{ fmtUsd(denominatorUsd) }}</b> — the provider's bill,
+      Total billed <b class="text-carbon-2">{{ fmtUsd(denominatorUsd) }}</b> — the provider's bill,
       so it need not match the attributed headline above.
     </p>
   </div>

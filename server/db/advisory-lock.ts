@@ -36,8 +36,8 @@ import { sql, type SQL } from 'drizzle-orm'
  *
  *   - `server/auth/emit-provision.ts` → `issueInstanceEmitCredentialTx`, keyed on
  *     the instance id. It serialises the credential rotate→issue→bind sequence.
- *   - `server/utils/tag-session.ts`, `server/utils/worklist-bulk.ts` — unrelated
- *     concerns that never interleave with provisioning.
+ *   - `sessionTagXactLock` below (tag-session, worklist-bulk and the read joiner)
+ *     — unrelated to provisioning. Moving it has the same rolling-deploy hazard.
  *
  * Moving the first of those into the `instance` namespace would be tidier and is
  * NOT worth it: during a rolling deploy old and new replicas would hold keys in
@@ -216,4 +216,15 @@ export type GlobalCapDomain = keyof typeof GLOBAL_CAP_KEY
  */
 export function advisoryGlobalCapLock(domain: GlobalCapDomain): SQL {
   return sql`SELECT pg_advisory_xact_lock(${LOCK_NAMESPACE.globalCap}::int, ${GLOBAL_CAP_KEY[domain]}::int)`
+}
+
+/**
+ * The lock serialising writes to ONE (conversation, teammate) session's tags:
+ * tagSessionTx, the bulk worklist, and the read joiner's inserts (#475), so a
+ * tag commits either before a join reads it or after the joined rows exist.
+ * Single-argument form, deliberately outside LOCK_NAMESPACE: see the module
+ * comment. Take several in sorted order.
+ */
+export function sessionTagXactLock(conversationId: string, teammateId: string): SQL {
+  return sql`SELECT pg_advisory_xact_lock(hashtext(${conversationId} || '|' || ${teammateId}::text))`
 }

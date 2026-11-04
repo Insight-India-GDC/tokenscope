@@ -96,23 +96,25 @@ export async function runReconciliation(
     const gap = (actual - otel) / actual
 
     if (gap >= gapThreshold) {
-      // UNDER-attribution: some spend never got tagged → nudge the dev.
+      // UNDER-attribution: Anthropic reports more than the sessions we recorded
+      // (tagged OR untagged: the otel CTE does not filter on project), so this
+      // is missing telemetry, not missing tags → point the dev at emission.
       if (await hasOpenItem(db, r.teammate_id, 'untagged-backlog', monthStart)) continue
       await dispatchInbox(db, {
         category: 'untagged-backlog',
         severity: 'info',
-        subject: `OTel attribution gap: ${(gap * 100).toFixed(0)}% of your MTD spend isn't attributed`,
+        subject: `Unrecorded spend: ${(gap * 100).toFixed(0)}% of what Anthropic reports for you this month has no recorded session`,
         body: {
           anthropic_actual_usd: actual,
           otel_attributed_usd: otel,
           gap_pct: gap,
-          suggestion: 'Run the project MCP prompt in your repo to claim untagged sessions.',
+          suggestion: 'Check that your devices are sending usage (/tokenscope:status); a session that never reached TokenScope can be re-sent with /tokenscope:backfill.',
         },
         recipientTeammateIdHint: r.teammate_id,
       })
       flagged += 1
     } else if (gap <= -gapThreshold) {
-      // OVER-attribution (slice 11): reconciled-lane tagged spend EXCEEDS the
+      // OVER-attribution (slice 11): reconciled-lane recorded spend EXCEEDS the
       // authoritative Anthropic actual — a mis-tag or forgery. Flag + audit
       // (advisory; the poller actual is the ceiling, but we don't hard-cap).
       const overPct = -gap
@@ -120,12 +122,12 @@ export async function runReconciliation(
       await dispatchInbox(db, {
         category: 'over-attribution',
         severity: 'attention',
-        subject: `Over-attribution: tagged spend exceeds your actual Claude usage by ${(overPct * 100).toFixed(0)}%`,
+        subject: `Over-attribution: your recorded session spend exceeds what Anthropic reports for you by ${(overPct * 100).toFixed(0)}%`,
         body: {
           anthropic_actual_usd: actual,
           otel_attributed_usd: otel,
           over_pct: overPct,
-          note: 'Your reconciled-lane session→project tags add up to more than the authoritative Anthropic actual for this month. Review your tags — a session may be tagged to a project it does not belong to.',
+          note: 'Your recorded sessions add up to more than Anthropic reports for you this month. A session may be recorded under you that is not yours, or counted twice; check Recent sessions on My usage.',
         },
         recipientTeammateIdHint: r.teammate_id,
       })

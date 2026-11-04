@@ -626,11 +626,15 @@ export function transcodeSignalSpans(spans, opts = {}) {
  * @param {string|null} projectCodeHash — resolved project.code_hash (null → untagged)
  * @param {object} [opts]
  *   @param {string|null} [opts.githubOrg] — lowercased GitHub org for F2 keying.
+ *   @param {string|null} [opts.activity] — the folder's default activity (#475;
+ *     readFolderActivity), sent as `tokenscope.activity`. The server keeps it only
+ *     when it names a standard activity type.
  * @returns OTLP logs payload object suitable for encodeExportLogsServiceRequest()
  */
 export function buildCopilotOtlpPayload(logRecords, instanceId, projectCodeHash, opts = {}) {
   const resourceAttrs = [KV('tokenscope.instance_id', instanceId), KV('tool', 'copilot-cli')]
   if (projectCodeHash) resourceAttrs.push(KV('project.code_hash', projectCodeHash))
+  if (opts.activity) resourceAttrs.push(KV('tokenscope.activity', opts.activity))
   // Org stamp for F2 org→enterprise keying. Emitted as `github.org`; mirror it as
   // `github.repository` (the value is the org, the closest field name the joiner can
   // key on without a per-repo slug) so a KQL filter on either name resolves the org.

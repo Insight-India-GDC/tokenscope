@@ -216,10 +216,10 @@ function notDerivedGap(provider: string): ChargebackGap {
  *   caller that has not been taught about the toggle cannot silently start
  *   answering the other question.
  *
- * The lane is aliased `u` and clamps must address `u.region_id` / `u.org_unit_id`
+ * The lane is aliased `u` and clamps must address `u.`-qualified columns (`u.teammate_id`, `u.cost_owning_unit_id`)
  * — the same contract `fetchDailyMetrics` has with its callers, and load-bearing
  * rather than cosmetic here: three of the six branches JOIN a second relation, so
- * an unqualified `region_id` in a caller's predicate would be ambiguous rather
+ * an unqualified `teammate_id` in a caller's predicate would be ambiguous rather
  * than merely untidy.
  *
  * That contract is ALSO what lets the billed axes reuse the clamp VERBATIM
@@ -339,7 +339,7 @@ export async function fetchDrivers(
       gaps.push({
         provider: POOLED_CHARGEBACK_PROVIDER,
         reason:
-          'The pooled Copilot chargeback is pending validation (Σ=bill on Dev), so it is not in this figure — this is Anthropic’s charge alone.',
+          'The pooled Copilot chargeback is pending validation against the bill, so it is not in this figure — this is Anthropic’s charge alone.',
       })
     } else if (!isMonthAlignedWindow(range)) {
       /*
@@ -424,14 +424,14 @@ export async function fetchDrivers(
              u.tool AS tool, u.usage_provenance AS provenance,
              COALESCE(SUM(u.cost_usd), 0)::text AS value,
              ${TEAMMATE_DRILL_FACTS_AGG}
-      FROM usage_rollup_daily u JOIN teammate t ON t.id = u.teammate_id
+      FROM v_usage_rollup_current u JOIN teammate t ON t.id = u.teammate_id
       WHERE ${clamp} AND ${window}
       GROUP BY u.teammate_id, t.display_name, t.email, u.tool, u.usage_provenance`)
     /*
      * `is_active` and `provisional` ride the row for the DRILL CONTRACT
      * (developer pages D29/D34, r4-H2). They are the two conjuncts of
      * `teammateDrillAdmission` a client cannot infer: the row's own existence
-     * proves the emit-time homing, but a DEACTIVATED subject — and, since r3-H2,
+     * proves the in-frame row, but a DEACTIVATED subject — and, since r3-H2,
      * an UNCONFIRMED provisional shadow — still 403s at
      * `/reports/teammate/{id}`. Without them the name renders as a link that
      * cannot open, which is exactly the live-looking dead button the contract
@@ -495,7 +495,7 @@ export async function fetchDrivers(
     }>(sql`
       SELECT NULL::text AS key, NULL::text AS label, u.tool AS tool, u.usage_provenance AS provenance,
              COALESCE(SUM(u.cost_usd), 0)::text AS value
-      FROM usage_rollup_daily u
+      FROM v_usage_rollup_current u
       WHERE ${clamp} AND ${window}
       GROUP BY u.tool, u.usage_provenance`)
     // Fold straight into ONE aggregate (key is irrelevant here — every row
@@ -548,7 +548,7 @@ export async function fetchDrivers(
       ...(await tx.execute<Raw>(sql`
         SELECT u.region_id::text AS key, r.display_name AS label,
                COALESCE(SUM(u.cost_usd), 0)::text AS value, FALSE AS pooled
-        FROM usage_rollup_daily u LEFT JOIN region r ON r.id = u.region_id
+        FROM v_usage_rollup_current u LEFT JOIN region r ON r.id = u.region_id
         WHERE ${clamp} AND ${window}
         GROUP BY u.region_id, r.display_name
         ORDER BY SUM(u.cost_usd) DESC NULLS LAST`)),
@@ -559,7 +559,7 @@ export async function fetchDrivers(
         SELECT u.model AS key, u.model AS label, u.usage_provenance AS provenance,
                u.model_gap_reason AS gap_reason,
                COALESCE(SUM(u.cost_usd), 0)::text AS value, FALSE AS pooled
-        FROM usage_rollup_daily u
+        FROM v_usage_rollup_current u
         WHERE ${clamp} AND ${window}
         -- GROUP BY includes usage_provenance (R1-M3, mig 0101) AND
         -- model_gap_reason (mig 0124, r1-H5): after the fan-out, a NULL model
@@ -598,11 +598,11 @@ export async function fetchDrivers(
     }
     raws = [...byKey.values()].sort((a, b) => Number(b.value) - Number(a.value))
   } else {
-    // practice — the nearest cost-owning ancestor of each record's emit-home unit.
+    // practice — the nearest cost-owning ancestor of each person's CURRENT unit.
     raws = [
       ...(await tx.execute<Raw>(sql`
         SELECT cou.cost_owning_unit_id::text AS key, cou.cost_owning_unit_name AS label, COALESCE(SUM(u.cost_usd), 0)::text AS value, FALSE AS pooled
-        FROM usage_rollup_daily u
+        FROM v_usage_rollup_current u
         -- ONE cost-owner resolution (v_org_unit_cost_owner, mig 0114), not a
         -- correlated LATERAL per usage row. LEFT, so unhomed spend keeps its row.
         LEFT JOIN v_org_unit_cost_owner cou ON cou.org_unit_id = u.org_unit_id

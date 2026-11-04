@@ -17,8 +17,6 @@ import overGet from '../../../server/api/v1/me/over-emission.get'
 import resolveHandler from '../../../server/api/v1/me/over-emission/[id]/resolve.post'
 import { getWorker } from '../../../server/workers/registry'
 import inboxListHandler from '../../../server/api/v1/me/inbox/index.get'
-import inboxForwardHandler from '../../../server/api/v1/me/inbox/[id]/route.post'
-import { dispatchInbox } from '../../../server/notifications/dispatch'
 import { notifyEscalatedOverEmission } from '../../../server/notifications/over-emission'
 
 let t: TestDb
@@ -309,6 +307,54 @@ describe('over-emission (§A integrity)', () => {
     expect(Number(after!.cost)).toBeCloseTo(50, 2) // genuine un-enrolled usage now visible + taggable
   })
 
+  it('quarantining a conversation with NO claude_session_id (keyed by its instance) excludes its records too', async () => {
+    await bill('50.00')
+    await otelSession('sess-small', '50.00')
+    await t.db.insert(schema.attributionRecord).values({
+      instanceId, claudeSessionId: null, teammateId, regionId, orgUnitId,
+      tool: 'claude-code', model: 'opus', tokenType: 'output', tokens: 1000n, costUsd: '450.00',
+      fidelityTier: 'tier-1', costBasis: 'estimated', tsEvent: new Date(`${DAY}T13:00:00.000Z`), sourceRunId: randomUUID(),
+    })
+    await detectOverEmission(t.db, WINDOW)
+    const [flag] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM over_emission WHERE teammate_id = ${teammateId}::uuid`
+    const r = (await resolveHandler(ev({ id: flag!.id, body: { action: 'quarantine', conversation_id: instanceId } }) as never)) as { state: string }
+    expect(r.state).toBe('quarantined')
+
+    // The detector's corroborated OTel no longer counts it, so the over clears.
+    await detectOverEmission(t.db, WINDOW)
+    const [cleared] = await t.client<{ over: string }[]>`SELECT over_usd::text AS over FROM over_emission WHERE id = ${flag!.id}::uuid`
+    expect(Number(cleared!.over)).toBe(0)
+    // The §A read model drops it too: only sess-small's $50 remains on the OTel arm.
+    const [vcu] = await t.client<{ usd: string }[]>`
+      SELECT COALESCE(SUM(cost_usd), 0)::text AS usd FROM v_complete_usage
+       WHERE teammate_id = ${teammateId}::uuid AND usage_provenance = 'otel-emitted'`
+    expect(Number(vcu!.usd)).toBeCloseTo(50, 2)
+    const usage = await getMyUsage(t.db, teammateId, new Date(`${DAY}T13:00:01.000Z`))
+    expect(Number(usage.unallocated.untagged_cost_usd)).toBeCloseTo(50, 2)
+  })
+
+  it('quarantining over an existing heartbeat-coverage row takes the conversation\'s current figures, not the stale ones', async () => {
+    await bill('50.00'); await otelSession('sess-big', '450.00'); await otelSession('sess-small', '50.00')
+    await t.client`
+      INSERT INTO session_quarantine
+        (conversation_id, instance_id, teammate_id, region_id, org_unit_id,
+         session_ts_start, session_ts_end, instance_ts_start, cost_usd, tokens, reason)
+      VALUES ('sess-big', ${instanceId}::uuid, ${teammateId}::uuid, ${regionId}::uuid, ${orgUnitId}::uuid,
+              '2026-06-01T00:00:00Z', '2026-06-01T00:00:01Z', '2026-06-01T00:00:00Z', 1.00, 1, 'no-covering-heartbeat')`
+    await detectOverEmission(t.db, WINDOW)
+    const [flag] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM over_emission WHERE teammate_id = ${teammateId}::uuid`
+    await resolveHandler(ev({ id: flag!.id, body: { action: 'quarantine', conversation_id: 'sess-big' } }) as never)
+    const rows = await t.client<{ reason: string; cost: string; tokens: string; start: string }[]>`
+      SELECT reason, cost_usd::text AS cost, tokens::text AS tokens,
+             (session_ts_start AT TIME ZONE 'UTC')::date::text AS start
+        FROM session_quarantine WHERE teammate_id = ${teammateId}::uuid AND conversation_id = 'sess-big'`
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.reason).toBe('api-uncorroborated')
+    expect(Number(rows[0]!.cost)).toBeCloseTo(450, 2)
+    expect(rows[0]!.tokens).toBe('1000')
+    expect(rows[0]!.start).toBe(DAY)
+  })
+
   it('accept keeps the OTel (dev vouches for it) and resolves the flag', async () => {
     await bill('50.00'); await otelSession('sess-x', '450.00'); await otelSession('sess-y', '50.00')
     await detectOverEmission(t.db, WINDOW)
@@ -543,13 +589,32 @@ describe('escalated flags reach the region admins', () => {
     expect(body).not.toHaveProperty('apiUsd')
   })
 
-  it('a flag with no region goes to the platform admins only, framed on the whole company', async () => {
+  // Current-org lens (§3.2): a notice reaches the admins of the region the teammate sits in
+  // NOW; the flag's own region_id is the stamp at detection and is not read.
+  it('routes to the teammate\'s current region, not the region stamped on the flag', async () => {
     const flagId = await escalatedFlag()
-    await t.client`UPDATE over_emission SET region_id = NULL WHERE id = ${flagId}::uuid`
+    const [other] = await t.client<{ region: string; unit: string }[]>`
+      SELECT region_id::text AS region, id::text AS unit FROM org_unit WHERE code = 'oe-other-bu'`
+    await t.client`UPDATE over_emission SET region_id = ${other!.region}::uuid WHERE id = ${flagId}::uuid`
     await getWorker('usage-reconciliation')!.run(t.db)
     const rows = await items(flagId)
-    expect(rows.map((r) => r.recipient)).toEqual([platformAdmin])
-    expect(new URL(String(rows[0]!.body.actionHref), 'http://x').searchParams.get('src')).toBe('across')
+    expect(rows.map((r) => r.recipient).sort()).toEqual([regionAdmin, platformAdmin].sort())
+    expect(new URL(String(rows[0]!.body.actionHref), 'http://x').searchParams.get('src')).toBe(`region:${regionId}`)
+  })
+
+  it('follows a teammate who has moved region since the flag was raised', async () => {
+    const flagId = await escalatedFlag()
+    const [other] = await t.client<{ region: string; unit: string }[]>`
+      SELECT region_id::text AS region, id::text AS unit FROM org_unit WHERE code = 'oe-other-bu'`
+    await t.client`UPDATE teammate SET region_id = ${other!.region}::uuid, org_unit_id = ${other!.unit}::uuid WHERE id = ${teammateId}::uuid`
+    try {
+      await getWorker('usage-reconciliation')!.run(t.db)
+    } finally {
+      await t.client`UPDATE teammate SET region_id = ${regionId}::uuid, org_unit_id = ${orgUnitId}::uuid WHERE id = ${teammateId}::uuid`
+    }
+    const rows = await items(flagId)
+    expect(rows.map((r) => r.recipient).sort()).toEqual([otherRegionAdmin, platformAdmin].sort())
+    expect(new URL(String(rows[0]!.body.actionHref), 'http://x').searchParams.get('src')).toBe(`region:${other!.region}`)
   })
 
   it('notifies once per escalation, and again after the flag is re-opened and escalated again', async () => {
@@ -605,10 +670,6 @@ describe('escalated flags reach the region admins', () => {
     ((await inboxListHandler(adminEv(who, { method: 'GET', url: '/api/v1/me/inbox?category=over-emission-escalated' }) as never)) as {
       items: { id: string; category: string }[]
     }).items
-  const deny = async (who: string) =>
-    (await t.client<{ id: string }[]>`
-      INSERT INTO report_access_grant (teammate_id, permission, granted_by)
-      VALUES (${who}::uuid, 'revoke-all', ${platformAdmin}::uuid) RETURNING id::text AS id`)[0]!.id
 
   it('the inbox list route serves the Over-emission filter the inbox page sends (was a 400)', async () => {
     await escalatedFlag()
@@ -616,57 +677,6 @@ describe('escalated flags reach the region admins', () => {
     const items = await listAs(regionAdmin)
     expect(items.length).toBe(1)
     expect(items.every((i) => i.category === 'over-emission-escalated')).toBe(true)
-  })
-
-  it('a deny granted after delivery hides the notice already sent, and lifting it shows it again', async () => {
-    await escalatedFlag()
-    await getWorker('usage-reconciliation')!.run(t.db)
-    const g = await deny(regionAdmin)
-    try {
-      expect(await listAs(regionAdmin)).toHaveLength(0)
-      await t.client`UPDATE report_access_grant SET revoked_at = now(), revoked_by = ${platformAdmin}::uuid WHERE id = ${g}::uuid`
-      expect(await listAs(regionAdmin)).toHaveLength(1)
-    } finally {
-      await t.client`DELETE FROM report_access_grant WHERE id = ${g}::uuid`
-    }
-  })
-
-  it('report data is not forwarded by, or to, an admin with a deny', async () => {
-    await escalatedFlag()
-    await getWorker('usage-reconciliation')!.run(t.db)
-    const [item] = await listAs(platformAdmin)
-    const g = await deny(regionAdmin)
-    try {
-      const forward = (from: string, to: string) =>
-        inboxForwardHandler(adminEv(from, { method: 'POST', url: `/api/v1/me/inbox/${item!.id}/route`, params: { id: item!.id }, body: { recipient_teammate_id: to } }) as never)
-      await expect(forward(platformAdmin, regionAdmin)).rejects.toMatchObject({ statusCode: 403 })
-      // Nor to an admin of another region.
-      await expect(forward(platformAdmin, otherRegionAdmin)).rejects.toMatchObject({ statusCode: 403 })
-      // Nor to a teammate outside the roles these notices go to, deny or not.
-      await t.client`DELETE FROM report_access_grant WHERE id = ${g}::uuid`
-      await expect(forward(platformAdmin, teammateId)).rejects.toMatchObject({ statusCode: 403 })
-    } finally {
-      await t.client`DELETE FROM report_access_grant WHERE id = ${g}::uuid`
-    }
-  })
-
-  it('the billing notices (copilot-bill-*) skip a denied admin too', async () => {
-    const g = await deny(regionAdmin)
-    try {
-      await dispatchInbox(t.db as never, {
-        category: 'copilot-bill-unclassified',
-        subject: 'Unclassified Copilot spend',
-        body: { amountUsd: 12 },
-        regionId,
-      } as never)
-      const to = await t.client<{ r: string }[]>`
-        SELECT recipient_teammate_id::text AS r FROM inbox_item WHERE category = 'copilot-bill-unclassified'`
-      expect(to.map((x) => x.r)).not.toContain(regionAdmin)
-      expect(to.map((x) => x.r)).toContain(platformAdmin)
-    } finally {
-      await t.client`DELETE FROM report_access_grant WHERE id = ${g}::uuid`
-      await t.client`DELETE FROM inbox_item WHERE category = 'copilot-bill-unclassified'`
-    }
   })
 
   it('a sweep escalation is marked as the system\'s, not the developer\'s', async () => {
@@ -681,36 +691,25 @@ describe('escalated flags reach the region admins', () => {
     expect(rows[0]!.body.escalatedBy).toBe('system')
   })
 
-  it('an admin with an active report-access deny is not sent the teammate\'s figures', async () => {
-    const [g] = await t.client<{ id: string }[]>`
-      INSERT INTO report_access_grant (teammate_id, permission, granted_by)
-      VALUES (${regionAdmin}::uuid, 'revoke-all', ${platformAdmin}::uuid) RETURNING id::text AS id`
-    try {
-      const flagId = await escalatedFlag()
-      await getWorker('usage-reconciliation')!.run(t.db)
-      expect((await items(flagId)).map((r) => r.recipient)).toEqual([platformAdmin])
-    } finally {
-      await t.client`DELETE FROM report_access_grant WHERE id = ${g!.id}::uuid`
-    }
-  })
-
   it('flags with no recipient do not hold the queue for flags that have one', async () => {
     const flagId = await escalatedFlag()
-    // Older escalations nobody can receive: in a region with no admin, and
-    // with every platform admin denied.
+    // Older escalations nobody can receive: for a teammate who sits in a region
+    // with no admin, and with the only platform admin inactive.
     const [lonely] = await t.db.insert(schema.region).values({ code: 'oe-lonely', displayName: 'Lonely' }).returning()
+    const [lonelyOu] = await t.db.insert(schema.orgUnit).values({ regionId: lonely!.id, path: 'oe_lonely', code: 'oe-lonely-bu', displayName: 'Lonely', unitType: 'bu', isCostOwningUnit: true }).returning()
+    const [lonelyDev] = await t.db.insert(schema.teammate).values({ entraOid: 'oid-oe-lonely', email: 'lonely@x.test', regionId: lonely!.id, orgUnitId: lonelyOu!.id }).returning()
     const stale = await t.client<{ id: string }[]>`
       INSERT INTO over_emission (teammate_id, region_id, day, tool, otel_usd, api_usd, over_usd, state, resolved_at)
-      SELECT ${teammateId}::uuid, ${lonely!.id}::uuid, ('2026-01-01'::date + g), 'claude-code', 10, 0, 10, 'escalated', now() - interval '30 days'
+      SELECT ${lonelyDev!.id}::uuid, ${lonely!.id}::uuid, ('2026-01-01'::date + g), 'claude-code', 10, 0, 10, 'escalated', now() - interval '30 days'
       FROM generate_series(1, 3) g
       RETURNING id::text AS id`
-    const g = await deny(platformAdmin)
+    await t.client`UPDATE teammate SET is_active = false WHERE id = ${platformAdmin}::uuid`
     try {
       const out = await notifyEscalatedOverEmission(t.db as never, { limit: 1, scanLimit: 10 })
       expect(out.notified).toBe(1)
       expect((await items(flagId)).map((r) => r.recipient)).toEqual([regionAdmin])
     } finally {
-      await t.client`DELETE FROM report_access_grant WHERE id = ${g}::uuid`
+      await t.client`UPDATE teammate SET is_active = true WHERE id = ${platformAdmin}::uuid`
       await t.client`DELETE FROM over_emission WHERE id IN ${t.client(stale.map((s) => s.id))}`
     }
   })

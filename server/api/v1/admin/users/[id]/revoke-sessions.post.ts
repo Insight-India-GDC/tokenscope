@@ -7,11 +7,11 @@
  *   b) assertSameOrigin — block cross-origin POST CSRF.
  *   c) Validate path UUID + optional body.reason (z.string().max(200)).
  *   d) Inside ONE withRequestRls transaction:
- *      - SELECT target row (id, region_id, email) — 404 on miss.
+ *      - SELECT target row (id, region_id, email, role) — 404 on miss.
  *      - requireRegionScope on the target row's region (admin caller is
  *        bounded to their home region; platform-admin is unbounded).
- *      - evaluateRevokeSessions(caller, target) — pure decision (Wave VII
- *        currently always allows, but the gate point exists for future).
+ *      - evaluateRevokeSessions(caller, target) — refuses a region admin
+ *        acting on a higher-role holder (403).
  *      - recordAuditEvent (eventType='teammate-sessions-revoked',
  *        payload={ reason, byUser:false, ... }).
  *      - UPDATE teammate SET revoked_at = NOW(), emit_revoked_at = NOW().
@@ -41,6 +41,7 @@ import { withRequestRls } from '../../../../../db/request-rls'
 import { evaluateRevokeSessions } from '../../../../../auth/admin-guards'
 import { recordAuditEvent } from '../../../../../db/audit'
 import { endLiveDevicesOf } from '../../../../../utils/device-lifecycle'
+import type { Role } from '../../../../../../shared/auth/roles'
 
 // Body shape: { reason?: string } where reason is bounded to 200 chars.
 // The body is intentionally optional — an operator-driven revoke from
@@ -55,6 +56,7 @@ interface TargetRow extends Record<string, unknown> {
   id: string
   region_id: string
   email: string
+  role: Role
 }
 
 export default defineEventHandler(async (event) => {
@@ -102,7 +104,7 @@ export default defineEventHandler(async (event) => {
 
   await withRequestRls(event, async (tx) => {
     const targetRows = await tx.execute<TargetRow>(sql`
-      SELECT id::text AS id, region_id::text AS region_id, email
+      SELECT id::text AS id, region_id::text AS region_id, email, role
       FROM teammate WHERE id = ${teammateId}::uuid LIMIT 1
     `)
     const target = [...targetRows][0]
@@ -125,7 +127,7 @@ export default defineEventHandler(async (event) => {
 
     const verdict = evaluateRevokeSessions(
       { role: caller.role, teammateId: caller.teammateId },
-      { id: target.id, regionId: target.region_id },
+      { id: target.id, regionId: target.region_id, role: target.role },
     )
     if (!verdict.allowed) {
       throw createError({

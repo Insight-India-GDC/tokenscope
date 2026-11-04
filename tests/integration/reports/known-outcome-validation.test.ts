@@ -17,7 +17,6 @@
  * All three are correct-BY-DESIGN and different-by-design — see the assertions below.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { sql } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { startTestDb, stopTestDb, type TestDb } from '../helpers/db'
 import { buildUsageRollup } from '../helpers/usage-rollup'
@@ -39,7 +38,6 @@ import {
   completeOneProjectSpend,
   completeProjectSpend,
   completeProjectSpendByActivity,
-  completeProjectSpendRanked,
 } from '../../../server/usage/complete-spend'
 import {
   fetchAcrossKpis,
@@ -238,10 +236,10 @@ describe('cost-centre burn — §A, homed by the tagged project cost_owning_unit
 // COST-CENTRE → PROJECT sum-back, ONE lane (consistency contract §6.3)
 //
 // The third node pair. Every project figure here comes from `completeProjectSpend`
-// — THE definition the project header, the /projects cards, the budget editor,
-// the manager rollup and the budget alert all call — and the cost-centre figure
+// — THE definition the project header, the /projects cards, the budget editor
+// and the budget alert all call — and the cost-centre figure
 // comes from the production `fetchCostCentreCards`. Same lane, same window, same
-// options on both sides: if any ONE of those five sites is reverted to
+// options on both sides: if any ONE of those four sites is reverted to
 // `attribution_aggregate` or `attribution_record`, its number stops matching the
 // figure asserted here and the identity below stops closing.
 //
@@ -409,62 +407,6 @@ describe('cost-centre → project sum-back on the §A lane', () => {
     const residual = await completeCostCentreProjectResidual(tx, ids.uApacDelivery, MAR, OPTS)
     expect(residual.untaggedUsd).toBeCloseTo(18, 6)
     expect(residual.ingestOnlyUsd).toBeCloseTo(33, 6) // the term it must not swallow
-  })
-
-  it('RANKING and LIMIT happen in the DATABASE, not after the round trip', async () => {
-    /*
-     * The manager rollup renders the top 100 projects of an org subtree. It used
-     * to SELECT every scoped project, ship the ids back, scan the lane for all
-     * of them and then `.sort().slice(0, 100)` in JS — the work of the whole
-     * subtree to render one page of it.
-     *
-     * `completeProjectSpendRanked` takes the scope PREDICATE and returns only
-     * the page. Because the truncation happens before the rows leave Postgres,
-     * a wrong ORDER BY cannot be repaired by the caller: the rows the caller
-     * never received are the proof.
-     */
-    const apacScope = sql`p.region_id = ${ids.regionApac}::uuid`
-    // March: deliveryx 165 > scholarship 91 > atlas 80. Three APAC projects,
-    // three distinct figures, so every position in the ranking is falsifiable.
-    const top2 = await completeProjectSpendRanked(tx, MAR, {
-      projectScope: apacScope,
-      limit: 2,
-      ...OPTS,
-    })
-    expect(top2.map((r) => r.code)).toEqual(['PROJ-DELIVERYX', 'PROJ-SCHOLARSHIP'])
-    expect(top2[0]!.costUsd).toBeCloseTo(165, 6)
-    expect(top2[0]!.otelUsd).toBeCloseTo(120, 6)
-    expect(top2[0]!.reconciledUsd).toBeCloseTo(45, 6)
-    expect(top2[1]!.costUsd).toBeCloseTo(91, 6)
-    // The limit is a LIMIT: atlas is not in the payload at all, so no amount of
-    // client-side sorting could recover it.
-    expect(top2).toHaveLength(2)
-
-    const all = await completeProjectSpendRanked(tx, MAR, {
-      projectScope: apacScope,
-      limit: 50,
-      ...OPTS,
-    })
-    expect(all.map((r) => r.code)).toEqual([
-      'PROJ-DELIVERYX',
-      'PROJ-SCHOLARSHIP',
-      'PROJ-ATLAS',
-    ])
-  })
-
-  it('a funded project with NO spend still appears, at 0, sorted last', async () => {
-    // An inner join to the lane would silently delete it — and a manager's
-    // project table exists precisely to show budget against spend, including the
-    // budget nothing has been spent against yet. Atlas has no MAY spend.
-    const may = await completeProjectSpendRanked(tx, WIN, {
-      projectScope: sql`p.region_id = ${ids.regionApac}::uuid`,
-      limit: 50,
-      ...OPTS,
-    })
-    const atlas = may.find((r) => r.code === 'PROJ-ATLAS')
-    expect(atlas, 'a zero-spend project must not vanish from the ranking').toBeDefined()
-    expect(atlas!.costUsd).toBeCloseTo(0, 6)
-    expect(may[may.length - 1]!.code).toBe('PROJ-ATLAS')
   })
 
   it('ACTIVITY reaches the project mix from BOTH taggable arms (mig 0113)', async () => {

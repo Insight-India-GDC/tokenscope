@@ -22,7 +22,7 @@ import { consola } from 'consola'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { resolveEnterpriseCredential } from './credentials'
 import type { CredentialKind } from './credentials'
-import { resolveGithubRoster } from './adapters/github'
+import { resolveGithubRoster, resolveGithubSelfOnlyLogins } from './adapters/github'
 import { GithubCopilotClient } from './adapters/github-client'
 import { GithubAppAuth } from './adapters/github-app-auth'
 import type { GithubEnterpriseRow } from './github-health'
@@ -53,6 +53,10 @@ export interface UnresolvedCopilotLogin {
    * on a decoration). */
   profileName: string | null
   profileEmail: string | null
+  /** Email of the teammate who self-claimed this login, when that is its only binding. The
+   *  reconciler attributes its usage to them, but its billed overage stays Unallocated until an
+   *  admin binds it. NULL for a login nobody has claimed. */
+  selfClaimedBy: string | null
 }
 
 export interface UnresolvedCopilotResult {
@@ -126,7 +130,7 @@ export interface ListUnresolvedOpts {
 /*
  * List the UNRESOLVED github Copilot logins for one enterprise: those the live roster reports
  * with Copilot spend/seats but which resolveGithubRoster (both lanes) does NOT map to a
- * teammate. Throws UnresolvedProbeError (a FIXED reason bucket) on a credential/roster/upstream
+ * teammate, plus those it maps only through an unverified self-claim. Throws UnresolvedProbeError (a FIXED reason bucket) on a credential/roster/upstream
  * failure so the route can surface a clean, key-safe status — it NEVER returns a partial/empty
  * list that would read as "no unresolved users" when the probe actually failed.
  */
@@ -161,13 +165,17 @@ export async function listUnresolvedCopilotLogins(
   }
 
   // 2. Roster (the identity-map DB read). A failure here is OUR side — surface probe-error
-  //    rather than an empty roster that would fabricate "everyone is unresolved".
+  //    rather than an empty roster that would fabricate "everyone is unresolved". A login the
+  //    roster resolves only through a self-claim stays listed, flagged with its claimant.
   let roster: Map<string, string>
+  let selfOnly: Map<string, string>
   try {
     roster = await rosterReader(db, ent.externalId)
+    selfOnly = await resolveGithubSelfOnlyLogins(db, ent.externalId)
   } catch {
     throw new UnresolvedProbeError('roster-unavailable', 'identity roster read failed')
   }
+  const isResolved = (key: string) => roster.has(key) && !selfOnly.has(key)
 
   // 3. Live roster → diff. Dedup per lowercased login (a login can hold seats in >1 org);
   //    keep the FIRST-seen context. Sorted by login for a stable UI.
@@ -180,8 +188,8 @@ export async function listUnresolvedCopilotLogins(
       for (const { login, credits } of rows) {
         if (!login) continue
         const key = login.toLowerCase()
-        if (roster.has(key) || byLogin.has(key)) continue
-        byLogin.set(key, { login, licenseOrg: null, credits: Number.isFinite(credits) ? credits : 0, lastSeenDay: probeDay, profileName: null, profileEmail: null })
+        if (isResolved(key) || byLogin.has(key)) continue
+        byLogin.set(key, { login, licenseOrg: null, credits: Number.isFinite(credits) ? credits : 0, lastSeenDay: probeDay, profileName: null, profileEmail: null, selfClaimedBy: selfOnly.get(key) ?? null })
       }
     } else {
       const seats = await client.listSeats!()
@@ -189,8 +197,8 @@ export async function listUnresolvedCopilotLogins(
         const login = seat.assignee?.login
         if (!login) continue
         const key = login.toLowerCase()
-        if (roster.has(key) || byLogin.has(key)) continue
-        byLogin.set(key, { login, licenseOrg: seat.organization?.login ?? null, credits: null, lastSeenDay: null, profileName: null, profileEmail: null })
+        if (isResolved(key) || byLogin.has(key)) continue
+        byLogin.set(key, { login, licenseOrg: seat.organization?.login ?? null, credits: null, lastSeenDay: null, profileName: null, profileEmail: null, selfClaimedBy: selfOnly.get(key) ?? null })
       }
     }
   } catch (err) {

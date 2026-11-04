@@ -29,7 +29,7 @@ defineProps<{
     <p class="text-[12px] text-carbon-3 max-w-[24rem]">
       This view is usage-only — switch to <span class="font-semibold">Usage</span> to see it.
     </p>
-    <p class="text-[11px] text-carbon-3/80">The chargeback (§B) lane has no daily / token / model grain.</p>
+    <p class="text-[11px] text-carbon-3">The chargeback lens has no daily, token or model breakdown.</p>
   </div>
 </template>
 

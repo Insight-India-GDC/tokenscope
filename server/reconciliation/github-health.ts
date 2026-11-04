@@ -28,7 +28,7 @@ import { sql } from 'drizzle-orm'
 import { resolveEnterpriseCredential, MissingGithubAppKeyError } from './credentials'
 import { GithubCopilotClient } from './adapters/github-client'
 import { GithubAppAuth, type FetchLike } from './adapters/github-app-auth'
-import { resolveGithubRoster } from './adapters/github'
+import { resolveGithubRoster, resolveGithubSelfOnlyLogins } from './adapters/github'
 import { resilientFetch, type ResilientFetchOptions } from '../utils/resilient-fetch'
 import type { CredentialKind } from './credentials'
 import { loadPersistedEnterpriseCoverage } from './coverage-store'
@@ -101,8 +101,12 @@ export interface StageResult {
 export interface LicensesStage extends StageResult {
   /** Consumed licenses (App) / seats (PAT) returned, when ok. */
   count?: number
-  /** How many of those logins map to a Dev teammate via the identity roster. */
+  /** How many of those logins map to a teammate through a VERIFIED binding (directory sync or
+   *  an admin) for this enterprise. Self-claimed logins are not counted here (#451). */
   rosterMatched?: number
+  /** How many of those logins map to a teammate ONLY through the teammate's own unverified
+   *  claim. Their billed overage stays Unallocated until an admin binds them. */
+  selfClaimed?: number
   /** App-mode-only, key-safe remediation hint when the per-org externalIdentities endpoint is
    *  auth-denied (the org token minted but the ENDPOINT 401/403'd — organization_administration
    *  read likely missing). */
@@ -111,7 +115,7 @@ export interface LicensesStage extends StageResult {
 export interface MetricsStage extends StageResult {
   /** Per-user records (App) / usage items for the probed login (PAT) returned, when ok. */
   recordCount?: number
-  /** How many of those returned records map to a teammate. */
+  /** How many of those returned records map to a teammate through a verified binding. */
   matchedRecords?: number
   /** True when the stage was NOT attempted (no roster-matched login to read, or the
    *  licenses stage already failed with a doomed egress/rate-limit reason — L5). */
@@ -483,6 +487,9 @@ export interface ComputeGithubHealthOpts {
   probeClient?: ProbeClientFactory
   /** login(lowercased) → teammateId roster. Defaults to resolveGithubRoster. */
   resolveRoster?: (db: Db, enterpriseRef: string) => Promise<Map<string, string>>
+  /** login(lowercased) → claimant email, for logins bound ONLY by a self-claim. Defaults to
+   *  resolveGithubSelfOnlyLogins (the same read the Unresolved Copilot users queue uses). */
+  resolveSelfOnly?: (db: Db, enterpriseRef: string) => Promise<Map<string, string>>
   /** App mode: resolve ALL onboarded license orgs (provider_org), deterministically ordered. The
    *  licenses stage picks a seat-bearing representative from these (chooseRepresentativeLicenseOrg)
    *  for its externalIdentities read. Defaults to the provider_org query. Empty ⇒ no orgs onboarded. */
@@ -522,6 +529,7 @@ export async function computeGithubEnterpriseHealthStages(
   const resolveCredential = opts.resolveCredential ?? resolveEnterpriseCredential
   const buildClient = opts.probeClient ?? realProbeClient
   const rosterReader = opts.resolveRoster ?? resolveGithubRoster
+  const selfOnlyReader = opts.resolveSelfOnly ?? resolveGithubSelfOnlyLogins
   const licenseOrgsReader = opts.resolveLicenseOrgs ?? listOnboardedLicenseOrgs
   const deadlineMs = opts.stageDeadlineMs ?? STAGE_DEADLINE_MS
   const probeDay = githubProbeDay(now)
@@ -584,11 +592,17 @@ export async function computeGithubEnterpriseHealthStages(
   // credentialOk=true (NEW-L1): the credential DID resolve — the ✗ belongs to the later
   // stages, not the credential line.
   let roster: Map<string, string>
+  let selfOnly: Map<string, string>
   try {
     roster = await rosterReader(db, ent.externalId)
+    selfOnly = await selfOnlyReader(db, ent.externalId)
   } catch {
     return preProbe('probe-internal-error', true, true)
   }
+  // "Matched" means verified (#451): a login the roster resolves only through the teammate's own
+  // claim is not trusted for the billed split, so it is reported separately, never as matched.
+  // The full roster still picks the PAT metrics probe login: any bound login proves the read.
+  const verified = new Map([...roster].filter(([login]) => !selfOnly.has(login)))
 
   const stages: GithubEnterpriseHealth['stages'] = {
     credential: { ok: true },
@@ -630,8 +644,7 @@ export async function computeGithubEnterpriseHealthStages(
       try {
         const logins = (await withDeadline(client.listSamlIdentities!(probeOrg), deadlineMs, 'externalIdentities')).map((i) => i.login)
         stages.appAuth = { ok: true }
-        const rosterMatched = countMatched(logins, roster)
-        stages.licenses = { ok: true, count: logins.length, rosterMatched }
+        stages.licenses = { ok: true, count: logins.length, rosterMatched: countMatched(logins, verified), selfClaimed: countMatched(logins, selfOnly) }
         matchedLogins = logins.filter((l) => roster.has(l.toLowerCase()))
       } catch (err) {
         const reason = classify(err)
@@ -647,8 +660,7 @@ export async function computeGithubEnterpriseHealthStages(
   } else {
     try {
       const logins = (await withDeadline(client.listSeats!(), deadlineMs, 'seats')).map((s) => s.assignee.login)
-      const rosterMatched = countMatched(logins, roster)
-      stages.licenses = { ok: true, count: logins.length, rosterMatched }
+      stages.licenses = { ok: true, count: logins.length, rosterMatched: countMatched(logins, verified), selfClaimed: countMatched(logins, selfOnly) }
       matchedLogins = logins.filter((l) => roster.has(l.toLowerCase()))
     } catch (err) {
       stages.licenses = { ok: false, reason: classify(err) }
@@ -683,15 +695,16 @@ export async function computeGithubEnterpriseHealthStages(
       if (appMode) {
         const rows = await withDeadline(client.getUserDailyCredits!(probeDay), deadlineMs, 'users-1-day')
         const logins = rows.map((r) => r.login)
-        stages.metrics = { ok: true, recordCount: logins.length, matchedRecords: countMatched(logins, roster) }
+        stages.metrics = { ok: true, recordCount: logins.length, matchedRecords: countMatched(logins, verified) }
       } else {
-        const probeLogin = matchedLogins[0]
+        // A verified login first, so matchedRecords counts only what a verified binding attributes.
+        const probeLogin = matchedLogins.find((l) => verified.has(l.toLowerCase())) ?? matchedLogins[0]
         if (probeLogin) {
           const usage = await withDeadline(client.getAiCreditUsage!(probeLogin, date), deadlineMs, 'ai_credit/usage')
           // Honest counts (L2): what the read ACTUALLY returned for the probed (login, day).
           // Zero items = the probed login had no usage that day → metrics-empty (amber).
           const n = Array.isArray(usage?.usageItems) ? usage.usageItems.length : 0
-          stages.metrics = { ok: true, recordCount: n, matchedRecords: n }
+          stages.metrics = { ok: true, recordCount: n, matchedRecords: verified.has(probeLogin.toLowerCase()) ? n : 0 }
         } else {
           // No roster-matched login to read → SKIPPED, never a fabricated read (L2). The
           // verdict synthesis derives no-teammate-match/metrics-empty from licenses instead.

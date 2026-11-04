@@ -6,7 +6,8 @@
  *     Front Door derives from it) does not evade it.
  *   - Without it, X-Azure-SocketIP is client-supplied and ignored.
  *   - At HARD_MAX_OAUTH_CLIENTS every registration is refused, fresh source
- *     or not.
+ *     or not, unless abandoned registrations (past the grace, never
+ *     transacted) can be reaped first.
  *
  * Own database: the hard-cap case fills oauth_client past every ceiling.
  * The per-source window is module state, so each case uses its own addresses.
@@ -166,5 +167,33 @@ describe('DCR hard cap', () => {
     expect(r.status).toBe(429)
     expect(r.body.error).toBe('temporarily_unavailable')
     expect(await clientCount()).toBe(before)
+  })
+})
+
+describe('DCR reap at the ceiling', () => {
+  it('reaps abandoned registrations at HARD_MAX so a new one succeeds; a client with an auth code survives', async () => {
+    await fillTo(HARD_MAX_OAUTH_CLIENTS)
+    await t.db.execute(sql`UPDATE oauth_client SET created_at = now() - INTERVAL '2 hours'`)
+
+    const [kept] = [...(await t.db.execute<{ client_id: string }>(sql`SELECT client_id::text AS client_id FROM oauth_client LIMIT 1`))]
+    const [region] = [...(await t.db.execute<{ id: string }>(sql`
+      INSERT INTO region (code, display_name) VALUES ('rc', 'Reap Ceiling') RETURNING id::text AS id`))]
+    const [ou] = [...(await t.db.execute<{ id: string }>(sql`
+      INSERT INTO org_unit (region_id, path, code, display_name, unit_type, is_cost_owning_unit)
+      VALUES (${region!.id}::uuid, 'rc.bu', 'rc-bu', 'RC BU', 'bu', true) RETURNING id::text AS id`))]
+    const [tm] = [...(await t.db.execute<{ id: string }>(sql`
+      INSERT INTO teammate (entra_oid, email, display_name, role, region_id, org_unit_id)
+      VALUES ('rc-oid', 'rc@example.com', 'RC', 'developer', ${region!.id}::uuid, ${ou!.id}::uuid)
+      RETURNING id::text AS id`))]
+    await t.db.execute(sql`
+      INSERT INTO oauth_auth_code (code_hash, client_id, teammate_id, redirect_uri, code_challenge, code_challenge_method, scope, expires_at)
+      VALUES ('reap-ceiling-code', ${kept!.client_id}::uuid, ${tm!.id}::uuid, ${REDIRECT_URI}, 'x', 'S256', 'tokenscope.read', now() + INTERVAL '5 minutes')`)
+
+    const r = await register({ 'x-forwarded-for': '203.0.113.200' }, 'After Reap')
+    expect(r.status).toBe(201)
+    expect(await clientCount()).toBe(2)
+    const survivors = [...(await t.db.execute<{ client_id: string }>(sql`
+      SELECT client_id::text AS client_id FROM oauth_client WHERE client_id = ${kept!.client_id}::uuid`))]
+    expect(survivors).toHaveLength(1)
   })
 })

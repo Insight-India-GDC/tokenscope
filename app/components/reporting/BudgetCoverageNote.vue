@@ -218,7 +218,7 @@ const drawn = computed(() =>
          that has plenty — the exact over-wide claim this note exists to prevent. -->
     <p v-else class="text-[12px] leading-snug text-carbon-3" data-testid="budget-coverage-no-scope">
       You are not placed in an org unit below your region's root, so no usage falls inside
-      your reporting scope and there is no coverage to report. Ask your region admin to
+      your reporting scope and there is no coverage to report. Ask an Admin to
       place you.
     </p>
   </section>

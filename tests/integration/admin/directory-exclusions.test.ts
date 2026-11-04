@@ -83,6 +83,45 @@ describe('admin directory-exclusions CRUD', () => {
     ).rejects.toMatchObject({ statusCode: 403 })
   })
 
+  it('a region admin cannot remove a pattern either (403), and it stays', async () => {
+    const added = (await addHandler(ev({ session: finops(), body: { pattern: '*@svc.example.test' } }))) as { id: string }
+    await expect(
+      delHandler(ev({ session: regionAdmin(), method: 'DELETE', params: { id: added.id } })),
+    ).rejects.toMatchObject({ statusCode: 403 })
+    const listed = (await listHandler(ev({ session: regionAdmin(), method: 'GET' }))) as { patterns: { id: string }[] }
+    expect(listed.patterns.map((p) => p.id)).toContain(added.id)
+  })
+
+  // RLS binds only a non-owner, and the test user owns the table (and is a superuser), so each
+  // case creates a throwaway NOLOGIN role inside its own transaction; the transaction never
+  // commits, so the role and any row go with it. The Admin twin proves the harness enforces
+  // nothing extra: the same insert under the platform-admin scope value succeeds.
+  async function insertAs(scope: string): Promise<'inserted'> {
+    const ROLLBACK = new Error('rollback')
+    try {
+      await t.client.begin(async (tx) => {
+        await tx`CREATE ROLE de_rls_probe NOLOGIN`
+        await tx`GRANT SELECT, INSERT ON directory_exclusion_pattern TO de_rls_probe`
+        await tx`SET LOCAL ROLE de_rls_probe`
+        await tx`SELECT set_config('app.user_role', ${scope}, true)`
+        await tx`INSERT INTO directory_exclusion_pattern (pattern) VALUES ('*@rls.example.test')`
+        throw ROLLBACK
+      })
+    } catch (err) {
+      if (err === ROLLBACK) return 'inserted'
+      throw err
+    }
+    throw new Error('unreachable')
+  }
+
+  it('the database refuses a Region admin write even past the route (mig 0167)', async () => {
+    await expect(insertAs('admin')).rejects.toThrow(/row-level security/)
+  })
+
+  it('the database admits the same write under the Admin scope (mig 0167 red twin)', async () => {
+    await expect(insertAs('global-finops')).resolves.toBe('inserted')
+  })
+
   it('returns matched_existing_count so the UI can warn before excluding real people', async () => {
     // A teammate whose stored email is on the onmicrosoft domain.
     await t.client`INSERT INTO teammate (entra_oid, email, display_name, region_id, org_unit_id, role, source)
@@ -119,7 +158,7 @@ describe('admin directory-exclusions CRUD', () => {
     // matches either way, so this assertion alone pins the regression.
     expect(added.matched_existing_count).toBe(1)
 
-    // Preview (DB-side LIKE) and enforcement (isExcludedUpn / upnGlobToRegExp,
+    // Preview (DB-side LIKE) and enforcement (isExcludedUpn / upnGlobMatches,
     // in-process) must AGREE over the identical roster — the "Must not break"
     // invariant: the retro-cleanup worker consumes isExcludedUpn, not the LIKE
     // path, so a desync here means the preview lied about what the worker will

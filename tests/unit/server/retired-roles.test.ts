@@ -47,6 +47,14 @@ describe('retired roles hold no capability', () => {
     for (const caller of ROLES) expect(canAssignRole(caller, role)).toBe(false)
   })
 
+  it('nobody may assign Region admin (`admin`) — there is one admin role', () => {
+    for (const caller of ROLES) expect(canAssignRole(caller, 'admin')).toBe(false)
+    expect(SELECTABLE_ROLES).not.toContain('admin')
+    expect(ROLE_LABELS.admin).toBe('Region admin (retired)')
+    // Still a working admin role for anyone who holds it, until the region-scoping code goes.
+    expect(isAdminRole('admin')).toBe(true)
+  })
+
   it('platform-admin is still assignable BY platform-admin only — the retirement did not widen it', () => {
     // This omitted the second argument entirely (`canAssignRole('platform-admin')`).
     // `undefined` is neither retired nor platform-admin, so it fell through the

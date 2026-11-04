@@ -13,6 +13,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+// Windows (#430): skipped on win32 because this file drives the POSIX .sh helper, which Windows does not run; the PowerShell twin is covered by otel-helper-conformance, claude-redeem-ps1 and status-ps1.
+const POSIX_ONLY = process.platform === 'win32'
+
 const HELPERS = {
   claude: resolve(__dirname, '../../../plugin/scripts/otel-headers-helper.sh'),
   copilot: resolve(__dirname, '../../../copilot-plugin/scripts/otel-headers-helper.sh'),
@@ -62,7 +65,7 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(tmp, { recursive: true, force: true }))
 
-describe.each(Object.entries(HELPERS))('otel-headers-helper (%s copy) — access token off argv', (_name, src) => {
+describe.skipIf(POSIX_ONLY).each(Object.entries(HELPERS))('otel-headers-helper (%s copy) — access token off argv', (_name, src) => {
   it('sends the bearer as a header on stdin and never on argv', () => {
     const helper = join(tmp, 'otel-headers-helper.sh')
     copyFileSync(src, helper)

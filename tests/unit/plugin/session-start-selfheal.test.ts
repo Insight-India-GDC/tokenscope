@@ -10,9 +10,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, win32 } from 'node:path'
-import { selfHealPluginPaths } from '../../../plugin/hooks/session-start.mjs'
+import { selfHealPluginPaths, dropSettingsRefreshToken } from '../../../plugin/hooks/session-start.mjs'
 import { writeClaudeSettings } from '../../../plugin/scripts/claude-redeem.mjs'
 import { buildHelperCommand } from '../../../plugin/scripts/env-builder.mjs'
+
+// Windows (#430): skipped on win32 because this file expects the .sh helper; on win32 the helper is the .ps1.
+const POSIX_ONLY = process.platform === 'win32'
 
 let dir = ''
 let settingsPath = ''
@@ -37,12 +40,12 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-describe('selfHealPluginPaths', () => {
+describe.skipIf(POSIX_ONLY)('selfHealPluginPaths', () => {
   it('repoints stale paths to the active version and PRESERVES the credential + other keys', () => {
     writeFileSync(settingsPath, JSON.stringify(STALE, null, 2))
     selfHealPluginPaths({ settingsPath, scriptsDir, storeDir, home: dir })
     const out = JSON.parse(readFileSync(settingsPath, 'utf8'))
-    expect(out.statusLine.command).toBe(`node ${JSON.stringify(join(scriptsDir, 'statusline.mjs'))}`)
+    expect(out.statusLine.command).toBe(`"${process.execPath}" "${join(scriptsDir, 'statusline.mjs')}"`)
     expect(out.statusLine.padding).toBe(0)
     expect(out.otelHeadersHelper).toBe(`"${join(scriptsDir, 'otel-headers-helper.sh')}" --tool claude-code`)
     // The credential + unrelated keys survive untouched.
@@ -100,7 +103,7 @@ describe('selfHealPluginPaths', () => {
  * active path, so a `--state-dir` was dropped at the next session start, and a
  * session-scoped settings file was never reached at all.
  */
-describe('selfHealPluginPaths — rebuilds from the record', () => {
+describe.skipIf(POSIX_ONLY)('selfHealPluginPaths — rebuilds from the record', () => {
   const active = () => `"${join(scriptsDir, 'otel-headers-helper.sh')}" --tool claude-code`
   const helperOf = (p: string) => JSON.parse(readFileSync(p, 'utf8')).otelHeadersHelper
 
@@ -217,7 +220,7 @@ describe('selfHealPluginPaths — rebuilds from the record', () => {
  * start never reads X (it is neither the default store nor the dir the global
  * helper names), so a plugin update left S on the removed version for good.
  */
-describe('selfHealPluginPaths — a settings file enrolled in another state dir', () => {
+describe.skipIf(POSIX_ONLY)('selfHealPluginPaths — a settings file enrolled in another state dir', () => {
   const bundleEnv = {
     TOKENSCOPE_OAUTH_REFRESH_TOKEN: 'rt_isolated',
     TOKENSCOPE_OAUTH_TOKEN_ENDPOINT: 'https://ts.example.com/api/v1/oauth/token',
@@ -253,8 +256,9 @@ describe('selfHealPluginPaths — a settings file enrolled in another state dir'
     selfHealPluginPaths({ settingsPath, scriptsDir, storeDir, home: dir })
     expect(helperOf(scoped)).toBe(buildHelperCommand(record, { scriptsDir }))
     expect(helperOf(scoped)).toContain(`--state-dir ${iso}`)
-    // The credential in S is untouched.
-    expect(JSON.parse(readFileSync(scoped, 'utf8')).env.TOKENSCOPE_OAUTH_REFRESH_TOKEN).toBe('rt_isolated')
+    // The credential stays in X's store, never in S.
+    expect(JSON.parse(readFileSync(join(iso, 'config.claude-code.json'), 'utf8')).oauth_refresh_token).toBe('rt_isolated')
+    expect(JSON.parse(readFileSync(scoped, 'utf8')).env).not.toHaveProperty('TOKENSCOPE_OAUTH_REFRESH_TOKEN')
   })
 
   it('is left alone once its helper names a different state dir than the index pairs it with', () => {
@@ -282,5 +286,75 @@ describe('selfHealPluginPaths — a settings file enrolled in another state dir'
     } finally {
       rmSync(outside, { recursive: true, force: true })
     }
+  })
+})
+
+describe.skipIf(POSIX_ONLY)('dropSettingsRefreshToken — the durable credential leaves the global env block', () => {
+  const IID = '9a1e0000-0000-4000-8000-000000000001'
+  const BEARER = `https://ts.example.com/api/v1/instances/${IID}/bearer`
+  const writeStore = (inDir: string, bearer = BEARER) => {
+    const iid = bearer.split('/instances/')[1]!.split('/')[0]!
+    mkdirSync(inDir, { recursive: true })
+    writeFileSync(
+      join(inDir, 'config.claude-code.json'),
+      JSON.stringify({
+        version: 2,
+        tool: 'claude-code',
+        instance_id: iid,
+        bearer_endpoint: bearer,
+        oauth_token_endpoint: 'https://ts.example.com/api/v1/oauth/token',
+        oauth_client_id: 'cid',
+        oauth_refresh_token: 'rt-in-store',
+        otel_resource_attributes: `tokenscope.instance_id=${iid},tool=claude-code`,
+      }),
+    )
+  }
+  const settingsWithToken = (extra: Record<string, unknown> = {}) => ({
+    permissions: { allow: ['Bash'] },
+    env: { TOKENSCOPE_OAUTH_REFRESH_TOKEN: 'rt-in-settings', TOKENSCOPE_BEARER_ENDPOINT: BEARER, MY_VAR: 'keep' },
+    ...extra,
+  })
+
+  it('removes it once the store holds the same enrolment, keeping everything else', () => {
+    writeStore(storeDir)
+    writeFileSync(settingsPath, JSON.stringify(settingsWithToken()))
+    expect(dropSettingsRefreshToken({ settingsPath, storeDir })).toBe(true)
+    const out = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    expect(out.env).not.toHaveProperty('TOKENSCOPE_OAUTH_REFRESH_TOKEN')
+    expect(out.env.TOKENSCOPE_BEARER_ENDPOINT).toBe(BEARER)
+    expect(out.env.MY_VAR).toBe('keep')
+    expect(out.permissions).toEqual({ allow: ['Bash'] })
+  })
+
+  it('leaves it alone with no store: it is still the only copy', () => {
+    const body = JSON.stringify(settingsWithToken())
+    writeFileSync(settingsPath, body)
+    expect(dropSettingsRefreshToken({ settingsPath, storeDir })).toBe(false)
+    expect(readFileSync(settingsPath, 'utf8')).toBe(body)
+  })
+
+  it('leaves it alone when the store names another instance', () => {
+    writeStore(storeDir, 'https://ts.example.com/api/v1/instances/9a1e0000-0000-4000-8000-000000000002/bearer')
+    const body = JSON.stringify(settingsWithToken())
+    writeFileSync(settingsPath, body)
+    expect(dropSettingsRefreshToken({ settingsPath, storeDir })).toBe(false)
+    expect(readFileSync(settingsPath, 'utf8')).toBe(body)
+  })
+
+  it('checks the store the helper command names with --state-dir, not the default', () => {
+    const other = join(dir, 'other-state')
+    writeStore(other)
+    const helper = buildHelperCommand({ tool: 'claude-code', platform: 'linux', stateDir: other }, { scriptsDir })
+    writeFileSync(settingsPath, JSON.stringify(settingsWithToken({ otelHeadersHelper: helper })))
+    expect(dropSettingsRefreshToken({ settingsPath, storeDir })).toBe(true)
+    expect(JSON.parse(readFileSync(settingsPath, 'utf8')).env).not.toHaveProperty('TOKENSCOPE_OAUTH_REFRESH_TOKEN')
+  })
+
+  it('never clobbers an unparseable settings.json', () => {
+    writeStore(storeDir)
+    const garbage = '{ not json TOKENSCOPE_OAUTH_REFRESH_TOKEN'
+    writeFileSync(settingsPath, garbage)
+    expect(dropSettingsRefreshToken({ settingsPath, storeDir })).toBe(false)
+    expect(readFileSync(settingsPath, 'utf8')).toBe(garbage)
   })
 })

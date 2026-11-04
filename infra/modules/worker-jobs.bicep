@@ -11,9 +11,9 @@
 // `az deployment group what-if` first (the example workflow
 // examples/github-actions/tokenscope-infra.yml does).
 //
-// NOT every registered worker is scheduled on this env (intentional). Exactly ONE
-// registered worker is DELIBERATELY left unscheduled here (enforced by
-// tests/unit/workers/worker-schedule-lockstep.test.ts KNOWN_UNSCHEDULED):
+// NOT every registered worker is scheduled on this env (intentional). These are
+// DELIBERATELY left unscheduled here (shared/workers/unscheduled.ts, enforced by
+// tests/unit/workers/worker-schedule-lockstep.test.ts):
 //   - archive-ledger     — a hard no-op until LEDGER_ARCHIVE_ENABLED=true, and
 //                          ENABLING is blocked on an unbuilt v_complete_usage §A
 //                          cold-fallback (archival would blind §A usage reporting).
@@ -114,6 +114,11 @@ var workers = [
   // reconciliation-sync records ONLY pre-existing teammates.
   { name: 'placement-sync', cron: '*/30 * * * *' }
   { name: 'region-reenrichment', cron: '0 */6 * * *' }
+  // Org setup's automatic directory re-read: a no-op until the top of the
+  // organisation is set; then starts a cycle when the monthly (or weekly) re-read is
+  // due, runs one pass, and once read checks every unit owner and region leader is
+  // still in the directory. Off the hour, away from the :00 Graph callers.
+  { name: 'placement-check', cron: '17 * * * *' }
   // ── Lifecycle and governance workers ──
   // Proactive "your project ends in N days — re-tag" warning (D3). Reachable via
   // the admin PATCH end_date API (a future value = a planned end); near-no-op

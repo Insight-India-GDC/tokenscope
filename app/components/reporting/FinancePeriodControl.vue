@@ -102,7 +102,7 @@ function onChange(e: Event) {
     <span class="text-[11px] font-semibold uppercase tracking-wide text-carbon-3">Billing period</span>
     <select
       :value="selected"
-      class="border border-calm-2 rounded-lg bg-white px-3 py-1.5 text-sm font-semibold text-carbon-1 focus:border-brand-harmony focus:outline-none cursor-pointer"
+      class="border border-calm-2 rounded-lg bg-white px-3 py-1.5 text-sm font-semibold text-carbon-1 focus:border-brand-harmony cursor-pointer"
       data-testid="finance-period-select"
       @change="onChange"
     >

@@ -259,7 +259,7 @@ function whyText(b: BillingState): string {
   }
   return costCentre.value
     ? `invoiced by Anthropic and charged to ${costCentre.value}.`
-    : 'invoiced by Anthropic. Your placement resolves to no cost-owning unit, so it is not yet charged to one.'
+    : 'invoiced by Anthropic. Your placement resolves to no Business Unit, so it is not yet charged to one.'
 }
 
 const popoverOpen = ref(false)

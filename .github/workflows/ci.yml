@@ -219,6 +219,16 @@ jobs:
         run: node scripts/check-persona-override-params.mjs
       - name: Check user-facing docs reference things that exist
         run: npm run check:docs-references
+      - name: Check the public snapshot (leak gate + public docs check)
+        # The public mirror has no tools/publish (internal-only), so it skips this step.
+        if: hashFiles('tools/publish/publish.sh') != ''
+        # The step above checks the internal tree, where docs/design and the
+        # other internal-only paths still exist. publish.sh drops them and
+        # rewrites names, so a doc can pass here and fail the publish (the
+        # v1.0.4 publish did, #520). --gate-only builds the snapshot exactly as
+        # a publish does, runs the leak gate and the docs check on it, and
+        # stops: no unit suite, no remote, no push.
+        run: tools/publish/publish.sh --ref HEAD --gate-only
       - name: Compile the example parameter files
         # The examples read secrets with readEnvironmentVariable, so they only
         # compile with those variables set; placeholder values are enough.
@@ -323,9 +333,9 @@ jobs:
         env:
           TOKENSCOPE_PWSH: powershell.exe
           TOKENSCOPE_SKIP_SH: '1'
-        # Everything else in tests/unit/plugin. Not yet Windows-ready: #430
-        # lists each excluded file, why, and the decision it needs. Remove a
-        # line when its file passes or skips itself on win32.
+        # Everything else in tests/unit/plugin. The files run in their own
+        # steps above are excluded here; every other file runs, and a POSIX-only
+        # file skips itself on win32 with its reason (#430).
         run: >-
           npx vitest run tests/unit/plugin
           --exclude tests/unit/plugin/claude-redeem-ps1.test.ts
@@ -335,35 +345,6 @@ jobs:
           --exclude tests/unit/plugin/copilot-usage-windows.test.ts
           --exclude tests/unit/plugin/hooks-command.test.ts
           --exclude tests/unit/plugin/is-main.test.ts
-          --exclude tests/unit/plugin/otel-helper-exhaustive-property.test.ts
-          --exclude tests/unit/plugin/otel-helper-source-resolution.test.ts
-          --exclude tests/unit/plugin/otel-helper-client-version.test.ts
-          --exclude tests/unit/plugin/otel-helper-cached-bearer.test.ts
-          --exclude tests/unit/plugin/otel-helper-per-tool-store.test.ts
-          --exclude tests/unit/plugin/otel-helper-retry.test.ts
-          --exclude tests/unit/plugin/otel-helper-state-dir-argv.test.ts
-          --exclude tests/unit/plugin/otel-helper-endpoint-provenance.test.ts
-          --exclude tests/unit/plugin/otel-helper-token-argv.test.ts
-          --exclude tests/unit/plugin/device-store.test.ts
-          --exclude tests/unit/plugin/cas-write-file.test.ts
-          --exclude tests/unit/plugin/copilot-redeem.test.ts
-          --exclude tests/unit/plugin/copilot-usage.test.ts
-          --exclude tests/unit/plugin/claude-redeem.test.ts
-          --exclude tests/unit/plugin/desktop-env.test.ts
-          --exclude tests/unit/plugin/plugin-runtime.test.ts
-          --exclude tests/unit/plugin/tag-repo-selfheal.test.ts
-          --exclude tests/unit/plugin/session-start-selfheal.test.ts
-          --exclude tests/unit/plugin/env-builder.test.ts
-          --exclude tests/unit/plugin/trusted-git.test.ts
-          --exclude tests/unit/plugin/claude-config-dir.test.ts
-          --exclude tests/unit/plugin/redeem-argv-guard.test.ts
-          --exclude tests/unit/plugin/session-start-repo-state-dir.test.ts
-          --exclude tests/unit/plugin/trusted-global-settings.test.ts
-          --exclude tests/unit/plugin/statusline-toggle.test.ts
-          --exclude tests/unit/plugin/backfill.test.ts
-          --exclude tests/unit/plugin/copilot-state-dir.test.ts
-          --exclude tests/unit/plugin/copilot-forwarder.test.ts
-          --exclude tests/unit/plugin/emit-helper-spawn.test.ts
 
   integration-shard:
     name: Integration shard ${{ matrix.shard }}/3

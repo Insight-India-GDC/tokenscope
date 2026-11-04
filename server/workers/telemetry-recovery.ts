@@ -35,6 +35,7 @@ import type * as schema from '../../drizzle/schema'
 import { runReadJoiner, selectJoinableInstances } from './azure-monitor-reader'
 import { getTelemetryReader, type EventWindow, type TelemetryReader } from '../azure/reader'
 import { consola } from 'consola'
+import { describeError } from '../utils/redact-probe-error'
 
 type Db = PostgresJsDatabase<typeof schema>
 
@@ -163,7 +164,7 @@ export async function runTelemetryRecovery(
     if (opts?.scheduled ?? true) scheduledQueued = await enqueueScheduledPass(db)
   } catch (err) {
     // A failed enqueue must not stop an operator's recovery from draining.
-    consola.warn(`[telemetry-recovery] could not queue the daily pass: ${err instanceof Error ? err.message : String(err)}`)
+    consola.warn(`[telemetry-recovery] could not queue the daily pass: ${describeError(err)}`)
   }
 
   // Operator requests first, then the one already running, then the oldest —

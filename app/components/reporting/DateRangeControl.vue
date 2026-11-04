@@ -193,7 +193,8 @@ function disabledReason(key: string): string | undefined {
     aria-label="Reporting period"
     data-testid="date-range-control"
   >
-    <div class="inline-flex p-0.5 bg-calm-2 rounded-lg gap-0.5 w-fit">
+    <!-- Wraps at phone width rather than pushing the page sideways (#514). -->
+    <div class="inline-flex flex-wrap p-0.5 bg-calm-2 rounded-lg gap-0.5 w-fit max-w-full">
       <button
         v-for="p in PRESETS"
         :key="p.key"
@@ -220,7 +221,7 @@ function disabledReason(key: string): string | undefined {
         type="date"
         :max="draftTo || undefined"
         aria-label="From date"
-        class="border border-calm-2 rounded-md px-2 py-1 text-sm text-carbon-1 bg-white focus:border-brand-harmony focus:outline-none"
+        class="border border-calm-2 rounded-md px-2 py-1 text-sm text-carbon-1 bg-white focus:border-brand-harmony"
         data-testid="date-range-from"
         @change="applyCustom"
       >
@@ -230,7 +231,7 @@ function disabledReason(key: string): string | undefined {
         type="date"
         :min="draftFrom || undefined"
         aria-label="To date"
-        class="border border-calm-2 rounded-md px-2 py-1 text-sm text-carbon-1 bg-white focus:border-brand-harmony focus:outline-none"
+        class="border border-calm-2 rounded-md px-2 py-1 text-sm text-carbon-1 bg-white focus:border-brand-harmony"
         data-testid="date-range-to"
         @change="applyCustom"
       >

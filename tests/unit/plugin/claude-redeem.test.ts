@@ -23,14 +23,20 @@
  *      OTLP endpoints) cannot survive at rest — while top-level non-env keys
  *      (permissions, statusLine) are still preserved. The change is detected from
  *      the bearer host and is silent on a same-host re-run.
+ *   6. The refresh token lands in the 0600 device store only, never in
+ *      settings.json, whose env block every child process inherits.
  */
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, chmodSync, readFileSync, writeFileSync, rmSync, statSync, readdirSync, existsSync, realpathSync } from 'node:fs'
 import { tmpdir, platform } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
+import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { writeFakeHomePreload, fakeHomeNode, realIsolatedIndex } from './helpers/fake-home'
+
+// Windows (#430): skipped on win32 because this file expects EACCES on an unwritable path; Windows reports EPERM (claude-redeem-ps1 covers the Windows redeem).
+const POSIX_ONLY = process.platform === 'win32'
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — mjs import resolved by Vitest
@@ -93,7 +99,7 @@ afterEach(() => {
   else process.env.TOKENSCOPE_STATE_DIR = savedStateDir
 })
 
-describe('buildClaudeDeviceEnv', () => {
+describe.skipIf(POSIX_ONLY)('buildClaudeDeviceEnv', () => {
   it('maps the bundle + OAuth credential into the env keys the helper requires', () => {
     const env = buildClaudeDeviceEnv(FAKE_CLAUDE_BUNDLE, FAKE_OAUTH)
     expect(env.CLAUDE_CODE_ENABLE_TELEMETRY).toBe('1')
@@ -128,7 +134,7 @@ describe('buildClaudeDeviceEnv', () => {
   })
 })
 
-describe('assertClaudeRedeemResponse', () => {
+describe.skipIf(POSIX_ONLY)('assertClaudeRedeemResponse', () => {
   it('returns {claude, oauth} for a complete valid response', () => {
     const { claude, oauth } = assertClaudeRedeemResponse(FAKE_REDEEM_RESPONSE)
     expect(claude.otel_headers_helper_url).toBe('https://ts.example.com/api/v1/instances/f825e796/bearer')
@@ -224,7 +230,7 @@ describe('assertClaudeRedeemResponse', () => {
   })
 })
 
-describe('writeClaudeSettings', () => {
+describe.skipIf(POSIX_ONLY)('writeClaudeSettings', () => {
   // The helper RECORD the command is built from (buildHelperCommand), plus the
   // install it runs from. HELPER_CMD is what lands in settings.json.
   const HELPER = { record: { tool: 'claude-code', platform: 'linux' }, scriptsDir: '/plugin/scripts' }
@@ -236,8 +242,28 @@ describe('writeClaudeSettings', () => {
     writeClaudeSettings(path, HELPER, env, join(dir, 'state'))
     const written = JSON.parse(readFileSync(path, 'utf8'))
     expect(written.otelHeadersHelper).toBe(HELPER_CMD)
-    expect(written.env.TOKENSCOPE_OAUTH_REFRESH_TOKEN).toBe('rt_super_secret')
     expect(written.env.OTEL_RESOURCE_ATTRIBUTES).toBe('tokenscope.instance_id=abc,tool=claude-code')
+  })
+
+  it('keeps the refresh token OUT of settings.json: every child process inherits that env block', () => {
+    const path = join(dir, 'settings.json')
+    writeClaudeSettings(path, HELPER, buildClaudeDeviceEnv(FAKE_CLAUDE_BUNDLE, FAKE_OAUTH), join(dir, 'state'))
+    const written = JSON.parse(readFileSync(path, 'utf8'))
+    expect(written.env).not.toHaveProperty('TOKENSCOPE_OAUTH_REFRESH_TOKEN')
+    expect(readFileSync(path, 'utf8')).not.toContain('rt_super_secret')
+    // The helper still has everything it needs: the store, and the endpoints beside it.
+    expect(JSON.parse(readFileSync(join(dir, 'state', 'config.claude-code.json'), 'utf8')).oauth_refresh_token).toBe('rt_super_secret')
+    expect(written.env.TOKENSCOPE_OAUTH_TOKEN_ENDPOINT).toBe(FAKE_OAUTH.token_endpoint)
+    expect(written.env.TOKENSCOPE_OAUTH_CLIENT_ID).toBe(FAKE_OAUTH.client_id)
+  })
+
+  it('a re-redeem strips a refresh token an older redeem left in settings.json', () => {
+    const path = join(dir, 'settings.json')
+    writeFileSync(path, JSON.stringify({ env: { TOKENSCOPE_OAUTH_REFRESH_TOKEN: 'rt_left_by_old_redeem', MY_VAR: 'keep' } }))
+    writeClaudeSettings(path, HELPER, buildClaudeDeviceEnv(FAKE_CLAUDE_BUNDLE, FAKE_OAUTH), join(dir, 'state'))
+    const written = JSON.parse(readFileSync(path, 'utf8'))
+    expect(written.env).not.toHaveProperty('TOKENSCOPE_OAUTH_REFRESH_TOKEN')
+    expect(written.env.MY_VAR).toBe('keep')
   })
 
   it('preserves a developer’s pre-existing permissions and unrelated env keys', () => {
@@ -257,8 +283,7 @@ describe('writeClaudeSettings', () => {
     const path = join(dir, 'settings.json')
     writeClaudeSettings(path, HELPER, buildClaudeDeviceEnv(FAKE_CLAUDE_BUNDLE, FAKE_OAUTH), join(dir, 'state'))
     writeClaudeSettings(path, HELPER, buildClaudeDeviceEnv(FAKE_CLAUDE_BUNDLE, { ...FAKE_OAUTH, refresh_token: 'rt_rotated' }), join(dir, 'state'))
-    const written = JSON.parse(readFileSync(path, 'utf8'))
-    expect(written.env.TOKENSCOPE_OAUTH_REFRESH_TOKEN).toBe('rt_rotated')
+    expect(JSON.parse(readFileSync(join(dir, 'state', 'config.claude-code.json'), 'utf8')).oauth_refresh_token).toBe('rt_rotated')
   })
 
   // ── cross-environment transition robustness ───────────────────────────────────
@@ -313,8 +338,9 @@ describe('writeClaudeSettings', () => {
     expect(written.env.TOKENSCOPE_BEARER_ENDPOINT).not.toBe(SANDBOX_BEARER)
     expect(written.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT).toBe(DEV_BUNDLE.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT)
     expect(written.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT).not.toBe(SANDBOX_OTLP)
-    // The fresh emit credential + instance attr are the NEW environment's.
-    expect(written.env.TOKENSCOPE_OAUTH_REFRESH_TOKEN).toBe('rt_super_secret')
+    // The old environment's credential is gone; the new one is in the store only.
+    expect(written.env).not.toHaveProperty('TOKENSCOPE_OAUTH_REFRESH_TOKEN')
+    expect(JSON.parse(readFileSync(join(dir, 'state', 'config.claude-code.json'), 'utf8')).oauth_refresh_token).toBe('rt_super_secret')
     expect(written.env.OTEL_RESOURCE_ATTRIBUTES).toBe('tokenscope.instance_id=devinst,tool=claude-code')
   })
 
@@ -354,7 +380,7 @@ describe('writeClaudeSettings', () => {
     expect(change.changed).toBe(false)
     const written = JSON.parse(readFileSync(path, 'utf8'))
     expect(written.env.MY_VAR).toBe('keep') // additive merge preserved a real custom key
-    expect(written.env.TOKENSCOPE_OAUTH_REFRESH_TOKEN).toBe('rt_rotated')
+    expect(JSON.parse(readFileSync(join(dir, 'state', 'config.claude-code.json'), 'utf8')).oauth_refresh_token).toBe('rt_rotated')
     // F1: retired creds are stripped even on a SAME-env additive re-run — the
     // additive merge must NOT leave a legacy credential at rest.
     expect(written.env).not.toHaveProperty('TOKENSCOPE_SESSION_TOKEN')
@@ -426,7 +452,7 @@ describe('writeClaudeSettings', () => {
     const written = JSON.parse(readFileSync(path, 'utf8'))
     expect(landed).toBe(true)
     expect(written.env.LANDED_MEANWHILE).toBe('yes') // the winner's bytes survived
-    expect(written.env.TOKENSCOPE_OAUTH_REFRESH_TOKEN).toBe('rt_super_secret') // and ours landed on top
+    expect(written.env.TOKENSCOPE_BEARER_ENDPOINT).toBe(FAKE_CLAUDE_BUNDLE.otel_headers_helper_url) // and ours landed on top
     expect(written.permissions).toEqual({ allow: ['x'] })
   })
 
@@ -547,16 +573,15 @@ describe('writeClaudeSettings', () => {
     expect(claude.instance_id).not.toBe('copilot-instance')
   })
 
-  it('a store write failure with NO store on disk still completes the redeem', () => {
-    // Point the state dir at a path that cannot be created (a FILE sits where
-    // the dir needs to go). Nothing is left behind to shadow the environment,
-    // so the helper's no-store path reads the env block settings.json just
-    // received and emission works — failing the enrolment would help nobody.
+  it('a store write failure with NO store on disk fails the redeem loudly', () => {
+    // settings.json no longer carries the credential, so a store that did not
+    // land leaves the device with nothing to emit with.
     const blocker = join(dir, 'blocked-state')
     writeFileSync(blocker, 'not a directory')
     const path = join(dir, 'settings.json')
-    expect(() => writeClaudeSettings(path, HELPER, buildClaudeDeviceEnv(FAKE_CLAUDE_BUNDLE, FAKE_OAUTH), blocker)).not.toThrow()
-    expect(JSON.parse(readFileSync(path, 'utf8')).env.TOKENSCOPE_OAUTH_REFRESH_TOKEN).toBe('rt_super_secret')
+    expect(() => writeClaudeSettings(path, HELPER, buildClaudeDeviceEnv(FAKE_CLAUDE_BUNDLE, FAKE_OAUTH), blocker)).toThrow(
+      /Enrolment is NOT complete/,
+    )
   })
 
   it('a store write failure that leaves an EXISTING store behind fails the redeem loudly', () => {
@@ -687,7 +712,7 @@ describe('writeClaudeSettings', () => {
   })
 })
 
-describe('parseArgs', () => {
+describe.skipIf(POSIX_ONLY)('parseArgs', () => {
   it('accepts a bare positional handoff code', () => {
     expect(parseArgs(['abc123']).handoffCode).toBe('abc123')
   })
@@ -707,7 +732,7 @@ describe('parseArgs', () => {
 // End-to-end: spawn the real helper (main()) against a mock /setup/redeem server.
 // Covers the orchestration unit tests can't reach: URL resolution, the POST,
 // instance_id binding, exit codes, and the on-disk write.
-describe('main() against a mock redeem server', () => {
+describe.skipIf(POSIX_ONLY)('main() against a mock redeem server', () => {
   // Vitest runs with cwd at the repo root; resolve the helper from there.
   const HELPER = join(process.cwd(), 'plugin/scripts/claude-redeem.mjs')
   let server: ReturnType<typeof createServer>
@@ -810,7 +835,10 @@ describe('main() against a mock redeem server', () => {
     const r = await run('GOOD', path, ['--instance-id', 'f825e796-ef29-4aa0-9a35-4aa2a5b8059c'])
     expect(r.status).toBe(0)
     const written = JSON.parse(readFileSync(path, 'utf8'))
-    expect(written.env.TOKENSCOPE_OAUTH_REFRESH_TOKEN).toBe('rt_DURABLE_SECRET')
+    expect(written.env).not.toHaveProperty('TOKENSCOPE_OAUTH_REFRESH_TOKEN')
+    expect(JSON.parse(readFileSync(join(homeDir, 'state', 'config.claude-code.json'), 'utf8')).oauth_refresh_token).toBe(
+      'rt_DURABLE_SECRET',
+    )
     expect(written.env.OTEL_RESOURCE_ATTRIBUTES).toContain('tokenscope.instance_id=f825e796')
     // --instance-id was forwarded to the server for the bound-instance check.
     expect(lastBody.instance_id).toBe('f825e796-ef29-4aa0-9a35-4aa2a5b8059c')
@@ -875,6 +903,49 @@ describe('main() against a mock redeem server', () => {
     expect(written.otelHeadersHelper).toContain('otel-headers-helper.sh')
     expect(existsSync(cli)).toBe(false)
     expect(r.stdout).toContain(`Saved to ${join(realpathSync(cfg), 'settings.json')}`)
+  })
+
+  // #449: Claude Desktop (its own CLAUDE_CONFIG_DIR) and the CLI on one machine
+  // shared ONE store keyed by tool, so the last setup supplied both installs'
+  // credential. No --state-dir here: the default destination is under test.
+  const runNoStateDir = (code: string, extraEnv: Record<string, string>) =>
+    new Promise<{ status: number | null; stderr: string }>((resolve) => {
+      const fake = fakeHomeNode(preload, homeDir)
+      const child = spawn('node', [...fake.args, HELPER, '--handoff-code', code, '--api-base', baseUrl], {
+        encoding: 'utf8',
+        env: { ...process.env, CLAUDE_CONFIG_DIR: '', ...fake.env, ...extraEnv },
+      } as never)
+      let stderr = ''
+      child.stderr.on('data', (c) => (stderr += c))
+      child.on('close', (status) => resolve({ status, stderr }))
+    })
+
+  it('a Desktop config folder gets its own store, named in its helper; the default store is untouched', async () => {
+    const defaultStore = join(homeDir, '.tokenscope', 'config.claude-code.json')
+    mkdirSync(join(homeDir, '.tokenscope'), { recursive: true })
+    const cliStore = JSON.stringify({ cli: 'enrolment' })
+    writeFileSync(defaultStore, cliStore)
+    const cfg = join(homeDir, '.claude-desktop-449')
+    mkdirSync(cfg)
+    const r = await runNoStateDir('GOOD', { CLAUDE_CONFIG_DIR: cfg })
+    expect(r.status, r.stderr).toBe(0)
+    expect(readFileSync(defaultStore, 'utf8')).toBe(cliStore)
+    const key = createHash('sha256').update(realpathSync(cfg)).digest('hex').slice(0, 12)
+    const desktopState = join(homeDir, '.tokenscope', 'claude-config', key)
+    expect(JSON.parse(readFileSync(join(desktopState, 'config.claude-code.json'), 'utf8')).oauth_refresh_token).toBe(
+      'rt_DURABLE_SECRET',
+    )
+    const helper = JSON.parse(readFileSync(join(cfg, 'settings.json'), 'utf8')).otelHeadersHelper
+    expect([`--state-dir ${desktopState}`, `--state-dir "${desktopState}"`].some((t) => helper.endsWith(t))).toBe(true)
+  })
+
+  it('the default ~/.claude keeps ~/.tokenscope, with no --state-dir in its helper', async () => {
+    const r = await runNoStateDir('GOOD', {})
+    expect(r.status, r.stderr).toBe(0)
+    const store = JSON.parse(readFileSync(join(homeDir, '.tokenscope', 'config.claude-code.json'), 'utf8'))
+    expect(store.oauth_refresh_token).toBe('rt_DURABLE_SECRET')
+    const helper = JSON.parse(readFileSync(join(homeDir, '.claude', 'settings.json'), 'utf8')).otelHeadersHelper
+    expect(helper).toMatch(/otel-headers-helper\.sh" --tool claude-code$/)
   })
 
   // Linux only: on macOS the Desktop step would run the real launchctl. Under the

@@ -76,7 +76,7 @@ const strokeColor =
         <span
           v-if="deltaPct !== null"
           class="font-bold"
-          :class="deltaPct >= 0.25 ? 'text-brand-hunger' : 'text-brand-vision'"
+          :class="deltaPct >= 0.25 ? 'text-brand-hunger' : 'text-brand-vision-ink'"
         >
           {{ deltaPct >= 0 ? '+' : '' }}{{ Math.round(deltaPct * 100) }}% vs typical
         </span>

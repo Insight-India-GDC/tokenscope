@@ -4,22 +4,18 @@
  * docs/design/usage-completeness-and-provider-governance.md §3.1 "Historical
  * homing uses source snapshots, with an explicit legacy fallback").
  *
- * WHY. `reconciliation_record` has snapshotted these dimensions since its own
- * inception (migration 0038, `server/reconciliation/engine.ts`); `actual_spend`
- * did not, which is what would have forced `v_complete_usage`'s non-taggable
- * arm 3 (migration 0101, A3) to home usage against the teammate's CURRENT
- * placement — moving historical spend across a reorg, which the design
- * forbids. Migration 0101 adds the columns and backfills existing rows
- * (labelled `legacy-current-placement`, since no point-in-time evidence exists
- * for them); every write from here on stamps the CURRENT placement at
- * write/replay time, labelled `ingest-snapshot`.
+ * WHAT IT IS NOW. Each row's RECORDED placement. No report reads it: every
+ * report groups a person's usage by where they sit now (the current-org lens,
+ * mig 0162, docs/design/current-org-lens/00-design.md). It is kept, unedited,
+ * so a future "as recorded" lens has something to build on. Migration 0101
+ * backfilled rows that predate the columns from placement at migration time
+ * (labelled `legacy-current-placement`); every write since stamps the placement
+ * at write/replay time, labelled `ingest-snapshot`.
  *
- * STABILITY ACROSS REORGS. A writer must snapshot dimensions on the INITIAL
- * INSERT only, and leave them OUT of any `ON CONFLICT ... DO UPDATE SET`
- * clause. A re-poll of an already-written (teammate, date, tool, source) day
- * must refresh cost/tokens/raw_payload — never silently re-home a historical
- * day to the teammate's post-reorg placement. Only a genuinely NEW row (a new
- * key the writer has never seen) gets a fresh, currently-accurate snapshot.
+ * WRITE ONCE. A writer snapshots dimensions on the INITIAL INSERT only and
+ * leaves them OUT of any `ON CONFLICT ... DO UPDATE SET` clause: a re-poll of an
+ * already-written (teammate, date, tool, source) day refreshes cost/tokens/
+ * raw_payload and keeps the recorded placement.
  *
  * THE NEAREST-COST-OWNING-ANCESTOR LOOKUP mirrors the LATERAL join used by
  * `v_finance_bill_chargeback` (migration 0073) and `fetchOverageDrivers`

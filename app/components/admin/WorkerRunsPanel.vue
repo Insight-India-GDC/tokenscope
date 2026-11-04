@@ -124,7 +124,7 @@ async function openRun(id: string) {
 
 <template>
   <div
-    class="mt-2 border-t border-carbon-6 pt-3"
+    class="mt-2 border-t border-calm-2 pt-3"
     data-testid="worker-runs-panel"
     :aria-busy="listPending && runs === null ? 'true' : undefined"
   >
@@ -136,7 +136,7 @@ async function openRun(id: string) {
     <p v-else-if="runs && runs.length === 0" class="text-xs text-carbon-3 italic">
       No runs recorded for this worker.
     </p>
-    <ul v-else-if="runs" class="divide-y divide-carbon-7">
+    <ul v-else-if="runs" class="divide-y divide-calm-2">
       <li v-for="r in runs" :key="r.id" :data-testid="`worker-run-${r.id}`">
         <button
           type="button"

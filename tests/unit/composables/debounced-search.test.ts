@@ -5,6 +5,7 @@
  * cancel() must drop an in-flight response (input cleared mid-flight).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { effectScope } from 'vue'
 import { useDebouncedSearch } from '../../../app/composables/useDebouncedSearch'
 
 // A search stub whose promises resolve only when the test says so.
@@ -123,5 +124,21 @@ describe('useDebouncedSearch', () => {
     await vi.runAllTimersAsync()
     expect(applied).toEqual([])
     expect(s.pending.value).toBe(false)
+  })
+})
+
+describe('useDebouncedSearch inside a component scope', () => {
+  it('drops a pending debounce when the scope is disposed (the page unmounts)', async () => {
+    vi.useFakeTimers()
+    try {
+      const search = vi.fn(() => Promise.resolve('r'))
+      const scope = effectScope()
+      scope.run(() => useDebouncedSearch({ search, apply: () => {}, onError: () => {} }))!.run('abc')
+      scope.stop()
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(search).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

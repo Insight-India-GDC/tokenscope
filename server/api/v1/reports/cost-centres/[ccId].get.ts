@@ -3,12 +3,11 @@
  * (docs/design/reporting-consolidation/00-build-design.md §2/§3/§4, Wave 3).
  *
  * READS (§A completeness lane, the SAME axis as the tracker card burn):
- *   - burn total + vendor split → `v_complete_usage WHERE cost_owning_unit_id`
+ *   - burn total + vendor split → `v_complete_usage_current WHERE cost_owning_unit_id`
  *     (Copilot pooled NULL-CoU rows excluded by construction — the labelled §A gap).
  *   - axis drivers (project|teammate|model|surface): what/who is burning the budget.
- *     The three BURN axes sum back to `burnUsd` — including a spender whose CURRENT
- *     placement has moved (§A homes by emit-time cost_owning_unit_id, so they never
- *     vanish from the burn). The PROJECT axis is clamped on the project's own
+ *     The three BURN axes sum back to `burnUsd`, on the same current-lens
+ *     cost_owning_unit_id the burn is clamped by. The PROJECT axis is clamped on the project's own
  *     cost-owning unit and so carries its own `headlineUsd`/`denominatorLabel`
  *     (arm 2 has a real project and a NULL cost-owning unit — clamping it like the
  *     burn axes would delete every reconciled dollar). Render `headlineUsd`, never
@@ -98,7 +97,7 @@ export default defineEventHandler(async (event) => {
    * ZodError that is not an H3Error — another 500. Fixed on /trend first; the
    * sibling kept them, which is how the pattern would have been copied again.
    */
-  const ccId = requireUuidParam(event, 'ccId', 'cost centre id')
+  const ccId = requireUuidParam(event, 'ccId', 'Business Unit id')
   const query = await getValidated(event, Query)
   /*
    * ONE clock for this request, the same ownership rule every other scope
@@ -272,8 +271,6 @@ export default defineEventHandler(async (event) => {
       // is a finished day; absent, they make no claim (MonthSpark).
       settledThrough: clock.settledThrough,
       scope: 'cost-centre',
-      // §A usage burn homed by emit-time cost_owning_unit_id (point-in-time "as at emit").
-      pointInTimeDims: true,
       // Present only in custom-range mode so the drill discloses the active window.
       ...(win.isMonth ? {} : { range: { from: win.from, to: win.to } }),
     }

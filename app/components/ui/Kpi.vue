@@ -19,7 +19,7 @@ defineProps<{
 
 <template>
   <div
-    class="bg-white rounded-xl shadow-[0_4px_24px_rgba(88,40,115,0.08)] border border-brand-harmony/[0.04] px-6 pt-5 pb-5 flex flex-col gap-2 relative overflow-hidden"
+    class="bg-white rounded-xl shadow-[var(--shadow-card)] border border-brand-harmony/[0.04] px-6 pt-5 pb-5 flex flex-col gap-2 relative overflow-hidden"
     :class="[
       accent === 'harmony' && 'border-t-[3px] border-t-brand-harmony',
       accent === 'hunger' && 'border-t-[3px] border-t-brand-hunger',

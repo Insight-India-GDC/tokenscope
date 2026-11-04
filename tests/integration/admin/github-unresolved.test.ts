@@ -241,15 +241,23 @@ describe('GET unresolved — PAT mode (seat roster)', () => {
     expect(JSON.stringify(res)).not.toContain(FAKE_SECRET)
   })
 
-  it('a self-linked login (NULL lane) is treated as RESOLVED (drops from the list)', async () => {
-    // The self lane resolves under any enterprise (identity-tail layer 2) → not unresolved.
+  it('a SELF-ONLY login stays listed, flagged with its claimant, until an admin binds it', async () => {
     await t.db.insert(schema.teammateIdentityMap).values({
       teammateId: bobId, system: 'github', identifier: 'bob', identifierKind: 'username', source: 'self',
     })
     stub.seats = [{ assignee: { login: 'bob' }, organization: { login: 'acme-prod' } }, { assignee: { login: 'carol' }, organization: null }]
     const res = await callGet(evGet({ session: admin(), enterpriseId: patEntId }))
-    expect(res.logins.map((l) => l.login)).toEqual(['carol']) // bob is self-resolved
-    expect(res.logins[0]).toMatchObject({ licenseOrg: null })
+    expect(res.logins.map((l) => l.login)).toEqual(['bob', 'carol'])
+    const [bobEmail] = await t.client<{ email: string }[]>`SELECT email FROM teammate WHERE id = ${bobId}::uuid`
+    expect(res.logins.find((l) => l.login === 'bob')).toMatchObject({ selfClaimedBy: bobEmail!.email })
+    expect(res.logins.find((l) => l.login === 'carol')).toMatchObject({ licenseOrg: null, selfClaimedBy: null })
+
+    // The enterprise-lane bind verifies it: off the queue.
+    await t.db.insert(schema.teammateIdentityMap).values({
+      teammateId: bobId, system: 'github', identifier: 'bob', identifierKind: 'username', enterpriseSlug: PAT_SLUG, source: 'admin-manual',
+    })
+    const after = await callGet(evGet({ session: admin(), enterpriseId: patEntId }))
+    expect(after.logins.map((l) => l.login)).toEqual(['carol'])
   })
 
   it('dedups a multi-org unmapped login to ONE entry', async () => {

@@ -262,7 +262,7 @@ async function save() {
               ref="firstField"
               v-model="provider"
               :disabled="isEdit"
-              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none disabled:bg-calm/30"
+              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony disabled:bg-calm/30"
               data-testid="pe-provider"
             >
               <option value="github">github</option>
@@ -279,7 +279,7 @@ async function save() {
               v-model="externalId"
               type="text"
               :placeholder="provider === 'github' ? 'acme-corp' : 'org-abc123'"
-              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
               data-testid="pe-external-id"
             >
             <p v-if="githubSlugWarn" class="text-[11px] text-rag-red mt-1" data-testid="pe-slug-warn">
@@ -295,7 +295,7 @@ async function save() {
             v-model="displayName"
             type="text"
             placeholder="Acme Corp (GitHub Enterprise)"
-            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
             data-testid="pe-display-name"
           >
         </div>
@@ -306,7 +306,7 @@ async function save() {
             <select
               id="pe-mode"
               v-model="reconciliationMode"
-              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
               data-testid="pe-mode"
             >
               <option value="indicative">indicative</option>
@@ -318,14 +318,14 @@ async function save() {
             <select
               id="pe-billing"
               v-model="billing"
-              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
               data-testid="pe-billing"
             >
               <option value="tracked">tracked</option>
               <option value="billed">billed</option>
             </select>
             <p v-if="provider === 'github'" class="text-[11px] text-carbon-3 mt-1" data-testid="pe-billing-authoritative-note">
-              The authoritative chargeability setting for every org under this enterprise (ADR-0011 D11) — GitHub bills the
+              The authoritative chargeability setting for every org under this enterprise — GitHub bills the
               enterprise, not the org.
             </p>
           </div>
@@ -340,7 +340,7 @@ async function save() {
             v-model="credentialSecretName"
             type="text"
             placeholder="acme-github-pat"
-            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
             data-testid="pe-cred"
           >
           <p class="text-[11px] text-carbon-3 mt-1">
@@ -364,7 +364,7 @@ async function save() {
             type="text"
             inputmode="numeric"
             placeholder="1234567"
-            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
             data-testid="pe-app-id"
           >
           <p class="text-[11px] text-carbon-3 mt-1">
@@ -385,13 +385,13 @@ async function save() {
           <p class="text-[12px] text-carbon-2 mt-1">
             Copilot's AI-credit allowance <strong>pools at the ORG level</strong> — an individual exceeding
             their own share costs nothing while the pool holds; overage only accrues once the whole org's
-            pool is exhausted (ADR-0011 D8). The figures below are a <strong>forecast / showback
+            pool is exhausted. The figures below are a <strong>forecast / showback
             reference only</strong> — they drive the projected per-seat display and never reconstruct a
             charge. The <strong>actual bill net</strong> (read straight from the enterprise billing usage
             report) is always the authoritative cost of record, for both the seat licence and any overage.
           </p>
           <p class="text-[12px] text-carbon-2 mt-2">
-            These are the <strong>current</strong> values. Rates are effective-dated (ADR-0011 D9): a change
+            These are the <strong>current</strong> values. Rates are effective-dated: a change
             here does not itself re-cost a closed month. Manage dated rate-plan history — including future
             scheduled changes — from this enterprise's row action on
             <strong>Policies → Provider governance</strong>.
@@ -408,7 +408,7 @@ async function save() {
                 step="0.01"
                 inputmode="decimal"
                 placeholder="e.g. 39"
-                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
                 data-testid="pe-flat"
               >
               <p class="text-[11px] text-carbon-3 mt-1">Per seat, whole month — a seat active any day owes the full price. Forecast reference; the bill's own SKU net is what's actually charged.</p>
@@ -424,7 +424,7 @@ async function save() {
                 step="0.01"
                 inputmode="decimal"
                 placeholder="e.g. 70"
-                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
                 data-testid="pe-allowance"
               >
               <p class="text-[11px] text-carbon-3 mt-1">Per-seat contribution to the ORG pool — not a per-user cap. Overage accrues only once the pool (seats × allowance) is exhausted.</p>
@@ -437,7 +437,7 @@ async function save() {
             <select
               id="pe-overage-policy"
               v-model="overageAllocationPolicy"
-              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
               data-testid="pe-overage-policy"
             >
               <option value="consumption-share">consumption-share (Insight default) — split by usage</option>
@@ -446,8 +446,8 @@ async function save() {
               <option value="seat-share">seat-share — equal split across every active seat</option>
             </select>
             <p class="text-[11px] text-carbon-3 mt-1">
-              How a PAID pooled overage (real money already on the bill) is DISTRIBUTED across cost-owning
-              units (ADR-0011 D10). Never derives or creates a charge — when the pool holds, this allocates
+              How a PAID pooled overage (real money already on the bill) is DISTRIBUTED across Business
+              Units. Never derives or creates a charge — when the pool holds, this allocates
               zero, no matter which policy is set.
             </p>
           </div>

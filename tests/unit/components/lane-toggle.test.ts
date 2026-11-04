@@ -93,7 +93,7 @@ describe('the chargeback caption says which part of "cost-of-record" it cannot d
      */
     stubReportState('chargeback')
     const caption = mount(LaneToggle).find('[data-testid="lane-caption"]').text()
-    expect(caption).toContain('pooled invoice per cost centre')
+    expect(caption).toContain('pooled invoice per Business Unit')
     expect(caption).toMatch(/per-person and per-model breakdowns are Anthropic/i)
   })
 })

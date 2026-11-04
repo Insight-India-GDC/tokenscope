@@ -3,11 +3,11 @@
  * for a cost-owning org_unit. docs/design/aeuf-region-practice-views.md.
  *
  * DUAL LANE (the TokenScope differentiator):
- *   - USAGE signal — attribution_record summed over the practice SUBTREE by emit-home
- *     `org_unit_id <@ practice.path` (the same homing the org-tree rollup uses; counts untagged
- *     spend, NOT the project-CoU key). tool 'claude-code'/'copilot-cli' → vendor; else 'other'.
+ *   - USAGE signal — usage of the people who sit in the practice SUBTREE NOW
+ *     (teammate.org_unit_id; the rows' stamped placement is never read, current-org-lens §2).
+ *     Counts untagged spend, NOT the project-CoU key. tool 'claude-code'/'copilot-cli' → vendor; else 'other'.
  *   - RECONCILED bill — v_finance_bill_SHOWBACK summed by `cost_owning_unit_id <@ practice.path`
- *     (the view already homes each teammate-day-tool to its nearest cost-owning ancestor). Same
+ *     (the view homes each teammate-day-tool on the teammate's current unit). Same
  *     population as the usage subtree → the two lanes reconcile. Intent: ADR-0010 rule 3 —
  *     showback shows ALL genuine cost incl. NFR/exempt; the chargeback-exempt exclusion lives
  *     ONLY in v_finance_bill_chargeback (the finance lane), never here.
@@ -16,6 +16,14 @@
  * covers it (orgSubtreeScopePredicate) OR the caller is an ACTIVE owner of it (cou_owner). Every
  * cross-practice panel (comparison) re-applies the caller's OWN scope — a pure owner never sees a
  * sibling's numbers. Estimated/emitted usage; MTD (the 14-week trend is the exception).
+ *
+ * THE CLOCK IS THE REQUEST'S (clock-and-day-boundary.md D1/D3). Month-to-date, the
+ * current ISO week and the 14-week window are all derived from `requestClock(event)`
+ * and bound into the SQL as literals. SQL `NOW()` / `CURRENT_DATE` is a second
+ * definition of today and is not read here: a request straddling Monday 00:00Z must
+ * bucket every panel on the same week. Every window is half-open at the request's
+ * instant (`< now`, `<= today` for day-grain bill rows), so a row dated later than
+ * the request is not counted "so far".
  */
 import { createError, defineEventHandler, getRouterParam } from 'h3'
 import { sql } from 'drizzle-orm'
@@ -25,10 +33,12 @@ import { withRequestRls } from '../../../../db/request-rls'
 import { orgSubtreeScopePredicate } from '../../../../auth/org-subtree-scope'
 import { orgSubtreeIds } from '../../../../auth/org-subtree'
 import { monthStartIso } from '../../../../utils/period'
+import { requestClock } from '../../../../utils/request-clock'
+import { shiftUtcDay, utcWeekStart } from '../../../../../shared/reports/clock'
 import { toolToVendor, vendorCostSql, VENDOR_LANES, VENDOR_LABELS, type Vendor } from '../../../../../shared/usage/vendor'
 
 // Flag a user when their current-week spend ≥ FLAG_MULT × their trailing weekly mean (lean
-// fixed threshold; the governance-dial version lives in the manager rollup).
+// fixed threshold; the governance-dial version lives in server/reports/velocity.ts).
 const FLAG_MULT = 2
 
 // Per-vendor MTD cost split over ar.cost_usd (shared definition — see shared/usage/vendor.ts).
@@ -46,7 +56,20 @@ export default defineEventHandler(async (event) => {
   const inRegionScope = caller.role === 'admin' || caller.role === 'platform-admin'
   const ouId = z.string().uuid().parse(getRouterParam(event, 'ouId'))
 
-  const monthStart = monthStartIso()
+  // The ONE instant this request reads. Pre-seeding `event.context.serverClock`
+  // pins it (the test seam).
+  const clock = requestClock(event)
+  const nowIso = clock.now
+  const today = clock.today
+  const monthStart = monthStartIso(new Date(clock.now))
+  // ISO weeks start on Monday 00:00Z: the bucket `date_trunc('week', …)` gives.
+  const weekStartDay = utcWeekStart(today)
+  const weekStart = `${weekStartDay}T00:00:00.000Z`
+  // The trailing 14 weeks: this week plus the 13 before it.
+  const trendFromDay = shiftUtcDay(weekStartDay, -7 * 13)
+  const trendFrom = `${trendFromDay}T00:00:00.000Z`
+  // The velocity flag's baseline: the 3 whole weeks before this one.
+  const prior3From = `${shiftUtcDay(weekStartDay, -7 * 3)}T00:00:00.000Z`
 
   return await withRequestRls(event, async (tx) => {
     // 1. Resolve + gate the practice (cost-owning, owner-aware).
@@ -64,8 +87,10 @@ export default defineEventHandler(async (event) => {
     const p = [...pRows][0]
     if (!p) throw createError({ statusCode: 403, statusMessage: 'practice not in your scope' })
 
-    // Practice usage subtree (emit-home units) and bill subtree (cost-owning units), region-clamped.
-    const usageScope = sql`ar.org_unit_id IN (${orgSubtreeIds(p.path, p.region_id)})`
+    // Scope by the PEOPLE who sit in the subtree now (current-org-lens §3.1): every usage source
+    // carries teammate_id, and a row's stamped placement must not decide where its usage lands.
+    const practicePeople = sql`SELECT id FROM teammate WHERE org_unit_id IN (${orgSubtreeIds(p.path, p.region_id)})`
+    const usageScope = sql`ar.teammate_id IN (${practicePeople})`
 
     // 2. Usage header + vendor split (one MTD pass).
     const hdrRows = await tx.execute<{ usage_usd: string; tokens: string; users: number; claude: string; copilot: string; other: string }>(sql`
@@ -73,7 +98,7 @@ export default defineEventHandler(async (event) => {
              COUNT(DISTINCT ar.teammate_id)::int AS users,
              ${claudeUsd}::text AS claude, ${copilotUsd}::text AS copilot, ${otherUsd}::text AS other
       FROM v_complete_usage ar
-      WHERE ${usageScope} AND ar.ts_event >= ${monthStart}::timestamptz`)
+      WHERE ${usageScope} AND ar.ts_event >= ${monthStart}::timestamptz AND ar.ts_event < ${nowIso}::timestamptz`)
     const h = [...hdrRows][0] ?? { usage_usd: '0', tokens: '0', users: 0, claude: '0', copilot: '0', other: '0' }
     const usageUsd = Number(h.usage_usd)
     const users = h.users
@@ -84,6 +109,7 @@ export default defineEventHandler(async (event) => {
       FROM v_finance_bill_showback b
       WHERE b.cost_owning_unit_id IN (${orgSubtreeIds(p.path, p.region_id, { costOwningOnly: true })})
         AND b.period_date >= ${monthStart}::date
+        AND b.period_date <= ${today}::date
       GROUP BY b.tool`)
     // Per-LANE bill split (#142): every surface gets its own lane; toolToVendor's
     // catch-all guarantees Σ lanes == bill.total (nothing vanishes).
@@ -107,7 +133,8 @@ export default defineEventHandler(async (event) => {
              COALESCE(SUM(b.bill_usd), 0)::text AS bill_usd
       FROM v_finance_bill_showback b
       WHERE b.cost_owning_unit_id IN (${orgSubtreeIds(p.path, p.region_id, { costOwningOnly: true })})
-        AND b.period_date >= (date_trunc('week', NOW()) - INTERVAL '13 weeks')::date
+        AND b.period_date >= ${trendFromDay}::date
+        AND b.period_date <= ${today}::date
       GROUP BY 1, b.tool
       ORDER BY 1`)
     // Merge tools sharing a lane; emit (week asc, canonical lane order) deterministically.
@@ -138,7 +165,8 @@ export default defineEventHandler(async (event) => {
         SELECT COALESCE(SUM(ar.cost_usd), 0)::text AS region_usd,
                (SELECT COUNT(*)::int FROM org_unit WHERE region_id = ${p.region_id}::uuid AND is_cost_owning_unit = TRUE AND retired_at IS NULL) AS practice_count
         FROM v_complete_usage ar
-        WHERE ar.region_id = ${p.region_id}::uuid AND ar.ts_event >= ${monthStart}::timestamptz`)
+        WHERE ar.teammate_id IN (SELECT id FROM teammate WHERE region_id = ${p.region_id}::uuid)
+          AND ar.ts_event >= ${monthStart}::timestamptz AND ar.ts_event < ${nowIso}::timestamptz`)
       const reg = [...regRows][0] ?? { region_usd: '0', practice_count: 0 }
       const regionUsd = Number(reg.region_usd)
       pctOfRegion = regionUsd > 0 ? usageUsd / regionUsd : null
@@ -150,7 +178,7 @@ export default defineEventHandler(async (event) => {
     const modelRows = await tx.execute<{ model: string; usage_usd: string }>(sql`
       SELECT ar.model, COALESCE(SUM(ar.cost_usd), 0)::text AS usage_usd
       FROM attribution_record ar
-      WHERE ${usageScope} AND ar.ts_event >= ${monthStart}::timestamptz
+      WHERE ${usageScope} AND ar.ts_event >= ${monthStart}::timestamptz AND ar.ts_event < ${nowIso}::timestamptz
       GROUP BY ar.model ORDER BY SUM(ar.cost_usd) DESC LIMIT 8`)
 
     // 6. Users (top 25, MTD spend + vendors + velocity flag over a trailing 4-week window).
@@ -158,15 +186,17 @@ export default defineEventHandler(async (event) => {
       WITH win AS (
         SELECT ar.teammate_id, ar.ts_event, ar.cost_usd, ar.tool
         FROM v_complete_usage ar
-        WHERE ${usageScope} AND ar.ts_event >= LEAST(${monthStart}::timestamptz, date_trunc('week', NOW()) - INTERVAL '3 weeks')
+        WHERE ${usageScope}
+          AND ar.ts_event >= LEAST(${monthStart}::timestamptz, ${prior3From}::timestamptz)
+          AND ar.ts_event < ${nowIso}::timestamptz
       ),
       per_user AS (
         SELECT teammate_id,
                COALESCE(SUM(cost_usd) FILTER (WHERE ts_event >= ${monthStart}::timestamptz), 0) AS mtd_spend,
                bool_or(tool = 'claude-code') FILTER (WHERE ts_event >= ${monthStart}::timestamptz) AS has_claude,
                bool_or(tool = 'copilot-cli') FILTER (WHERE ts_event >= ${monthStart}::timestamptz) AS has_copilot,
-               COALESCE(SUM(cost_usd) FILTER (WHERE ts_event >= date_trunc('week', NOW())), 0) AS cw,
-               COALESCE(SUM(cost_usd) FILTER (WHERE ts_event >= date_trunc('week', NOW()) - INTERVAL '3 weeks' AND ts_event < date_trunc('week', NOW())), 0) AS prior3
+               COALESCE(SUM(cost_usd) FILTER (WHERE ts_event >= ${weekStart}::timestamptz), 0) AS cw,
+               COALESCE(SUM(cost_usd) FILTER (WHERE ts_event >= ${prior3From}::timestamptz AND ts_event < ${weekStart}::timestamptz), 0) AS prior3
         FROM win GROUP BY teammate_id
       )
       SELECT pu.teammate_id::text AS teammate_id, COALESCE(t.display_name, t.email) AS name,
@@ -184,13 +214,14 @@ export default defineEventHandler(async (event) => {
     //    the old 'estimated' filter hid Copilot from the trend while the header showed it
     //    (ADR-0010 — keep the two consistent). 'reconciliation'-source deltas stay excluded.
     const trendRows = await tx.execute<{ week_start: string; claude: string; copilot: string }>(sql`
-      SELECT date_trunc('week', es.occurred_at)::date::text AS week_start,
+      SELECT date_trunc('week', es.occurred_at AT TIME ZONE 'UTC')::date::text AS week_start,
              COALESCE(SUM(es.cost_usd) FILTER (WHERE es.tool = 'claude-code'), 0)::text  AS claude,
              COALESCE(SUM(es.cost_usd) FILTER (WHERE es.tool = 'copilot-cli'), 0)::text  AS copilot
       FROM v_effective_spend es
       WHERE es.source IN ('attribution', 'rollup')
-        AND es.org_unit_id IN (${orgSubtreeIds(p.path, p.region_id)})
-        AND es.occurred_at >= date_trunc('week', NOW()) - INTERVAL '13 weeks'
+        AND es.teammate_id IN (${practicePeople})
+        AND es.occurred_at >= ${trendFrom}::timestamptz
+        AND es.occurred_at < ${nowIso}::timestamptz
       GROUP BY 1 ORDER BY 1`)
 
     // 8. Comparison — sibling practices, RE-GATED to the caller's own scope (per-panel; a pure
@@ -210,7 +241,9 @@ export default defineEventHandler(async (event) => {
              ${claudeUsd}::text AS claude, ${copilotUsd}::text AS copilot
       FROM sibs
       LEFT JOIN org_unit ou ON ou.path <@ sibs.path AND ou.region_id = ${p.region_id}::uuid
-      LEFT JOIN v_complete_usage ar ON ar.org_unit_id = ou.id AND ar.ts_event >= ${monthStart}::timestamptz
+      LEFT JOIN teammate tm ON tm.org_unit_id = ou.id
+      LEFT JOIN v_complete_usage ar ON ar.teammate_id = tm.id
+        AND ar.ts_event >= ${monthStart}::timestamptz AND ar.ts_event < ${nowIso}::timestamptz
       GROUP BY sibs.id, sibs.display_name, sibs.code
       ORDER BY SUM(ar.cost_usd) DESC NULLS LAST LIMIT 8`)
 

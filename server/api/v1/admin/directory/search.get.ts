@@ -18,7 +18,7 @@
  * to a project they scope (POST assignments already allows manager). This is an
  * org-wide people-picker READ — it returns per-person directory hints
  * (display_name, email, department, job_title, cost_center, division) plus the
- * existing_region_code / existing_role of anyone already provisioned. No
+ * existing_region_code of anyone already provisioned. No
  * placement is minted here; the write path (assignments.post →
  * provisionDirectoryTeammate) is the mutation and stays project-scoped
  * (assertProjectScope). Acceptable per the feature spec.
@@ -60,7 +60,7 @@ export default defineEventHandler(async (event) => {
     const patterns = await loadDirectoryExclusionPatterns(tx)
     const hits = rawHits.filter((h) => !isExcludedUpn(h.upn, patterns)).slice(0, limit)
     if (hits.length === 0) {
-      return { hits, existing: new Map<string, { entraOid: string; regionCode: string; role: string }>(), byEmail: new Map<string, string>() }
+      return { hits, existing: new Map<string, { entraOid: string; regionCode: string }>(), byEmail: new Map<string, string>() }
     }
 
     // Annotate already-provisioned people by oid so the UI can show "Already a
@@ -68,7 +68,7 @@ export default defineEventHandler(async (event) => {
     const oids = hits.map((h) => h.oid)
     const emails = [...new Set(hits.map((h) => h.email).filter(Boolean))]
     const rows = await tx
-      .select({ entraOid: teammate.entraOid, regionCode: region.code, role: teammate.role })
+      .select({ entraOid: teammate.entraOid, regionCode: region.code })
       .from(teammate)
       .innerJoin(region, eq(region.id, teammate.regionId))
       .where(inArray(teammate.entraOid, oids))
@@ -113,7 +113,6 @@ export default defineEventHandler(async (event) => {
         division: h.division,
         already_member: !!e,
         existing_region_code: e?.regionCode ?? null,
-        existing_role: e?.role ?? null,
         // True when this person IS a teammate but the row is bound to their
         // OTHER Entra identity (same email, different oid). Assign flows
         // converge on that row; the picker can hint instead of implying "new".

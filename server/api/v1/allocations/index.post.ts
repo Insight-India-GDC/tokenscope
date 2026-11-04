@@ -2,7 +2,8 @@
  * POST /api/v1/allocations — create the baseline budget pool for a
  * project (Journey 3a: "sets total budget + effective range"; first
  * allocation flips the project to is_onboarded). manager / admin /
- * platform-admin, scoped to the project.
+ * platform-admin scoped to the project, OR a current PM of the project
+ * (spec A1).
  *
  * This is the shared-pool baseline (teammate_id NULL). Per-developer
  * caps are layered on via POST /allocations/{id}/split.
@@ -16,14 +17,16 @@ import {
 } from 'h3'
 import { sql } from 'drizzle-orm'
 import { z } from 'zod'
-import { requireAuth, requireRole } from '../../../auth/rbac'
-import { assertProjectScope } from '../../../auth/project-scope'
+import { requireAuth } from '../../../auth/rbac'
+import { assertProjectScopeOrManager, loadProjectTarget } from '../../../auth/project-authority'
 import { assertSameOrigin } from '../../../auth/csrf'
 import { withRequestRls } from '../../../db/request-rls'
 import { BudgetUsdSchema, EffectiveRangeSchema } from '../../../utils/allocation-validation'
 import { translatePgConstraintError } from '../../../utils/pg-constraint-error'
 import { allocation } from '../../../../drizzle/schema'
 import { recordAuditEvent } from '../../../db/audit'
+import { lockProjectRowAt } from '../../../projects/last-manager'
+import { requestClock } from '../../../utils/request-clock'
 
 const Body = z.object({
   project_id: z.string().uuid(),
@@ -32,7 +35,6 @@ const Body = z.object({
 })
 
 export default defineEventHandler(async (event) => {
-  await requireRole(event, 'manager', 'admin')
   assertSameOrigin(event)
   const session = await requireAuth(event)
   const body = await readValidatedBody(event, (d) => Body.parse(d))
@@ -40,18 +42,15 @@ export default defineEventHandler(async (event) => {
   const ua = getHeader(event, 'user-agent') ?? null
 
   return await withRequestRls(event, async (tx) => {
-    const projRows = await tx.execute<{ region_id: string; cou_path: string }>(sql`
-      SELECT p.region_id::text AS region_id, cou.path::text AS cou_path
-      FROM project p
-      JOIN org_unit cou ON cou.id = p.cost_owning_unit_id
-      WHERE p.id = ${body.project_id}::uuid
-      LIMIT 1
-    `)
-    const proj = [...projRows][0]
+    const proj = await loadProjectTarget(tx, body.project_id)
     if (!proj) {
       throw createError({ statusCode: 404, statusMessage: 'Project not found' })
     }
-    await assertProjectScope(event, { regionId: proj.region_id, couPath: proj.cou_path }, tx)
+    // Lock before the gate (projects/last-manager.ts), so the caller's PM
+    // standing is judged at the post-lock instant and a concurrent demotion or
+    // removal is seen.
+    const lockedAt = await lockProjectRowAt(tx, body.project_id, requestClock(event).now)
+    const via = await assertProjectScopeOrManager(event, tx, proj, lockedAt)
 
     // Reject an overlapping baseline pool up front for a clean 409 (the
     // gist EXCLUDE would otherwise raise a raw constraint error).
@@ -74,7 +73,7 @@ export default defineEventHandler(async (event) => {
       actorTeammateId: session.teammateId,
       subjectKind: 'project',
       subjectId: body.project_id,
-      payload: { budget_usd: body.budget_usd, effective: body.effective, scope: 'project-pool' },
+      payload: { budget_usd: body.budget_usd, effective: body.effective, scope: 'project-pool', via },
       ipAddress: ip,
       userAgent: ua,
     })

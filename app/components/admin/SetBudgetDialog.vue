@@ -118,7 +118,7 @@ async function save() {
           type="text"
           inputmode="decimal"
           placeholder="1000.00"
-          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
           data-testid="sb-budget"
         >
 
@@ -129,7 +129,7 @@ async function save() {
               id="sb-from"
               v-model="fromIso"
               type="date"
-              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
               data-testid="sb-from"
             >
           </div>
@@ -139,7 +139,7 @@ async function save() {
               id="sb-to"
               v-model="toIso"
               type="date"
-              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
               data-testid="sb-to"
             >
           </div>

@@ -48,6 +48,9 @@ import { canonicaliseEmail } from '../../shared/identity/email'
 import { sweepStaleDismissals } from '../utils/stale-dismissals'
 import { loadLifecyclePolicyResolver } from '../db/project-lifecycle-policy'
 import { notifyProjectEndedRetag } from '../notifications/project-lifecycle'
+import { sessionTagXactLock } from '../db/advisory-lock'
+import { pgErrorCode } from '../db/pg-error'
+import { loadActivityVocabulary, matchActivityVocabulary, type ActivityVocabulary } from '../utils/activity-vocabulary'
 import {
   tokenTypePriority,
   planSpanCosting,
@@ -61,6 +64,7 @@ import {
   type SpanCostPlan,
   type SpanRow,
 } from '../usage/span-costing'
+import { describeError } from '../utils/redact-probe-error'
 
 /**
  * One (region, day) bucket of NEWLY-WRITTEN telemetry-only spend this tick —
@@ -167,6 +171,25 @@ export interface JoinResult {
   // attribution is withheld (it surfaces as untagged spend at reconciliation)
   // and the rejection is audited. "Tag proposes, membership disposes."
   spansSpilledUnauthorized: number
+  /*
+   * Session-to-instance reports (#494, docs/design/session-instance-report.md).
+   * `sessionRecordsRepointed`: records booked to the instance their session's
+   * SessionStart hook reported instead of the one the record named (the two
+   * installs, CLI and Desktop, share a tagged repo's resource attributes).
+   * `sessionReportsRefused`: sessions with a report that was NOT followed: it
+   * named another teammate's instance, another tool's, or more than one
+   * instance. Counted per session per run, before dedup, like
+   * usageRowsFetched: a re-read counts again.
+   */
+  sessionRecordsRepointed: number
+  sessionReportsRefused: number
+  /*
+   * #497: write units rolled back because a project tag committed between
+   * grouping a read and writing it (the session's project fallback moved), and
+   * grouped again. Rare by construction; a steady count means a tagger and the
+   * joiner are fighting over one session.
+   */
+  projectFallbackRetries: number
   // Project-lifecycle spill (D2): events whose ts_event is past the project's
   // end_date + grace are written UNALLOCATED (project/cou nulled, activity kept)
   // — the re-tag signal. Per-event, so a boundary-spanning conversation splits.
@@ -392,7 +415,7 @@ async function auditFailSoft(
   try {
     await recordAuditEvent(db, input)
   } catch (err) {
-    console.warn(`[azure-monitor-read] audit write failed (${input.eventType}); continuing: ${String(err)}`)
+    console.warn(`[azure-monitor-read] audit write failed (${input.eventType}); continuing: ${describeError(err)}`)
   }
 }
 
@@ -542,6 +565,13 @@ export function classifyBillingLane(
   return enterpriseAddresses.has(canon) ? 'provider-billed' : 'self-billed'
 }
 
+/** One instance's share of a read: the records booked to `session` (see splitBySessionReport). */
+interface UsagePart {
+  session: SessionRow
+  usage: UsageRecord[]
+  emittedInstanceId: string | null
+}
+
 interface SessionRow extends Record<string, unknown> {
   instance_id: string
   teammate_id: string
@@ -599,9 +629,9 @@ function claudeSpanKey(rec: UsageRecord): string {
  * figure is then spread across all of them rather than counted twice.
  *
  * `claudeSpanKey` + `claudeRowKey` together are EXACTLY the attribution_record
- * unique index minus instance_id — (instance_id, COALESCE(claude_session_id,''),
- * ts_event, token_type, model, COALESCE(source_run_id,'')), migrations
- * 0011+0017+0035 — which is what lets the joiner match a plan row to a ledger
+ * unique index minus the instance — (COALESCE(emitted_instance_id, instance_id),
+ * COALESCE(claude_session_id,''), ts_event, token_type, model,
+ * COALESCE(source_run_id,'')), migrations 0011+0017+0035+0166 — which is what lets the joiner match a plan row to a ledger
  * row and back (see readBookedSpan).
  *
  * UNIQUENESS IS NOT GUARANTEED BY THE READER, so do not assume it. The Claude
@@ -655,8 +685,9 @@ type JoinerExec = Pick<PostgresJsDatabase<typeof schema>, 'execute' | 'insert'>
  * WHY THIS IS A SEPARATE STATEMENT AND NOT AN `ON CONFLICT … DO UPDATE`:
  * Postgres requires a conflict TARGET for DO UPDATE (unlike DO NOTHING), and the
  * only unique index on attribution_record is an EXPRESSION index —
- * (instance_id, COALESCE(claude_session_id,''), ts_event, token_type, model,
- * COALESCE(source_run_id,'')) — which drizzle cannot render: its
+ * (COALESCE(emitted_instance_id, instance_id), COALESCE(claude_session_id,''),
+ * ts_event, token_type, model, COALESCE(source_run_id,'')), mig 0166 — which
+ * drizzle cannot render: its
  * `onConflictDoUpdate({ target })` takes `IndexColumn = PgColumn`, columns only.
  * The alternative was hand-writing the whole 25-column insert as raw SQL on the
  * money write path, which is a far worse trade than a second statement.
@@ -701,7 +732,9 @@ async function fillEmittingIdentity(
        * 5-minute tick, which is a rollup recompute storm, not a fix.
        */
       ts_recorded     = now()
-    WHERE instance_id = ${values.instanceId}::uuid
+    -- The dedup key (mig 0166): the instance the record NAMED, whichever one it
+    -- was booked to, so a row re-read across a session report is still found.
+    WHERE COALESCE(emitted_instance_id, instance_id) = ${values.emittedInstanceId ?? values.instanceId}::uuid
       AND COALESCE(claude_session_id, '') = COALESCE(${values.claudeSessionId ?? null}, '')
       AND ts_event = ${(values.tsEvent as Date).toISOString()}::timestamptz
       AND token_type = ${values.tokenType}
@@ -746,7 +779,10 @@ const SPAN_LOCK_CLASS = 0x7370616e
  * The predicate is the attribution_record unique index minus (token_type,
  * model) — the same decomposition claudeSpanKey/claudeRowKey encode — so it is
  * an index-prefix scan, not a table scan, and it sees every row of the span
- * whether or not this tick's reader returned it.
+ * whether or not this tick's reader returned it. `instanceId` is the instance
+ * the records NAMED (mig 0166, #494): the index keys on
+ * COALESCE(emitted_instance_id, instance_id), so a span booked to its session's
+ * reported instance is found whichever instance it was booked to.
  *
  * THE ADVISORY LOCK IS LOAD-BEARING: this is a read followed by a write, and
  * two joiner passes on one span (a scheduled tick plus an inline assign-join,
@@ -771,7 +807,7 @@ async function readBookedSpan(
   const rows = await exec.execute<{ token_type: string; model: string; micros: string }>(sql`
     SELECT token_type, model, (cost_usd * 1000000)::bigint::text AS micros
     FROM attribution_record
-    WHERE instance_id = ${instanceId}::uuid
+    WHERE COALESCE(emitted_instance_id, instance_id) = ${instanceId}::uuid
       AND COALESCE(claude_session_id, '') = ${claudeSessionId}
       AND ts_event = ${rec.tsEvent}::timestamptz
       AND COALESCE(source_run_id, '') = ${sourceRunId}
@@ -783,6 +819,102 @@ async function readBookedSpan(
     writtenKeys.add(`${r.token_type}\0${r.model}`)
   }
   return { bookedMicros, writtenKeys }
+}
+
+/*
+ * Bounds the wait for the session tag locks. Their single-argument hashtext key
+ * shares a space with the SESSION-level worker dispatch lock (see SPAN_LOCK_CLASS),
+ * so a collision could otherwise park a write unit for a whole worker run, or
+ * forever on this run's own dispatch key. On timeout the unit is retried
+ * without the tag locks (the pre-#475 behaviour) rather than wedging the device.
+ */
+const TAG_LOCK_TIMEOUT = '15s'
+
+/*
+ * Activity for the rows of one write unit (#475): the session's MANUAL tag
+ * (session_assignment.activity) when set, else the folder default the caller
+ * already put in values.activity. With `lock`, read under the lock tagSessionTx
+ * takes, inside the insert transaction: a tag then either commits before this
+ * read (seen here) or waits for the inserts to commit (its UPDATE covers them).
+ * Sorted, and before readBookedSpan's span lock, so lock order is total.
+ */
+async function applyManualActivity(
+  exec: JoinerExec,
+  teammateId: string,
+  pending: readonly { values: typeof schemaImport.attributionRecord.$inferInsert }[],
+  lock: boolean,
+): Promise<void> {
+  const convs = [...new Set(pending.map((p) => p.values.claudeSessionId).filter((c): c is string => !!c))].sort()
+  if (convs.length === 0) return
+  if (lock) {
+    // Nothing SETs lock_timeout per session, so DEFAULT is the value before.
+    await exec.execute(sql`SELECT set_config('lock_timeout', ${TAG_LOCK_TIMEOUT}, true)`)
+    for (const c of convs) await exec.execute(sessionTagXactLock(c, teammateId))
+    await exec.execute(sql`SET LOCAL lock_timeout TO DEFAULT`)
+  }
+  const rows = await exec.execute<{ csid: string; activity: string }>(sql`
+    SELECT claude_session_id AS csid, activity FROM session_assignment
+     WHERE teammate_id = ${teammateId}::uuid
+       AND claude_session_id IN (${sql.join(convs.map((c) => sql`${c}`), sql`, `)})
+       AND activity IS NOT NULL
+  `)
+  const manual = new Map<string, string>()
+  for (const r of rows) manual.set(r.csid, r.activity)
+  for (const p of pending) {
+    const m = p.values.claudeSessionId ? manual.get(p.values.claudeSessionId) : undefined
+    if (m !== undefined) p.values.activity = m
+  }
+}
+
+/** How many times one share of a read is grouped before the #497 check is dropped. */
+const PROJECT_FALLBACK_ATTEMPTS = 3
+
+/** A project tag moved a session's project fallback after the rows were grouped (#497). */
+class ProjectFallbackMoved extends Error {
+  constructor(readonly conversationId: string) {
+    super(`project fallback for session ${conversationId} moved under the tag lock`)
+  }
+}
+
+/*
+ * #497 — the per-session project fallback (session_assignment, used for records
+ * that carry no project.code_hash) is read when a share of a read is GROUPED,
+ * outside the write transaction. Called inside it, after applyManualActivity
+ * has taken the tag lock tagSessionTx takes: a tag then either committed before
+ * this read (seen here, and if it moved the fallback the unit is rolled back
+ * and regrouped) or waits for this unit to commit (and its UPDATE covers the
+ * rows). Same guarantee as #475 gives activity, without deciding membership,
+ * spill and the cost-owning unit inside the lock.
+ *
+ * `grouped` is the conversation -> code_hash map the grouping used; only
+ * conversations whose records in this unit took the fallback are checked.
+ */
+async function assertProjectFallbackCurrent(
+  exec: JoinerExec,
+  teammateId: string,
+  pending: readonly { rec: UsageRecord; values: typeof schemaImport.attributionRecord.$inferInsert }[],
+  grouped: ReadonlyMap<string, string | null>,
+): Promise<void> {
+  const convs = [
+    ...new Set(
+      pending
+        .filter((p) => !p.rec.projectCodeHash && p.values.claudeSessionId && grouped.has(p.values.claudeSessionId))
+        .map((p) => p.values.claudeSessionId as string),
+    ),
+  ]
+  if (convs.length === 0) return
+  const rows = await exec.execute<{ csid: string; code_hash: string | null }>(sql`
+    SELECT ca.claude_session_id AS csid, p.code_hash AS code_hash
+      FROM session_assignment ca
+      JOIN project p ON p.id = ca.project_id
+     WHERE ca.teammate_id = ${teammateId}::uuid
+       AND ca.claude_session_id IN (${sql.join(convs.map((c) => sql`${c}`), sql`, `)})
+  `)
+  const now = new Map<string, string | null>()
+  for (const r of rows) now.set(r.csid, r.code_hash)
+  for (const c of convs) {
+    if ((now.get(c) ?? null) !== (grouped.get(c) ?? null)) throw new ProjectFallbackMoved(c)
+  }
 }
 
 /*
@@ -983,9 +1115,9 @@ export async function selectJoinableInstances(
     -- least recently READ first. Neither the cap nor the tick's deadline
     -- (JOINER_DEADLINE_MS) can read the whole eligible set on a large fleet, and
     -- the scheduled tick stamps joiner_read_at on every device it attempted. So a
-    -- device shed this tick sorts ahead of every device with the same
-    -- identity_state that was read, and each eligible confirmed device is
-    -- attempted within ceil(eligible / attempted per tick) ticks. NULL (never read
+    -- device shed this tick sorts ahead of its teammate's devices that were read,
+    -- and a teammate's devices are visited in turn, one rank per teammate at a
+    -- time across the fleet (the rank key below). NULL (never read
     -- by a scheduled tick: a new enrolment, or one only ever read by operator or
     -- recovery runs) sorts first.
     --
@@ -998,10 +1130,21 @@ export async function selectJoinableInstances(
     -- them out: runReadJoiner gives provisional teammates every
     -- JOINER_PROVISIONAL_EVERY-th group it takes.
     --
+    -- Per-teammate rank comes before the rotation too: every teammate's
+    -- least-recently-read device is selected before anyone's second. A developer
+    -- can mint and end devices at will, each with a NULL joiner_read_at, so
+    -- without this key one person's churn would hold the head of the rotation.
+    --
     -- The old order (open first, then most recent activity) breaks ties within one
     -- read time, which in practice means among never-read devices: a new open,
     -- emitting device is read before a dormant or closed one.
     ORDER BY (sa.identity_state <> 'provisional') DESC,
+             ROW_NUMBER() OVER (
+               PARTITION BY sa.teammate_id, (sa.identity_state <> 'provisional')
+               ORDER BY sa.joiner_read_at ASC NULLS FIRST,
+                        (sa.ts_actual_end IS NULL) DESC,
+                        COALESCE(sa.last_bearer_at, sa.ts_start) DESC
+             ) ASC,
              sa.joiner_read_at ASC NULLS FIRST,
              (sa.ts_actual_end IS NULL) DESC,
              COALESCE(sa.last_bearer_at, sa.ts_start) DESC
@@ -1128,7 +1271,7 @@ export async function recordJoinerSelectionCap(
       cap: capHit,
       summary:
         `The scheduled selection matched more joinable devices than its per-run cap (${capHit}), so the surplus was not scanned on this run. ` +
-        'Candidates are ordered confirmed before provisional, then least recently read first, so a device skipped on this run is among the first selected on the next: the surplus waits longer between reads rather than being dropped. Provisional devices are selected only on a run whose confirmed devices all fit under the cap.',
+        'Candidates are ordered confirmed before provisional, then by rank within their teammate, then least recently read first, so a device skipped on this run is among the first selected on the next: the surplus waits longer between reads rather than being dropped. Provisional devices are selected only on a run whose confirmed devices all fit under the cap.',
       hint:
         'Raise NUXT_JOINER_INSTANCE_CAP (default 500) above the joinable-device count and redeploy the reader; this clears itself on the first run whose selection fits. A run starts no device later than 80 s into its tick, so a larger cap does not lengthen the run; check devicesAttempted and oldestReadAgeMinutes in the run result for how far behind the reads are.',
       detectedAt: now.toISOString(),
@@ -1287,15 +1430,19 @@ export async function runReadJoiner(
     lookbackDays === undefined ? sql`` : sql`AND ts_event >= now() - make_interval(days => ${lookbackDays}::int)`
   const watermarks = new Map<string, Date>()
   if (sessions.length > 0) {
+    // Keyed on the instance a row's record NAMED (#494, mig 0166), which is the
+    // instance whose read returned it: a row booked to its session's reported
+    // instance moves the watermark of the instance it was read under, not the
+    // one it was booked to. The unique index leads with this expression.
     const wmRows = await db.execute<{ instance_id: string; max_ts: string | null }>(sql`
-      SELECT instance_id::text AS instance_id, MAX(ts_event)::text AS max_ts
+      SELECT COALESCE(emitted_instance_id, instance_id)::text AS instance_id, MAX(ts_event)::text AS max_ts
       FROM attribution_record
-      WHERE instance_id IN (${sql.join(
+      WHERE COALESCE(emitted_instance_id, instance_id) IN (${sql.join(
         [...new Set(sessions.map((s) => s.instance_id))].map((id) => sql`${id}::uuid`),
         sql`, `,
       )})
         ${watermarkBound}
-      GROUP BY instance_id
+      GROUP BY COALESCE(emitted_instance_id, instance_id)
     `)
     for (const r of wmRows) {
       if (r.max_ts) watermarks.set(r.instance_id, new Date(r.max_ts))
@@ -1346,6 +1493,9 @@ export async function runReadJoiner(
   let skippedNoCard = 0
   let spilledUnauthorized = 0
   let spilledEnded = 0
+  let recordsRepointed = 0
+  let reportsRefused = 0
+  let projectFallbackRetries = 0
   let errors = 0
   // Per-SPAN ladder tally for the Claude lane (see JoinResult.costingRungs).
   const costingRungs: CostingRungCounts = emptyCostingRungCounts()
@@ -1368,6 +1518,9 @@ export async function runReadJoiner(
    * two ticks is picked up on the next tick without a restart.
    */
   const enterpriseAddressSets = new Map<string, Set<string>>()
+  // The standard activity vocabulary per region, read once per run and only
+  // for a session that emitted a folder default (#475).
+  const activityVocabularies = new Map<string, ActivityVocabulary>()
 
   // ING-6: per-session fault isolation — invoked per session under try/catch
   // below (the reconciliation-sync per-scope pattern) so one bad session cannot
@@ -1393,6 +1546,127 @@ export async function runReadJoiner(
     newEventsSeen += countNewerThanWatermark(usage, watermark)
     if (usage.length === 0) return
 
+    for (const part of await splitBySessionReport(session, usage)) {
+      // #497: a project tag that committed after this share was grouped rolls the
+      // write unit back (ProjectFallbackMoved); group it again against the tag
+      // now committed. Rows already written dedup on the retry. Bounded, because
+      // each retry needs another tag to commit in the gap; past the bound the
+      // last attempt runs with the check off and the next re-tag repairs it.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await attributeUsage(part.session, part.usage, part.emittedInstanceId, attempt < PROJECT_FALLBACK_ATTEMPTS)
+          break
+        } catch (err) {
+          if (!(err instanceof ProjectFallbackMoved) || attempt >= PROJECT_FALLBACK_ATTEMPTS) throw err
+          projectFallbackRetries += 1
+        }
+      }
+    }
+  }
+
+  /*
+   * #494 — book each Claude session's records to the instance its own install
+   * reported (session_instance_report), when the report can be trusted:
+   *
+   *   - among the reports by `named`'s own teammate and tool, exactly ONE,
+   *     and not `named` itself (if `named` reported the session too, both
+   *     installs claim it, and the records stay as named);
+   *   - that instance is joinable now (the selection's gates: not purged,
+   *     attested/unassigned, its teammate not emit-revoked since enrolment).
+   *
+   * Another teammate's report, or another tool's, never counts towards the
+   * decision, so posting someone else's session id from your own instance can
+   * neither move their records nor make their own report ambiguous; it is only
+   * counted. A refusal is counted once per session per read.
+   *
+   * The report is signed by the reported instance's own emit credential, and
+   * the record names an instance of the same person, so following it only
+   * moves spend between one teammate's own devices. Anything else keeps the
+   * record on the instance it named and counts the session as refused: a report
+   * can never move spend to someone else.
+   *
+   * Copilot is out of scope: only the Claude plugin reports, and a Copilot
+   * record's conversation id is not a Claude session id.
+   */
+  const splitBySessionReport = async (
+    named: SessionRow,
+    usage: UsageRecord[],
+  ): Promise<UsagePart[]> => {
+    const asNamed: UsagePart[] = [{ session: named, usage, emittedInstanceId: null }]
+    if (named.tool !== 'claude-code') return asNamed
+    const convs = [...new Set(usage.map((u) => u.claudeSessionId).filter((c): c is string => !!c))]
+    if (convs.length === 0) return asNamed
+    const reports = await db.execute<SessionRow & { claude_session_id: string }>(sql`
+      SELECT r.claude_session_id,
+             ia.instance_id::text AS instance_id,
+             ia.teammate_id::text AS teammate_id,
+             ia.region_id::text   AS region_id,
+             ia.org_unit_id::text AS org_unit_id,
+             ia.cost_owning_unit_id::text AS cost_owning_unit_id,
+             ia.project_code_hash, ia.tool, ia.identity_state,
+             NULL::text AS read_age_s
+      FROM session_instance_report r
+      JOIN instance_attestation ia ON ia.instance_id = r.instance_id
+      WHERE r.claude_session_id IN (${sql.join(convs.map((c) => sql`${c}`), sql`, `)})
+        AND ia.ts_purged IS NULL
+        AND ia.attestation_state IN ('attested', 'unassigned')
+        AND NOT EXISTS (
+          SELECT 1 FROM teammate t
+           WHERE t.id = ia.teammate_id
+             AND t.emit_revoked_at IS NOT NULL AND t.emit_revoked_at > ia.ts_start
+        )
+    `)
+    if (reports.length === 0) return asNamed
+    const byConv = new Map<string, SessionRow[]>()
+    for (const r of reports) {
+      const list = byConv.get(r.claude_session_id) ?? []
+      list.push(r)
+      byConv.set(r.claude_session_id, list)
+    }
+    const target = new Map<string, SessionRow>()
+    for (const [conv, list] of byConv) {
+      const own = list.filter((r) => r.teammate_id === named.teammate_id && r.tool === named.tool)
+      const foreign = own.length !== list.length
+      const only = own.length === 1 ? own[0]! : null
+      if (only && only.instance_id !== named.instance_id) target.set(conv, only)
+      // Refused: someone else's report (ignored), or more than one of the
+      // teammate's own. A lone report by `named` itself is the ordinary case of
+      // an untagged folder and changes nothing.
+      if (foreign || own.length > 1) reportsRefused += 1
+    }
+    if (target.size === 0) return asNamed
+    const stay: UsageRecord[] = []
+    const moved = new Map<string, UsagePart>()
+    for (const rec of usage) {
+      const to = rec.claudeSessionId ? target.get(rec.claudeSessionId) : undefined
+      if (!to) {
+        stay.push(rec)
+        continue
+      }
+      const part = moved.get(to.instance_id) ?? { session: to, usage: [], emittedInstanceId: named.instance_id }
+      part.usage.push(rec)
+      moved.set(to.instance_id, part)
+      recordsRepointed += 1
+    }
+    return [...(stay.length > 0 ? [{ session: named, usage: stay, emittedInstanceId: null }] : []), ...moved.values()]
+  }
+
+  /*
+   * Price and book one instance's records. `session` is the instance they are
+   * booked to; `emittedInstanceId` is the instance they NAMED when that differs
+   * (#494, see splitBySessionReport), else null. Dedup and the span
+   * reconciliation key on the named instance, so a record re-read after its
+   * session's report arrived finds the row it was first booked as.
+   */
+  const attributeUsage = async (
+    session: SessionRow,
+    usage: UsageRecord[],
+    emittedInstanceId: string | null,
+    checkProjectFallback: boolean,
+  ): Promise<void> => {
+    // Planning tallies for THIS attempt (see the end of this function).
+    const attemptRungs: CostingRungCounts = emptyCostingRungCounts()
+    let attemptSkipped = 0
     /*
      * mig 0119 — the enterprise address set for THIS session's teammate, read
      * once per teammate per run. Loaded unconditionally rather than lazily on
@@ -1405,6 +1679,11 @@ export async function runReadJoiner(
     if (!enterpriseAddresses) {
       enterpriseAddresses = await loadEnterpriseAddressSet(db, session.teammate_id)
       enterpriseAddressSets.set(session.teammate_id, enterpriseAddresses)
+    }
+    let vocabulary = activityVocabularies.get(session.region_id)
+    if (!vocabulary && usage.some((u) => u.activity)) {
+      vocabulary = await loadActivityVocabulary(db, session.region_id)
+      activityVocabularies.set(session.region_id, vocabulary)
     }
 
     // ── ADR-0004 "B′": project from the EMITTED telemetry, not the row ──
@@ -1424,12 +1703,13 @@ export async function runReadJoiner(
     // (not directly to a project id) so both lanes converge on the same
     // membership-gated grouping below — keeping the gate the single decision
     // point and avoiding a second attribution path that could skip it.
+    //
+    // Read outside the write transaction, so a project tag can commit between
+    // here and the insert. #497: each write unit re-reads this fallback under the
+    // tag lock (assertProjectFallbackCurrent) and, if a tag moved it, rolls back
+    // and this whole share is grouped again, so membership, spill and the
+    // cost-owning unit are decided against the tag that is now committed.
     const convProjectHashCache = new Map<string, string | null>()
-    // Orthogonal activity axis (mig 0020): the per-conversation activity label,
-    // resolved from session_assignment by (claude_session_id, teammate) and
-    // denormalised onto each attribution_record. Independent of the project
-    // resolution — a B′-attributed record can still carry an activity.
-    const convActivityCache = new Map<string, string | null>()
     // Untagged records group under this sentinel (instead of being skipped) so
     // they're itemised into the ledger as project-less (unallocated) rows.
     const UNTAGGED_KEY = '__untagged__'
@@ -1681,7 +1961,7 @@ export async function runReadJoiner(
             if (r.rateCardMicros !== null) estimates.set(r.key, r.rateCardMicros)
           }
           const plan = planSpanCosting({ providerCostUsd, rows })
-          tallySpanPlan(costingRungs, plan)
+          tallySpanPlan(attemptRungs, plan)
           claudeSpanPlans.set(spanKey, { plan, card, estimates, rows })
         }
       }
@@ -1717,6 +1997,7 @@ export async function runReadJoiner(
       }
       let groupEndedSpillNew = 0
       let groupNewRows = 0
+      let auditsFlushed = false
 
       /*
        * ── WRITE UNITS: a Claude span's rows are ALL-OR-NOTHING ──────────────
@@ -1790,11 +2071,11 @@ export async function runReadJoiner(
       }
 
       for (const unit of writeUnits) {
-        // Resolved OUTSIDE the transaction below: everything here reads
-        // already-committed state (the project, the assignment, the activity
-        // label) and none of it depends on what the ledger holds for this span,
-        // so keeping it out keeps the transaction to a lock, a read and the
-        // inserts. `pending` is what will actually be written, in row-key order.
+        // Resolved OUTSIDE the transaction below: none of it depends on what the
+        // ledger holds for this span. The manual activity is the exception: it is
+        // read inside, under the tag lock (applyManualActivity). The project
+        // fallback above is not (see convProjectHashCache). `pending` is what
+        // will actually be written, in row-key order.
         const pending: {
           rec: UsageRecord
           values: typeof schemaImport.attributionRecord.$inferInsert
@@ -1838,7 +2119,7 @@ export async function runReadJoiner(
                 // the existing skippedNoCard counter deliberately: it already
                 // means "could not price this record", which is exactly what
                 // an out-of-range nano_aiu is too.
-                skippedNoCard += 1
+                attemptSkipped += 1
                 continue
               }
               // ING-5: a prior partial tick (or the pre-deterministic code) may
@@ -1876,7 +2157,7 @@ export async function runReadJoiner(
               // the card priced other rows of the span but has no line for this
               // one. Both are the pre-existing per-record skip, unchanged:
               // under-reporting beats a silently-zero row.
-              skippedNoCard += 1
+              attemptSkipped += 1
               continue
             }
             costUsd = microsToUsd(micros)
@@ -1967,33 +2248,19 @@ export async function runReadJoiner(
           if (rateCardRowUsd !== null) metaObj.rate_card_cost_usd = rateCardRowUsd
           const recMetadata = Object.keys(metaObj).length > 0 ? metaObj : null
 
-          // Activity (mig 0020): denormalise the conversation's activity label from
-          // session_assignment, if the teammate tagged one. Independent of project.
-          // This stamps NEW rows only (onConflictDoNothing skips existing); the
-          // assign endpoint backfills already-attributed rows, so both converge.
-          // assign is the sole activity write path in MVP — keep it that way.
-          let activity: string | null = null
-          if (rec.claudeSessionId) {
-            let a = convActivityCache.get(rec.claudeSessionId)
-            if (a === undefined) {
-              const [row] = await db.execute<{ activity: string | null }>(sql`
-                SELECT activity FROM session_assignment
-                WHERE claude_session_id = ${rec.claudeSessionId}
-                  AND teammate_id = ${session.teammate_id}::uuid
-                LIMIT 1
-              `)
-              a = row?.activity ?? null
-              convActivityCache.set(rec.claudeSessionId, a)
-            }
-            activity = a
-          }
+          // Activity (mig 0020, #475), independent of project. The folder default
+          // here, only in the vocabulary's spelling; a manual tag replaces it
+          // under the tag lock in the write transaction (applyManualActivity).
+          // NEW rows only (onConflictDoNothing); a tag's own UPDATE moves the rest.
+          const activity = vocabulary ? matchActivityVocabulary(vocabulary, rec.activity) : null
 
           // R1 #5: atomic idempotency. The old SELECT-then-INSERT was non-atomic —
           // two concurrent joins (a scheduled tick + an inline assign-join, or a
           // replayed trigger) on the same session both saw "not present" and both
           // inserted, double-counting spend. ON CONFLICT DO NOTHING on the
-          // (instance_id, COALESCE(claude_session_id,''), ts_event, token_type,
-          // model, COALESCE(source_run_id,'')) unique index (migrations 0011+0017+0035)
+          // (COALESCE(emitted_instance_id, instance_id), COALESCE(claude_session_id,''),
+          // ts_event, token_type, model, COALESCE(source_run_id,'')) unique index
+          // (migrations 0011+0017+0035+0166)
           // makes it race-safe. source_run_id (0035) prevents parallel-subagent
           // same-ms collisions (Copilot fleet mode).
           pending.push({
@@ -2001,6 +2268,8 @@ export async function runReadJoiner(
             spilled,
             values: {
               instanceId: session.instance_id,
+              // #494: the instance the record named, when booked to another.
+              emittedInstanceId,
               // Claude's per-conversation session.id (subagents share their parent's),
               // so the session views can group spend per conversation rather than
               // collapsing every conversation on a device into one instance row.
@@ -2095,8 +2364,8 @@ export async function runReadJoiner(
             const ins = await exec
               .insert(schemaImport.attributionRecord)
               .values(p.values)
-              // Dedup on the (instance_id, COALESCE(claude_session_id,''), ts_event,
-              // token_type, model) unique index (migration 0017). No explicit target:
+              // Dedup on the (named instance, COALESCE(claude_session_id,''), ts_event,
+              // token_type, model, source_run_id) unique index (migration 0166). No explicit target:
               // it's an EXPRESSION index (the COALESCE), which a drizzle column-list
               // target can't name; attribution_record has exactly one unique index, so
               // a bare DO NOTHING dedups on it without risk of swallowing another.
@@ -2123,15 +2392,40 @@ export async function runReadJoiner(
           return tally
         }
 
+        // A row with a conversation id needs the tag lock, so a transaction.
+        const hasConversation = pending.some((p) => p.values.claudeSessionId)
+        const writeUnit = (lockTags: boolean) =>
+          db.transaction(async (tx) => {
+            if (hasConversation) await applyManualActivity(tx, session.teammate_id, pending, lockTags)
+            // #497: only under the lock. Without it (the timeout path) a check
+            // proves nothing, and the unit writes as before #475.
+            if (hasConversation && lockTags && checkProjectFallback) {
+              await assertProjectFallbackCurrent(tx, session.teammate_id, pending, convProjectHashCache)
+            }
+            if (needsReconcile) {
+              const booked = await readBookedSpan(tx, emittedInstanceId ?? session.instance_id, unit[0]!)
+              const replanned = replanAgainstBooked(unitEntry!.plan, unitEntry!.rows, booked)
+              // Only the AMOUNT can change here. The rung (and therefore
+              // cost_basis, the card pin and metadata.rate_card_cost_usd) is
+              // decided by the provider figure alone, which reconciliation
+              // does not touch — so the rest of each row stands as resolved.
+              for (const p of pending) {
+                const micros = replanned.costs.get(claudeRowKey(p.rec))
+                if (micros !== undefined) p.values.costUsd = microsToUsd(micros)
+              }
+            }
+            return writePending(tx)
+          })
+
         // Counters are folded in only AFTER the write resolves. A transaction
         // that throws rolls its rows back, so counting inside it would report
         // spend that is not on the ledger — and `written` is what the run result
         // and every recovery decision are read from.
         const tally =
-          pending.length === 1 && !needsReconcile
+          pending.length === 1 && !needsReconcile && !hasConversation
             ? /*
                * A single INSERT is already atomic. This fast path is reached by
-               * the COPILOT lane and by rate-card-costed Claude rows — NOT by a
+               * rows with no conversation id (nothing to tag-lock) — NOT by a
                * one-row provider span, because needsReconcile is true for every
                * provider-costed span regardless of how many rows this tick sees.
                *
@@ -2146,83 +2440,94 @@ export async function runReadJoiner(
                * total - booked = 0.
                */
               await writePending(db)
-            : await db.transaction(async (tx) => {
-                if (needsReconcile) {
-                  const booked = await readBookedSpan(tx, session.instance_id, unit[0]!)
-                  const replanned = replanAgainstBooked(unitEntry!.plan, unitEntry!.rows, booked)
-                  // Only the AMOUNT can change here. The rung (and therefore
-                  // cost_basis, the card pin and metadata.rate_card_cost_usd) is
-                  // decided by the provider figure alone, which reconciliation
-                  // does not touch — so the rest of each row stands as resolved.
-                  for (const p of pending) {
-                    const micros = replanned.costs.get(claudeRowKey(p.rec))
-                    if (micros !== undefined) p.values.costUsd = microsToUsd(micros)
-                  }
-                }
-                return writePending(tx)
+            : await writeUnit(true).catch(async (err: unknown) => {
+                // 55P03 lock_not_available: TAG_LOCK_TIMEOUT expired on a tag lock.
+                // The transaction rolled back before writing anything.
+                // #497: this unit rolled back, but the units before it in this
+                // group committed. Report them now: the regroup that follows
+                // dedups them to zero new rows and would never report them.
+                if (err instanceof ProjectFallbackMoved) await flushGroupAudits()
+                if (pgErrorCode(err) !== '55P03') throw err
+                consola.warn('[read-joiner] session tag lock timed out; writing without it', {
+                  instanceId: session.instance_id,
+                })
+                return writeUnit(false)
               })
         written += tally.rows
         groupNewRows += tally.rows
         groupEndedSpillNew += tally.spills
       }
 
-      // ING-8: unknown-project / unauthorized-spill counters + audits, gated on
-      // newly-written rows exactly like the ended-spill path below — overlap
-      // re-reads that dedup to zero must not re-fire the append-only audits.
-      if (groupNewRows > 0 && unknownProject) {
-        await auditFailSoft(db, {
-          eventType: 'attribution-unknown-project',
-          actorTeammateId: session.teammate_id,
-          actorSystem: 'read-joiner',
-          subjectKind: 'session',
-          subjectId: session.instance_id,
-          payload: {
-            project_code_hash: key,
-            spans: groupNewRows,
-            reason: 'emitted project.code_hash matches no registered project — left unallocated',
-          },
-        })
-      }
-      if (groupNewRows > 0 && unauthorizedProjectId) {
-        spilledUnauthorized += groupNewRows
-        await auditFailSoft(db, {
-          eventType: 'attribution-spill-unauthorized',
-          actorTeammateId: session.teammate_id,
-          actorSystem: 'read-joiner',
-          subjectKind: 'session',
-          subjectId: session.instance_id,
-          payload: {
-            project_code_hash: key,
-            project_id: unauthorizedProjectId,
-            spans: groupNewRows,
-            reason: 'teammate not assigned to tagged project — billed as unallocated (spill)',
-          },
-        })
-      }
+      await flushGroupAudits()
 
-      // Project-lifecycle spill (D2/D2a) — one summary audit + the re-tag inbox
-      // signal (Step 8) per group that spilled NEW rows this tick. Gating on
-      // newly-written rows (not all spilled events re-read in the overlap window)
-      // keeps the counter honest and the append-only audit from re-emitting every
-      // tick. `projectId` is the (now-ended) project the spend used to bill to.
-      if (groupEndedSpillNew > 0 && projectId) {
-        spilledEnded += groupEndedSpillNew
-        await auditFailSoft(db, {
-          eventType: 'attribution-spill-ended',
-          actorTeammateId: session.teammate_id,
-          actorSystem: 'read-joiner',
-          subjectKind: 'project',
-          subjectId: projectId,
-          payload: {
-            project_code_hash: key,
-            project_id: projectId,
-            spans: groupEndedSpillNew,
-            reason: 'project ended — events past end_date + grace spilled to unallocated (re-tag signal)',
-          },
-        })
-        await notifyProjectEndedRetag(db, { teammateId: session.teammate_id, projectId })
+      // The group's audits and spill counters, gated on rows THIS share wrote.
+      // Once per group: called after its units, or when one rolls back (#497).
+      async function flushGroupAudits(): Promise<void> {
+        if (auditsFlushed) return
+        auditsFlushed = true
+        // ING-8: unknown-project / unauthorized-spill counters + audits, gated on
+        // newly-written rows exactly like the ended-spill path below — overlap
+        // re-reads that dedup to zero must not re-fire the append-only audits.
+        if (groupNewRows > 0 && unknownProject) {
+          await auditFailSoft(db, {
+            eventType: 'attribution-unknown-project',
+            actorTeammateId: session.teammate_id,
+            actorSystem: 'read-joiner',
+            subjectKind: 'session',
+            subjectId: session.instance_id,
+            payload: {
+              project_code_hash: key,
+              spans: groupNewRows,
+              reason: 'emitted project.code_hash matches no registered project — left unallocated',
+            },
+          })
+        }
+        if (groupNewRows > 0 && unauthorizedProjectId) {
+          spilledUnauthorized += groupNewRows
+          await auditFailSoft(db, {
+            eventType: 'attribution-spill-unauthorized',
+            actorTeammateId: session.teammate_id,
+            actorSystem: 'read-joiner',
+            subjectKind: 'session',
+            subjectId: session.instance_id,
+            payload: {
+              project_code_hash: key,
+              project_id: unauthorizedProjectId,
+              spans: groupNewRows,
+              reason: 'teammate not assigned to tagged project — billed as unallocated (spill)',
+            },
+          })
+        }
+
+        // Project-lifecycle spill (D2/D2a) — one summary audit + the re-tag inbox
+        // signal (Step 8) per group that spilled NEW rows this tick. Gating on
+        // newly-written rows (not all spilled events re-read in the overlap window)
+        // keeps the counter honest and the append-only audit from re-emitting every
+        // tick. `projectId` is the (now-ended) project the spend used to bill to.
+        if (groupEndedSpillNew > 0 && projectId) {
+          spilledEnded += groupEndedSpillNew
+          await auditFailSoft(db, {
+            eventType: 'attribution-spill-ended',
+            actorTeammateId: session.teammate_id,
+            actorSystem: 'read-joiner',
+            subjectKind: 'project',
+            subjectId: projectId,
+            payload: {
+              project_code_hash: key,
+              project_id: projectId,
+              spans: groupEndedSpillNew,
+              reason: 'project ended — events past end_date + grace spilled to unallocated (re-tag signal)',
+            },
+          })
+          await notifyProjectEndedRetag(db, { teammateId: session.teammate_id, projectId })
+        }
       }
     }
+    // Only an attempt that finished counts: lanes run concurrently, so a
+    // rolled-back attempt's tallies are dropped here rather than subtracted
+    // from the run's totals afterwards (#497).
+    for (const k of Object.keys(attemptRungs) as (keyof CostingRungCounts)[]) costingRungs[k] += attemptRungs[k]
+    skippedNoCard += attemptSkipped
   }
 
   // Behavioural usage-signal landing (mig 0065). Teammate-grain: NO project
@@ -2276,8 +2581,10 @@ export async function runReadJoiner(
    * Interleaving: JS runs one lane at a time between awaits, so shared state is
    * safe only while no read-modify-write spans an await. Every counter
    * (`x += n`), parseCounters (merged synchronously by the reader),
-   * costingRungs (tallySpanPlan) and telemetryOnlyMicros (get then set) is
-   * updated synchronously after its await has resolved. rateCardCache can be
+   * costingRungs and skippedNoCard (tallied per attempt in attributeUsage and
+   * added once, synchronously, when the attempt finishes; an attempt that
+   * throws adds nothing) and telemetryOnlyMicros (get then set) is updated
+   * synchronously after its await has resolved. rateCardCache can be
    * resolved twice for one key by two lanes; both store the same card.
    * enterpriseAddressSets is keyed by teammate, which only one lane holds.
    * The group queue, `attempted`, `deadlineHit` and `heapPeak` below are only
@@ -2313,7 +2620,7 @@ export async function runReadJoiner(
           // query that hit its timeout or abort lands here like any other fault.
           errors += 1
           console.warn(
-            `[azure-monitor-read] instance ${session.instance_id} failed; continuing with remaining sessions: ${String(err)}`,
+            `[azure-monitor-read] instance ${session.instance_id} failed; continuing with remaining sessions: ${describeError(err)}`,
           )
         }
         // Signal lane in its OWN try/catch — a signal-path fault must never affect the
@@ -2323,7 +2630,7 @@ export async function runReadJoiner(
         } catch (err) {
           signalErrors += 1
           console.warn(
-            `[azure-monitor-read] signal landing failed for instance ${session.instance_id}; token attribution unaffected: ${String(err)}`,
+            `[azure-monitor-read] signal landing failed for instance ${session.instance_id}; token attribution unaffected: ${describeError(err)}`,
           )
         }
         heapPeak = Math.max(heapPeak, process.memoryUsage().heapUsed)
@@ -2438,6 +2745,9 @@ export async function runReadJoiner(
     spansSkippedNoRateCard: skippedNoCard,
     costingRungs,
     spansSpilledUnauthorized: spilledUnauthorized,
+    sessionRecordsRepointed: recordsRepointed,
+    sessionReportsRefused: reportsRefused,
+    projectFallbackRetries,
     spansSpilledEnded: spilledEnded,
     errors,
     deepRescan: opts.deepRescan ?? false,

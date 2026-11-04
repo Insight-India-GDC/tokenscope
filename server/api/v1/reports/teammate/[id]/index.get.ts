@@ -13,7 +13,7 @@
  *   1. authenticate + resolve grants LIVE (never cached — plan D5)
  *   2. resolve the `?src=` FRAME against the caller's own grants (D33) — a
  *      frame they do not hold is a 403 here, before any subject read
- *   3. the D34 gate: emit-time homing EXISTS ∧ `is_active`, through the ONE
+ *   3. the D34 gate: an in-frame row EXISTS ∧ `is_active`, through the ONE
  *      exported rule `teammateDrillAdmission` (D38)
  *   4. AUDIT — in the handler, BEFORE the response cache, so a cache HIT still
  *      writes a row (an audit inside `compute` fires only for the leader)

@@ -52,7 +52,6 @@ const meta = {
   ],
   coverage: { applicable: true, denominator: 3, connected: 3, nonConnected: 0, stale: false },
   scope: 'cost-centre' as const,
-  pointInTimeDims: true,
 }
 
 function forecast(projectedUsd: number) {
@@ -71,7 +70,7 @@ function forecast(projectedUsd: number) {
 function makeReport(over: Partial<CostCentreReport> = {}): CostCentreReport {
   return {
     meta,
-    laneNote: 'Per-cost-centre burn is the project cost-owning-unit usage axis.',
+    laneNote: 'Business Unit burn is usage on the projects each Business Unit leads.',
     cards: [
       { id: 'a', code: 'a', displayName: 'Practice A', regionCode: 'ra', burnUsd: 120, chargeUsd: 90, allocationUsd: 100, utilisation: 1.2, exhaustionDate: '2026-07-13', forecast: forecast(775), asOfDate: '2026-07-02' },
       { id: 'b', code: 'b', displayName: 'Practice B', regionCode: 'rb', burnUsd: 85, chargeUsd: 60, allocationUsd: 100, utilisation: 0.85, exhaustionDate: '2026-07-20', forecast: forecast(500), asOfDate: '2026-07-02' },
@@ -182,7 +181,7 @@ function makeDrill(over: Partial<CostCentreDrill> = {}): CostCentreDrill {
       unmatchedUsd: 0,
       scopeLabel: 'AI Apps & Data',
     },
-    meta: { ...meta, pointInTimeDims: true },
+    meta,
     cc: { id: 'a', code: 'a', displayName: 'Practice A', regionCode: 'ra' },
     overSoftCap: makeOverSoftCap(),
     // §A usage BURN — the SAME lane as the tracker card burn.
@@ -589,7 +588,7 @@ describe('ScopeCostCentreView — the drill four exclusive states', () => {
     const w = mount(ScopeCostCentreView, { global, props: { ...baseProps, report: makeReport(), drill: makeDrill(), isDrill: true, pending: false } })
     const headline = w.find('[data-testid="cc-burn-headline"]').text().replace(/\s+/g, ' ')
     expect(headline).toContain('derived')
-    expect(headline.toLowerCase()).toContain("roll-up of this centre's budgets")
+    expect(headline.toLowerCase()).toContain("roll-up of this business unit's budgets")
   })
 
   it("the BUDGETS hero names its DIFFERENT denominator on its face", () => {

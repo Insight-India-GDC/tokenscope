@@ -2,8 +2,8 @@
  * PATCH /api/v1/admin/users/:id — change a teammate's role.
  *
  * Wave-VI mutation. The pure decision lives in server/auth/admin-guards.ts
- * (evaluateRoleChange); this handler resolves the (caller, target,
- * admin-count) state and threads it through.
+ * (evaluateRoleChange); this handler resolves the (caller, target) state
+ * and threads it through.
  *
  * Two-layer RBAC:
  *   1. requireRole(admin) — app-level gate, 403 on miss.
@@ -15,10 +15,9 @@
  *
  * Mutation order:
  *   a) load target row (region + current role)
- *   b) admin-count snapshot (region-scoped)
- *   c) evaluateRoleChange(...) — pure verdict
- *   d) on allow: UPDATE + audit row in the same RLS-txn
- *   e) audit failure → throw → no role change (fail-closed)
+ *   b) evaluateRoleChange(...) — pure verdict
+ *   c) on allow: UPDATE + audit row in the same RLS-txn
+ *   d) audit failure → throw → no role change (fail-closed)
  *
  * Wave-VII addition — auto-revoke on every role change. The role
  * UPDATE also bumps `teammate.revoked_at = NOW()` in the SAME statement,
@@ -39,7 +38,7 @@ import { withRequestRls } from '../../../../db/request-rls'
 import { evaluateRoleChange, canAssignRole, canModifyHolderOf } from '../../../../auth/admin-guards'
 import { recordAuditEvent } from '../../../../db/audit'
 import { requireUuidParam } from '../../../../utils/require-uuid-param'
-import { ROLES, isRole, type Role } from '../../../../../shared/auth/roles'
+import { ROLES, isRole, isUngrantableRole, roleLabel, type Role } from '../../../../../shared/auth/roles'
 import { revokeInteractiveCredentialsOf } from '../../../../auth/emit-revocation'
 
 const Body = z.object({
@@ -102,15 +101,6 @@ export default defineEventHandler(async (event) => {
     // their home region. (platform-admin is unbounded.)
     await requireRegionScope(event, target.region_id)
 
-    const adminRows = await tx.execute<{ count: string }>(sql`
-      SELECT COUNT(*)::text AS count
-      FROM teammate
-      WHERE region_id = ${target.region_id}::uuid
-        AND role = 'admin'
-        AND is_active = TRUE
-    `)
-    const currentAdminCount = Number([...adminRows][0]?.count ?? 0)
-
     if (!isRole(target.role)) {
       // Defensive — the DB shouldn't carry a non-Role string but if a
       // legacy/dirty row slips through we surface 500 (not a 4xx).
@@ -137,7 +127,9 @@ export default defineEventHandler(async (event) => {
           // org-wide grant AND for a retired-role holder, and a message that
           // only mentions platform-admin tells a region admin the wrong reason
           // when the target holds `global-finops` or `finance`.
-          detail: `Role '${caller.role}' cannot change '${target.role}' to '${newRole}': only platform-admin may grant org-wide roles or modify a holder of an org-wide or retired role.`,
+          detail: isUngrantableRole(newRole)
+            ? `${roleLabel(newRole)} can no longer be granted.`
+            : `${roleLabel(caller.role)} cannot change ${roleLabel(target.role)} to ${roleLabel(newRole)}: only an Admin may grant org-wide roles or modify a holder of an org-wide or retired role.`,
         },
       })
     }
@@ -146,21 +138,17 @@ export default defineEventHandler(async (event) => {
       { role: caller.role, teammateId: caller.teammateId },
       { id: target.id, role: target.role },
       newRole,
-      currentAdminCount,
     )
     if (!verdict.allowed) {
       const titleByReason: Record<string, string> = {
         'self-role-change-blocked': 'Self role-change blocked',
         'same-role-noop': 'Same role',
-        'last-admin-protected': 'Last admin protected',
       }
       const detailByReason: Record<string, string> = {
         'self-role-change-blocked':
-          'You cannot change your own role. Have another admin (or platform-admin) do it.',
+          'You cannot change your own role. Have another Admin do it.',
         'same-role-noop':
           'Target already has the requested role; no change applied.',
-        'last-admin-protected':
-          'Cannot demote the last remaining admin in this region — promote another teammate to admin first.',
       }
       throw createError({
         statusCode: verdict.status,

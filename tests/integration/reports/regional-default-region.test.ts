@@ -316,20 +316,6 @@ describe('a caller who names NO region: region admin → own region; org-wide �
     expect(new Set(pa.totals)).toEqual(new Set([AARDVARK_USD]))
     expect(pa.regionOptions).toEqual(['Aardvark Region', 'Zebra Region'])
   })
-
-  it('a REVOKED org-wide role is clamped to NOTHING — every Regional endpoint refuses', async () => {
-    // The deny (mig 0130) is the "administer, no data" lever: it overrides the
-    // role default, so resolveEverywhere refuses across the board.
-    await clearGrants()
-    await grantReportAccess(t.client, zebraFinopsId, 'revoke-all')
-    try {
-      await expect(resolveEverywhere(sess('platform-admin', zebraFinopsId))).rejects.toMatchObject({
-        statusCode: 403,
-      })
-    } finally {
-      await clearGrants()
-    }
-  })
 })
 
 describe('a named ?region still wins — the default is a default, not a clamp', () => {
@@ -387,8 +373,7 @@ describe('never a wrong region under a wrong name', () => {
     { who: 'an operational-granted region admin', role: 'admin', teammate: () => zebraAdminId, grant: true, region: 'Aardvark Region', usd: AARDVARK_USD, users: AARDVARK_USERS },
     // NO grant at all — and post-2026-08-13 that resolves the SAME as granted:
     // an org-wide role has full cross-region reach BY ROLE, so it lands on the
-    // alphabetical default too. (The distinct-answer case is now a REVOKE, which
-    // refuses outright and is covered by its own test above.)
+    // alphabetical default too.
     { who: 'an UNGRANTED global finance — alphabetical by role', role: 'platform-admin', teammate: () => zebraFinopsId, grant: false, region: 'Aardvark Region', usd: AARDVARK_USD, users: AARDVARK_USERS },
   ]
 

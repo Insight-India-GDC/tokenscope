@@ -17,8 +17,8 @@
  *    (email matches); a different email under that oid is an identity collision (409), never a
  *    silent retarget.
  * The resolved teammate is re-validated is_active (a merge must not install a deactivated
- * teammate; revoked_at is overloaded — session anchor AND offboarding cascade, ADR-0005 §E2 —
- * so it does NOT gate assignability, else benign role/region changes would wrongly block).
+ * teammate; revoked_at is a session anchor that benign role/region changes bump, #428 —
+ * so it does NOT gate assignability, else those changes would wrongly block).
  */
 import { createError } from 'h3'
 import { sql } from 'drizzle-orm'
@@ -53,13 +53,13 @@ interface TeammateRow extends Record<string, unknown> {
 const select = sql`SELECT id::text AS id, email, display_name, region_id::text AS region_id,
   entra_oid, is_active, revoked_at::text AS revoked_at FROM teammate`
 
-/** A resolved teammate must be assignable — gate on is_active ONLY. teammate.revoked_at is
- *  OVERLOADED (ADR-0005 §E2: benign role/region changes, revoke-sessions, AND offboarding all
- *  bump it to fire the session/emit eager-cascade), so it cannot gate assignability — a benign
- *  role change would wrongly block. A revoked-but-active teammate stays assignable; live access
- *  is independently blocked by isRevoked() + the E2 emit cascade. is_active=false remains the
- *  guard (a merge must not slip a deactivated row in), though today only shadow-consolidation
- *  sets it — a real human-offboard deactivation path is a separate follow-up. */
+/** A resolved teammate must be assignable — gate on is_active ONLY. teammate.revoked_at is a
+ *  SESSION ANCHOR (#428: benign role/region changes and revoke-sessions bump it to force a
+ *  re-login), so it cannot gate assignability — a benign role change would wrongly block. A
+ *  revoked-but-active teammate stays assignable; live access is independently blocked by
+ *  isRevoked() and emit_revoked_at. is_active=false is the retirement axis and the guard here
+ *  (a merge must not slip a deactivated row in); privileged-identity-cleanup and
+ *  shadow-consolidation set it. */
 function assertAssignable(row: TeammateRow): void {
   if (!row.is_active) {
     throw createError({ statusCode: 422, statusMessage: 'Teammate is not active' })

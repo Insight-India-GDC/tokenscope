@@ -25,6 +25,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+// Windows (#430): skipped on win32 because this file drives the POSIX .sh helper, which Windows does not run; the PowerShell twin is covered by otel-helper-conformance, claude-redeem-ps1 and status-ps1.
+const POSIX_ONLY = process.platform === 'win32'
+
 const HELPER = resolve(__dirname, '../../../plugin/scripts/otel-headers-helper.sh')
 
 const OWN = 'own-instance'
@@ -138,7 +141,7 @@ function expectRefused(r: { status: number | null }, message: string) {
   expect(contacted()).toBe('')
 }
 
-describe('source 1 — this lane own store', () => {
+describe.skipIf(POSIX_ONLY)('source 1 — this lane own store', () => {
   it('complete: adopted', () => {
     writeOwn('claude-code', completeStore('claude-code', OWN))
     expectAdopted(run(), OWN)
@@ -223,7 +226,7 @@ describe('source 1 — this lane own store', () => {
   })
 })
 
-describe('source 2 — the legacy shared store', () => {
+describe.skipIf(POSIX_ONLY)('source 2 — the legacy shared store', () => {
   it('claude adopts it when the device settings prove it is ours', () => {
     writeLegacy(completeStore('claude-code', LEGACY))
     writeSettings({ ...completeSettings(), TOKENSCOPE_BEARER_ENDPOINT: bearerFor(LEGACY) })
@@ -261,7 +264,7 @@ describe('source 2 — the legacy shared store', () => {
   })
 })
 
-describe('source 3 — the device own settings file', () => {
+describe.skipIf(POSIX_ONLY)('source 3 — the device own settings file', () => {
   it('complete: adopted, and the hostile environment is ignored', () => {
     writeSettings(completeSettings())
     expectAdopted(run('claude-code', HOSTILE), SETTINGS)
@@ -285,7 +288,7 @@ describe('source 3 — the device own settings file', () => {
   })
 })
 
-describe('the access-token cache is inside the source model too', () => {
+describe.skipIf(POSIX_ONLY)('the access-token cache is inside the source model too', () => {
   /*
    * The cache holds a bearer minted from whichever source won LAST time. Left
    * unbound it sits outside the ordered list entirely: a token minted while a
@@ -349,7 +352,7 @@ describe('the access-token cache is inside the source model too', () => {
   })
 })
 
-describe('an endpoint that cannot be bound is refused, not silently degraded', () => {
+describe.skipIf(POSIX_ONLY)('an endpoint that cannot be bound is refused, not silently degraded', () => {
   /*
    * The cache is keyed on the endpoint verbatim, so a value carrying a quote,
    * backslash or control character cannot be recorded. Writing an unusable cache
@@ -373,7 +376,7 @@ describe('an endpoint that cannot be bound is refused, not silently degraded', (
   })
 })
 
-describe('a trusted source we could not use is not permission to use the environment', () => {
+describe.skipIf(POSIX_ONLY)('a trusted source we could not use is not permission to use the environment', () => {
   /*
    * THE REGRESSION THE SOURCE LIST INTRODUCED, and the reason "absent" needed a
    * companion rule. Treating an unclaimable legacy store as absent let a device
@@ -392,6 +395,32 @@ describe('a trusted source we could not use is not permission to use the environ
     expect(contacted()).toBe('')
   })
 
+  // #452: the refusal is right, but someone who lost or removed the store read
+  // it as "my store is broken". It names the missing store and what it found.
+  it('says the device store is missing and names the other enrolment it found', () => {
+    writeLegacy(completeStore('copilot-cli', LEGACY))
+    const r = run('claude-code', HOSTILE)
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain(`This lane's device store ${join(stateDir, 'config.claude-code.json')} is missing.`)
+    // No settings file to compare against: it cannot claim "another enrolment".
+    expect(r.stderr).toContain(`The older shared store ${join(stateDir, 'config.json')} could not be matched to this lane`)
+  })
+
+  it('says "another enrolment" only when both instances were read and differ', () => {
+    writeLegacy(completeStore('copilot-cli', LEGACY))
+    writeSettings({ TOKENSCOPE_BEARER_ENDPOINT: bearerFor(SETTINGS) })
+    const r = run('claude-code', HOSTILE)
+    expect(r.stderr).toContain(`belongs to another enrolment (instance ${LEGACY};`)
+  })
+
+  it('names an unreadable settings file in the same refusal', () => {
+    writeLegacy(completeStore('copilot-cli', LEGACY))
+    mkdirSync(join(passwdHome, '.claude'), { recursive: true })
+    writeFileSync(join(passwdHome, '.claude', 'settings.json'), '')
+    const r = run('claude-code', HOSTILE)
+    expect(r.stderr).toContain(`${join(passwdHome, '.claude', 'settings.json')} could not be read as a settings file.`)
+  })
+
   it('REFUSES when the settings file is present but unreadable', () => {
     writeLegacy(completeStore('copilot-cli', LEGACY))
     mkdirSync(join(passwdHome, '.claude'), { recursive: true })
@@ -408,7 +437,7 @@ describe('a trusted source we could not use is not permission to use the environ
   })
 })
 
-describe('source 4 — the environment, and only as the terminator', () => {
+describe.skipIf(POSIX_ONLY)('source 4 — the environment, and only as the terminator', () => {
   it('is used when nothing is stored anywhere', () => {
     const r = run('claude-code', {
       TOKENSCOPE_BEARER_ENDPOINT: bearerFor(OWN),

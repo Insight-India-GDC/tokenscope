@@ -352,7 +352,7 @@ async function save() {
             ref="firstField"
             v-model="provider"
             :disabled="isEdit"
-            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none disabled:bg-calm/30"
+            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony disabled:bg-calm/30"
             data-testid="po-provider"
           >
             <option v-if="isEdit || canCreateAnthropicOrg" value="anthropic">anthropic</option>
@@ -360,7 +360,7 @@ async function save() {
           </select>
           <p v-if="isEdit" class="text-[11px] text-carbon-3 mt-1">Provider can't change after creation.</p>
           <p v-else-if="!canCreateAnthropicOrg" class="text-[11px] text-carbon-3 mt-1" data-testid="po-anthropic-platform-only">
-            Anthropic orgs are added by a platform admin, because they hold a credential.
+            Anthropic orgs are added by an Admin, because they hold a credential.
           </p>
         </div>
 
@@ -374,7 +374,7 @@ async function save() {
                 v-model="credentialSecretName"
                 type="text"
                 placeholder="acme-anthropic-admin-key"
-                class="flex-1 px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+                class="flex-1 px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
                 data-testid="po-cred"
               >
               <UiButton
@@ -416,7 +416,7 @@ async function save() {
                 :readonly="discovered"
                 :disabled="isEdit"
                 placeholder="org-abc123 (or use Discover)"
-                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none read-only:bg-calm/30 disabled:bg-calm/30"
+                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony read-only:bg-calm/30 disabled:bg-calm/30"
                 data-testid="po-org-id"
               >
               <p v-if="isEdit" class="text-[11px] text-carbon-3 mt-1">Org id is immutable.</p>
@@ -426,7 +426,7 @@ async function save() {
               <select
                 id="po-api-kind"
                 v-model="apiKind"
-                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
                 data-testid="po-api-kind"
               >
                 <option value="claude-code-admin">Claude Code (Admin)</option>
@@ -448,7 +448,7 @@ async function save() {
               type="text"
               :disabled="isEdit"
               placeholder="acme-engineering"
-              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none disabled:bg-calm/30"
+              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony disabled:bg-calm/30"
               data-testid="po-org-id-gh"
             >
             <p v-if="githubSlugWarn" class="text-[11px] text-rag-red mt-1" data-testid="po-slug-warn">
@@ -463,7 +463,7 @@ async function save() {
             <select
               id="po-enterprise"
               v-model="providerEnterpriseId"
-              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
               data-testid="po-enterprise"
             >
               <option value="">— none —</option>
@@ -483,7 +483,7 @@ async function save() {
               id="po-region"
               v-model="regionId"
               :disabled="!!regionsError || !!regionsLoading"
-              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none disabled:bg-calm/40 disabled:cursor-not-allowed"
+              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony disabled:bg-calm/40 disabled:cursor-not-allowed"
               data-testid="po-region"
             >
               <option value="">— unmapped —</option>
@@ -517,7 +517,7 @@ async function save() {
             v-model="displayName"
             type="text"
             placeholder="Acme Engineering"
-            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
             data-testid="po-display-name"
           >
         </div>
@@ -528,7 +528,7 @@ async function save() {
             <select
               id="po-mode"
               v-model="reconciliationMode"
-              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
               data-testid="po-mode"
             >
               <option value="reconciled">reconciled</option>
@@ -543,7 +543,7 @@ async function save() {
             <select
               id="po-billing"
               v-model="billing"
-              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+              class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
               data-testid="po-billing"
             >
               <option value="tracked">tracked</option>
@@ -551,7 +551,7 @@ async function save() {
             </select>
           </div>
           <p v-else class="text-[12px] text-carbon-3" data-testid="po-billing-on-enterprise">
-            Billing is set on the linked GitHub enterprise (governance is active — ADR-0011 D11).
+            Billing is set on the linked GitHub enterprise (governance is active).
           </p>
         </div>
 

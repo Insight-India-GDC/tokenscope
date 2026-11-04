@@ -25,8 +25,6 @@
  *   writers  server/auth/placement-home.ts
  *            server/reconciliation/placement-store.ts
  *   readers  server/usage/unhomed-causes.ts        (the cause classifier)
- *            server/api/v1/rollups/manager.get.ts  (region picker)
- *            server/api/v1/rollups/org-tree.get.ts (picker + 5 holding filters)
  *            server/auth/org-subtree-scope.ts      (the S3 security clamp)
  *            server/reporting/regional.ts          (region picker)
  *            server/workers/region-reenrichment.ts (re-enrichment candidates)
@@ -37,14 +35,30 @@
  *            server/reconciliation/region-reresolve.ts
  *                                                  (the region-scoped re-resolve's
  *                                                   candidate set)
- *   guards   server/db/org-units.ts                (a holding node may never be
+ *            server/reconciliation/placement-check-read.ts
+ *                                                  (the placement check's current
+ *                                                   home)
+ *            server/api/v1/admin/placement-check/apply.post.ts
+ *                                                  (the current home, for the verdict)
+ *            server/api/v1/admin/regions/[id].delete.ts
+ *                                                  (a region's own Unplaced node does
+ *                                                   not stop it being deleted)
+ *            server/reconciliation/org-setup-read.ts
+ *                                                  (the top person's own home: on the
+ *                                                   system bucket, or placed)
+ *   guards  server/db/org-units.ts                (a holding node may never be
  *                                                   cost-owning — both write doors)
+ *            server/db/org-unit-create.ts          (nothing is created or moved under a
+ *                                                   holding node; its code is fixed)
  *   worklist server/api/v1/admin/teammates.get.ts  (the unplaced/placed filter)
  *            server/api/v1/admin/region/[regionId]/index.get.ts
  *                                                  (the unplaced count + checklist)
  *            app/pages/admin/regions/[id].vue      (the Unplaced row's worklist link)
  *            app/components/admin/OrgUnitDialog.vue
- *                                                  (hides the cost-owning toggle)
+ *                                                  (hides the cost-owning toggle and
+ *                                                   never offers it as a parent)
+ *            app/components/admin/MoveOrgUnitDialog.vue
+ *                                                  (never offers it as a destination)
  *
  * An earlier version of this header promised that guarantee while six of those
  * readers were still on inline literals, and named only four of them. A false

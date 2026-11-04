@@ -6,16 +6,13 @@
  * app-side teammate row:
  *
  *   - If a teammate with entra_oid = claims.oid exists, reuse it.
- *   - Otherwise JIT-create with role 'admin' when the email matches the
- *     bootstrapAdminEmail env var; 'developer' otherwise. region_id picks the
- *     first available region in the env (sandbox has the seeded apac region;
- *     bare-empty DB throws a clear error so the operator sees the bootstrap
- *     step they missed). org_unit_id homes the new teammate on that region's
- *     `__UNPLACED__` holding node (server/auth/placement-home.ts), NOT a real
- *     BU — S3: a real org node's subtree is a least-privilege RLS boundary,
- *     and the region ROOT's subtree is the whole region, so landing every
- *     first-touch sign-in there degenerated org-subtree scoping to "everyone
- *     in the region" until an admin or the manager-chain worker places them.
+ *   - Otherwise JIT-create with role 'platform-admin' when the email matches
+ *     the bootstrapAdminEmail env var; 'developer' otherwise. The home is what
+ *     the directory derives within a short budget (server/auth/jit-placement.ts):
+ *     a cost-owning unit, or a region's `__UNPLACED__` holding node; when it
+ *     places nothing in time, the default region's holding node. Never a region ROOT:
+ *     its subtree is the whole region, and an org node's subtree is an RLS
+ *     boundary (S3).
  *
  * The resulting teammate's identity is then minted into our HMAC'd
  * `ts_session` cookie via setSession(). This keeps app-level RBAC + RLS
@@ -29,7 +26,7 @@ import * as schema from '../../drizzle/schema'
 import { isRole, type Role } from '../../shared/auth/roles'
 import { recordAuditEvent } from '../db/audit'
 import { isExcludedUpn, loadDirectoryExclusionPatterns } from '../utils/directory-exclusions'
-import { resolveDefaultRegionId, unplacedOrgUnitIdForRegion } from './placement-home'
+import { pinJitHome, resolveJitPlacement, type JitPlacementOptions } from './jit-placement'
 
 // Read the bootstrap-admin email at function-call time rather than module
 // load (R1 F10 was a LOW finding; moving to module-scope const broke the
@@ -89,6 +86,7 @@ export interface ResolvedTeammate {
 export async function resolveOrCreateTeammate(
   db: PostgresJsDatabase<typeof schema>,
   claims: OidcClaims,
+  placementOpts: JitPlacementOptions = {},
 ): Promise<ResolvedTeammate> {
   // Fast path — existing teammate by OID. (No exclusion query on the hot path;
   // an already-provisioned privileged row is retired by the
@@ -172,27 +170,9 @@ export async function resolveOrCreateTeammate(
     if (raced) return { ...raced, created: false }
   }
 
-  // JIT-create path. Region default: the lexicographically-first region (sandbox
-  // seed has the apac region) — unchanged. S3: the org_unit is NO LONGER "the
-  // first bu ORDER BY path" — ltree sorts a region's ROOT before its children, so
-  // that query landed every JIT teammate on the region root, a bare label whose
-  // subtree IS THE WHOLE REGION (it degenerated the org-subtree scope clamp to
-  // "everyone in the region"). It is now the region's shared `__UNPLACED__`
-  // holding node (server/auth/placement-home.ts) — a real, least-privilege RLS
-  // scope that grants nothing until the teammate is actually placed (the
-  // manager-chain re-enrichment worker or an admin's region-PATCH).
-  const genericDb = db as unknown as PostgresJsDatabase<Record<string, unknown>>
-  const regionId = await resolveDefaultRegionId(genericDb)
-  if (!regionId) {
-    throw new Error(
-      'JIT teammate creation failed: no region rows. Seed the DB (npm run db:seed) before first Entra sign-in.',
-    )
-  }
-  const orgUnitId = await unplacedOrgUnitIdForRegion(genericDb, regionId)
+  const placement = await resolveJitPlacement(db, claims.oid, placementOpts)
 
-  // The bootstrap email is the platform super-admin (sets up regions + region
-  // admins). Everyone else JIT-creates as 'developer' and is placed into a
-  // region manually (TODO: reassign-region UI — docs/build/dogfood-followups.md).
+  // The bootstrap email is the platform super-admin; everyone else is 'developer'.
   const bootstrapEmail = getBootstrapAdminEmail()
   const resolvedRole: Role =
     bootstrapEmail && claims.email.toLowerCase() === bootstrapEmail ? 'platform-admin' : 'developer'
@@ -205,19 +185,24 @@ export async function resolveOrCreateTeammate(
   // (R1 F4 — without this, concurrent first-touch produced duplicate
   // `teammate-jit-created` audit rows.)
   let inserted: { id: string }[]
+  let home = placement
   try {
-    inserted = await db
-      .insert(schema.teammate)
-      .values({
-        entraOid: claims.oid,
-        email: claims.email,
-        displayName: claims.name ?? claims.email,
-        role: resolvedRole,
-        regionId,
-        orgUnitId,
-      })
-      .onConflictDoNothing({ target: schema.teammate.entraOid })
-      .returning({ id: schema.teammate.id })
+    inserted = await db.transaction(async (tx) => {
+      home = await pinJitHome(tx, placement)
+      return tx
+        .insert(schema.teammate)
+        .values({
+          entraOid: claims.oid,
+          email: claims.email,
+          displayName: claims.name ?? claims.email,
+          role: resolvedRole,
+          regionId: home.regionId,
+          orgUnitId: home.orgUnitId,
+          metadata: sql`(${JSON.stringify(home.provenance)}::jsonb || jsonb_build_object('placedAt', now()))`,
+        })
+        .onConflictDoNothing({ target: schema.teammate.entraOid })
+        .returning({ id: schema.teammate.id })
+    })
   } catch (err) {
     // onConflictDoNothing only absorbs the entra_oid conflict. A 23505 here is the
     // EMAIL partial-unique: a real, non-`bill:` teammate already owns this email
@@ -279,6 +264,7 @@ export async function resolveOrCreateTeammate(
         name: claims.name ?? null,
         role: reloaded.role,
         bootstrapMatch: resolvedRole === 'platform-admin',
+        placement: { ...home.outcome, regionId: home.regionId, orgUnitId: home.orgUnitId },
       },
     })
   }

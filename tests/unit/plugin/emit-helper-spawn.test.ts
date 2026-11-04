@@ -33,6 +33,11 @@ vi.mock('node:child_process', async (orig) => {
 const ROOT = resolve(__dirname, '../../..')
 const PS = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 const PS_FLAGS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File']
+// Windows (#430): the "without PowerShell" cases rely on nothing existing at
+// C:\Windows, which holds off Windows and is false on a Windows machine. A
+// test premise, not product behaviour: the resolver's no-PowerShell branch is
+// covered above with an injected `exists`.
+const HAS_REAL_WINDOWS = process.platform === 'win32'
 
 let state: string
 beforeAll(() => {
@@ -122,7 +127,7 @@ describe('every helper spawn site picks the interpreter by platform', () => {
     ])
   })
 
-  it('runEmitHelper on win32 without PowerShell reports not-run and spawns nothing', async () => {
+  it.skipIf(HAS_REAL_WINDOWS)('runEmitHelper on win32 without PowerShell reports not-run and spawns nothing', async () => {
     const { runEmitHelper } = await import('../../../plugin/scripts/plugin-runtime.mjs')
     // Off Windows nothing exists at C:\Windows, so resolution fails as it would on a broken install.
     expect(runEmitHelper({ platform: 'win32', stateDir: state, env: {} })).toEqual({ ran: false, status: null, hasAuth: false })
@@ -148,7 +153,7 @@ describe('every helper spawn site picks the interpreter by platform', () => {
       expect(calls[0].args.join(' ')).not.toContain('rt-SECRET')
     })
 
-    it(`${lane}/scripts/copilot-emit.mjs mintBearer on win32 without PowerShell throws before spawning`, async () => {
+    it.skipIf(HAS_REAL_WINDOWS)(`${lane}/scripts/copilot-emit.mjs mintBearer on win32 without PowerShell throws before spawning`, async () => {
       const mod = await import(`../../../${lane}/scripts/copilot-emit.mjs`)
       expect(() => mod.mintBearer(true, { platform: 'win32' })).toThrow(/Windows PowerShell/)
       expect(calls).toHaveLength(0)
@@ -173,7 +178,7 @@ describe('every helper spawn site picks the interpreter by platform', () => {
     ])
   })
 
-  it('the Copilot status probe on win32 without PowerShell says so and spawns nothing', async () => {
+  it.skipIf(HAS_REAL_WINDOWS)('the Copilot status probe on win32 without PowerShell says so and spawns nothing', async () => {
     const { probeEmissionAuth } = await import('../../../copilot-plugin/scripts/status.mjs')
     const v = probeEmissionAuth(state, { platform: 'win32' })
     expect(v).toMatchObject({ emitting: false, probe_status: null })

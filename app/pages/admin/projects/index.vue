@@ -130,7 +130,7 @@ const columns = [
   { key: 'code', label: 'Code' },
   { key: 'display_name', label: 'Display name' },
   { key: 'wbs_code', label: 'WBS' },
-  { key: 'cou_display_name', label: 'Cost-owning unit' },
+  { key: 'cou_display_name', label: 'Business Unit' },
   { key: 'type', label: 'Type' },
   {
     key: 'is_onboarded',
@@ -282,7 +282,7 @@ async function remove(row: ProjectRow) {
       class="mb-4 p-3 rounded-md text-sm font-medium"
       :class="toast.kind === 'ok'
         ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30'
-        : 'bg-brand-hunger/10 text-brand-hunger border border-brand-hunger/30'"
+        : 'bg-brand-hunger/10 text-brand-heart border border-brand-hunger/30'"
     >
       {{ toast.message }}
     </div>

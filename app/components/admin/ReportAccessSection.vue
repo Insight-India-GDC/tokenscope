@@ -1,14 +1,14 @@
 <script setup lang="ts">
 /*
- * ReportAccessSection — per-teammate report-access rows (migs 0129 + 0130),
+ * ReportAccessSection — per-teammate report-access grants (mig 0129),
  * backed by GET/POST /api/v1/admin/report-access, DELETE
  * /api/v1/admin/report-access/{id} and GET
  * /api/v1/admin/report-access/teammate-search (task #19).
  *
  * Replaces the retired three-mode ReportVisibilitySection dial: instead of
- * ONE org-wide knob, an admin writes ONE row (REPORT_ACCESS_GRANT_VALUES,
- * shared/auth/report-visibility.ts — the two positive permissions that WIDEN,
- * plus the 'revoke-all' DENY) against a NAMED teammate, optionally time-boxed.
+ * ONE org-wide knob, an admin writes ONE grant (REPORT_ACCESS_PERMISSIONS,
+ * shared/auth/report-visibility.ts — the two positive permissions that WIDEN)
+ * against a NAMED teammate, optionally time-boxed.
  * The vocabulary (labels + descriptions) comes ONLY from that shared module so
  * this pane and the enforcement layer can never say something different about
  * the same value.
@@ -35,15 +35,11 @@ import { useDebouncedSearch } from '../../composables/useDebouncedSearch'
 import { apiErrorDetail } from '../../composables/useApiError'
 import { roleLabel } from '#shared/auth/roles'
 import {
-  REPORT_ACCESS_GRANT_VALUES,
-  REPORT_ACCESS_GRANT_LABELS,
-  REPORT_ACCESS_GRANT_DESCRIPTIONS,
-  REPORT_ACCESS_REVOKE,
+  REPORT_ACCESS_PERMISSIONS,
+  REPORT_ACCESS_PERMISSION_LABELS,
+  REPORT_ACCESS_PERMISSION_DESCRIPTIONS,
   type ReportAccessPermission,
-  type ReportAccessRevoke,
 } from '#shared/auth/report-visibility'
-
-type ReportAccessGrantValue = ReportAccessPermission | ReportAccessRevoke
 
 export interface ReportAccessGrantRow extends Record<string, unknown> {
   id: string
@@ -51,7 +47,7 @@ export interface ReportAccessGrantRow extends Record<string, unknown> {
   display_name: string | null
   email: string
   role: string
-  permission: ReportAccessGrantValue
+  permission: ReportAccessPermission
   granted_by: string | null
   granted_by_name: string | null
   granted_at: string
@@ -118,7 +114,7 @@ const query = ref('')
 const results = ref<TeammateHit[]>([])
 const searchError = ref<string | null>(null)
 const picked = ref<TeammateHit | null>(null)
-const permission = ref<ReportAccessGrantValue | null>(null)
+const permission = ref<ReportAccessPermission | null>(null)
 const expiresAt = ref('')
 const granting = ref(false)
 
@@ -178,7 +174,7 @@ async function submitGrant() {
         ...(expiresAt.value ? { expires_at: new Date(expiresAt.value).toISOString() } : {}),
       },
     })
-    flashToast('ok', `${confirmName.value} now holds ${REPORT_ACCESS_GRANT_LABELS[permission.value]}.`)
+    flashToast('ok', `${confirmName.value} now holds ${REPORT_ACCESS_PERMISSION_LABELS[permission.value]}.`)
     backToSearch()
     emit('changed')
   } catch (e: unknown) {
@@ -191,28 +187,14 @@ async function submitGrant() {
 // ── Row action: one button, two clicks (arm, then fire) — busyId-guarded exactly
 // like CouOwnersModal's assign/revoke, so an accidental click can't change a
 // row that took an admin action (and possibly a live workflow) to create.
-//
-// THE ROW ACTION IS DIRECTIONAL. DELETE soft-revokes the ROW, which for a
-// positive grant TAKES access away and for a `revoke-all` deny row HANDS IT
-// BACK. Telling an operator "Revoke" while the click restores a revoked admin's
-// whole-company report access is the single worst wording this surface could
-// ship, so every label, prompt and toast below branches on the ROW's OWN
-// permission (never on the grant picker's `permission` ref, which is a different
-// piece of state entirely).
 const confirmingRevokeId = ref<string | null>(null)
 const busyId = ref<string | null>(null)
 
-function isDenyRow(row: ReportAccessGrantRow): boolean {
-  return row.permission === REPORT_ACCESS_REVOKE
-}
-
 /** The row-action button's label across its three states (idle / armed / busy). */
 function rowActionLabel(row: ReportAccessGrantRow): string {
-  if (busyId.value === row.id) return isDenyRow(row) ? 'Lifting…' : 'Revoking…'
-  if (confirmingRevokeId.value === row.id) {
-    return isDenyRow(row) ? 'Confirm lift revoke?' : 'Confirm revoke?'
-  }
-  return isDenyRow(row) ? 'Lift revoke' : 'Revoke'
+  if (busyId.value === row.id) return 'Revoking…'
+  if (confirmingRevokeId.value === row.id) return 'Confirm revoke?'
+  return 'Revoke'
 }
 
 async function onRevokeClick(row: ReportAccessGrantRow) {
@@ -224,16 +206,11 @@ async function onRevokeClick(row: ReportAccessGrantRow) {
   const who = row.display_name ?? row.email
   try {
     await $fetch(`/api/v1/admin/report-access/${row.id}`, { method: 'DELETE' })
-    flashToast(
-      'ok',
-      isDenyRow(row)
-        ? `Lifted the revoke for ${who} — their report access is restored.`
-        : `Revoked ${REPORT_ACCESS_GRANT_LABELS[row.permission]} for ${who}.`,
-    )
+    flashToast('ok', `Revoked ${REPORT_ACCESS_PERMISSION_LABELS[row.permission]} for ${who}.`)
     confirmingRevokeId.value = null
     emit('changed')
   } catch (e: unknown) {
-    flashToast('err', apiErrorDetail(e, isDenyRow(row) ? 'Lift revoke failed' : 'Revoke failed'))
+    flashToast('err', apiErrorDetail(e, 'Revoke failed'))
   } finally {
     busyId.value = null
   }
@@ -248,13 +225,11 @@ function cancelRevoke() {
     <UiEyebrow>Reporting</UiEyebrow>
     <h2 class="text-lg font-bold text-carbon mt-1 mb-1">Report access</h2>
     <p class="text-xs text-carbon-3 mb-4 leading-relaxed">
-      Everyone already sees reports by their role: Global finance and Platform admin see the whole
-      company; a Region admin sees their own region; everyone else sees their own region plus
-      whichever Business Units their own position covers. Here you can WIDEN one teammate whose role
-      does not already reach that far — a Region admin included — to company-wide reporting, or
-      REVOKE a person's report access entirely (the "administer, no data" case). Every action is
-      scoped to that one person and, optionally, an expiry; it is never a whole-org policy change and
-      never touches their platform role.
+      Everyone already sees reports by their role: Admin sees the whole company; everyone else sees
+      their own region plus whichever Business Units their own position covers. Here you can WIDEN
+      one teammate whose role does not already reach that far to company-wide reporting. Every
+      grant is scoped to that one person and, optionally, an expiry; it is never a whole-org policy
+      change and never touches their platform role.
     </p>
 
     <div
@@ -263,14 +238,14 @@ function cancelRevoke() {
       class="mb-4 p-3 rounded-md text-sm font-medium"
       :class="toast.kind === 'ok'
         ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30'
-        : 'bg-brand-hunger/10 text-brand-hunger border border-brand-hunger/30'"
+        : 'bg-brand-hunger/10 text-brand-heart border border-brand-hunger/30'"
     >
       {{ toast.message }}
     </div>
 
     <!-- ── Grant flow ─────────────────────────────────────────────────────── -->
     <div class="mb-6 p-4 rounded-lg border border-calm-2">
-      <h3 class="text-sm font-bold text-carbon">Grant or revoke access</h3>
+      <h3 class="text-sm font-bold text-carbon">Grant access</h3>
 
       <template v-if="!picked">
         <label for="report-access-search-input" class="sr-only">Search teammates</label>
@@ -279,7 +254,7 @@ function cancelRevoke() {
           v-model="query"
           type="search"
           placeholder="Search teammates by name or email…"
-          class="mt-2 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+          class="mt-2 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
           data-testid="report-access-search"
           @input="onSearchInput"
         >
@@ -315,10 +290,10 @@ function cancelRevoke() {
 
         <div class="flex flex-col gap-2 mt-3">
           <label
-            v-for="p in REPORT_ACCESS_GRANT_VALUES"
+            v-for="p in REPORT_ACCESS_PERMISSIONS"
             :key="p"
             class="block rounded-md border p-3 cursor-pointer transition-colors"
-            :class="permission === p ? 'border-brand-vision bg-brand-vision/5' : 'border-calm-2 hover:border-calm-3'"
+            :class="permission === p ? 'border-brand-vision bg-brand-vision/5' : 'border-calm-2 hover:border-cloud'"
           >
             <div class="flex items-start gap-2.5">
               <input
@@ -331,9 +306,9 @@ function cancelRevoke() {
                 @change="permission = p"
               >
               <div class="min-w-0">
-                <span class="text-sm font-semibold text-carbon">{{ REPORT_ACCESS_GRANT_LABELS[p] }}</span>
+                <span class="text-sm font-semibold text-carbon">{{ REPORT_ACCESS_PERMISSION_LABELS[p] }}</span>
                 <span class="block text-xs text-carbon-3 mt-0.5 leading-relaxed">
-                  {{ REPORT_ACCESS_GRANT_DESCRIPTIONS[p] }}
+                  {{ REPORT_ACCESS_PERMISSION_DESCRIPTIONS[p] }}
                 </span>
               </div>
             </div>
@@ -354,22 +329,12 @@ function cancelRevoke() {
           <p class="text-[11px] text-carbon-3 mt-0.5">Leave blank for open-ended, until revoked.</p>
 
           <div
-            class="mt-3 p-3 rounded-md border"
-            :class="
-              permission === REPORT_ACCESS_REVOKE
-                ? 'border-brand-hunger/40 bg-brand-hunger/5'
-                : 'border-brand-vision/30 bg-brand-vision/5'
-            "
+            class="mt-3 p-3 rounded-md border border-brand-vision/30 bg-brand-vision/5"
             data-testid="report-access-confirm"
           >
-            <p v-if="permission === REPORT_ACCESS_REVOKE" class="text-[12px] text-carbon leading-relaxed">
-              <strong>{{ confirmName }}</strong> will have <strong>all report access removed</strong>.
-              {{ REPORT_ACCESS_GRANT_DESCRIPTIONS[permission] }} This does <strong>not</strong> change
-              their platform role — they keep every admin power except reading reports.
-            </p>
-            <p v-else class="text-[12px] text-carbon leading-relaxed">
+            <p class="text-[12px] text-carbon leading-relaxed">
               <strong>{{ confirmName }}</strong> will see
-              {{ REPORT_ACCESS_GRANT_DESCRIPTIONS[permission] }} — company-wide. This does
+              {{ REPORT_ACCESS_PERMISSION_DESCRIPTIONS[permission] }} — company-wide. This does
               <strong>not</strong> change their platform role.
             </p>
           </div>
@@ -382,15 +347,7 @@ function cancelRevoke() {
               data-testid="report-access-grant-submit"
               @click="submitGrant"
             >
-              {{
-                granting
-                  ? permission === REPORT_ACCESS_REVOKE
-                    ? 'Revoking…'
-                    : 'Granting…'
-                  : permission === REPORT_ACCESS_REVOKE
-                    ? 'Revoke report access'
-                    : 'Grant access'
-              }}
+              {{ granting ? 'Granting…' : 'Grant access' }}
             </UiButton>
           </div>
         </template>
@@ -418,7 +375,7 @@ function cancelRevoke() {
             <UiBadge kind="outline">{{ roleLabel(asRow(row).role) }}</UiBadge>
           </td>
           <td class="px-5 py-3 text-sm text-carbon">
-            {{ REPORT_ACCESS_GRANT_LABELS[asRow(row).permission] }}
+            {{ REPORT_ACCESS_PERMISSION_LABELS[asRow(row).permission] }}
             <UiBadge
               v-if="asRow(row).status === 'expired'"
               kind="neutral"
@@ -457,8 +414,8 @@ function cancelRevoke() {
       </template>
     </AdminDataTable>
     <p class="text-[11px] text-carbon-3 mt-2">
-      An expired row no longer applies — an expired grant elevates nothing, an expired revoke denies
-      nothing — and is superseded automatically the next time this teammate is written the same row.
+      An expired grant elevates nothing, and is superseded automatically the next time this teammate
+      is granted the same permission.
     </p>
   </UiCard>
 </template>

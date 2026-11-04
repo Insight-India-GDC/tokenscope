@@ -22,7 +22,10 @@
  *     admin's explicit placement (safe: a bill placeholder has never
  *     authenticated and has no live sessions/enrolment, so re-homing it does
  *     not need the region-PATCH revoke cascade — same rationale as the
- *     region-reenrichment worker's safety contract)
+ *     region-reenrichment worker's safety contract). A placeholder that was
+ *     PLACED (placement provenance or a placement audit event) is region-scoped
+ *     like any other teammate; one still on its minted default may be adopted
+ *     from another region, or billed people could not be onboarded.
  *   - the email held by another REAL identity → clean 409, never a raw 23505
  */
 import { defineEventHandler, createError, getRequestIP, getHeader } from 'h3'
@@ -39,7 +42,16 @@ import { teammate } from '../../../../drizzle/schema'
 import { getDirectoryUserByOid } from '../../../azure/directory'
 import { assertDirectoryIdentityPickable } from '../../../auth/provision-directory-teammate'
 import { loadDirectoryExclusionPatterns } from '../../../utils/directory-exclusions'
-import { ROLES } from '../../../../shared/auth/roles'
+import { ROLES, isUngrantableRole, roleLabel } from '../../../../shared/auth/roles'
+import {
+  PLACEMENT_AUDIT_EVENT,
+  PLACEMENT_PROVENANCE_AUDIT_EVENT,
+  stripProvenanceKeys,
+} from '../../../reconciliation/placement-provenance'
+import {
+  TEAMMATE_DIRECTORY_ADOPTED_EVENT,
+  TEAMMATE_PROVISIONED_EVENT,
+} from '../../../reconciliation/placement-manual'
 import { followPlacement } from '../../../utils/device-lifecycle'
 
 // Postgres unique-violation; drizzle wraps the postgres-js error, real `.code`
@@ -73,7 +85,9 @@ export default defineEventHandler(async (event) => {
         type: 'https://tokenscope.example.com/errors/role-grant',
         title: 'Role grant not permitted',
         status: 403,
-        detail: `Role '${caller.role}' cannot grant '${body.role}'. Org-wide roles require platform-admin.`,
+        detail: isUngrantableRole(body.role)
+          ? `${roleLabel(body.role)} can no longer be granted.`
+          : `${roleLabel(caller.role)} cannot grant ${roleLabel(body.role)}. Only an Admin can grant that role.`,
       },
     })
   }
@@ -122,17 +136,39 @@ export default defineEventHandler(async (event) => {
     // JIT sign-in / provision onto teammate_entra_oid_key, and that 23505 must
     // not abort this RLS tx (25P02).
     let adopteeId: string | undefined
+    let previous: { region_id: string; org_unit_id: string; role: string } | undefined
     try {
       await tx.transaction(async (sp) => {
+        const [placeholder] = await sp.execute<{
+          id: string
+          region_id: string
+          org_unit_id: string
+          role: string
+          placed: boolean
+        }>(sql`
+          SELECT t.id::text AS id, t.region_id::text AS region_id, t.org_unit_id::text AS org_unit_id, t.role,
+                 (t.metadata ? 'placedVia' OR EXISTS (
+                    SELECT 1 FROM audit_event a
+                    WHERE a.subject_kind = 'teammate' AND a.subject_id = t.id
+                      AND a.event_type IN (${PLACEMENT_AUDIT_EVENT}, ${PLACEMENT_PROVENANCE_AUDIT_EVENT}, 'teammate-region-reassigned')
+                 )) AS placed
+          FROM teammate t
+          WHERE lower(t.email) = lower(${dir.email}) AND NOT t.provisional AND t.entra_oid LIKE 'bill:%'
+            AND t.is_active = TRUE
+          FOR UPDATE OF t
+        `)
+        if (!placeholder) return
+        if (placeholder.placed) await requireRegionScope(event, placeholder.region_id)
         const adopted = await sp.execute<{ id: string }>(sql`
           UPDATE teammate SET entra_oid = ${dir.oid}, source = 'directory',
             role = ${body.role}, region_id = ${body.region_id}::uuid, org_unit_id = ${body.org_unit_id}::uuid,
-            display_name = COALESCE(display_name, ${dir.displayName}), last_sync_at = now()
-          WHERE lower(email) = lower(${dir.email}) AND NOT provisional AND entra_oid LIKE 'bill:%'
-            AND is_active = TRUE
+            display_name = COALESCE(display_name, ${dir.displayName}), last_sync_at = now(),
+            metadata = (coalesce(metadata, '{}'::jsonb) ${stripProvenanceKeys()})
+          WHERE id = ${placeholder.id}::uuid
           RETURNING id::text AS id
         `)
         adopteeId = [...adopted][0]?.id
+        previous = placeholder
         // A `bill:` placeholder has no device by construction (only a real
         // sign-in provisions one); followed anyway so the rule holds on every
         // path that sets a placement (#417).
@@ -144,11 +180,21 @@ export default defineEventHandler(async (event) => {
     }
     if (adopteeId) {
       await recordAuditEvent(tx, {
-        eventType: 'teammate-directory-adopted',
+        eventType: TEAMMATE_DIRECTORY_ADOPTED_EVENT,
         actorTeammateId: caller.teammateId,
         subjectKind: 'teammate',
         subjectId: adopteeId,
-        payload: { oid: dir.oid, email: dir.email, via: 'admin-teammates-post', role: body.role, region_id: body.region_id, org_unit_id: body.org_unit_id },
+        payload: {
+          oid: dir.oid,
+          email: dir.email,
+          via: 'admin-teammates-post',
+          role: body.role,
+          region_id: body.region_id,
+          org_unit_id: body.org_unit_id,
+          previous_role: previous?.role ?? null,
+          previous_region_id: previous?.region_id ?? null,
+          previous_org_unit_id: previous?.org_unit_id ?? null,
+        },
         ipAddress: ip,
         userAgent: ua,
       })
@@ -216,7 +262,7 @@ export default defineEventHandler(async (event) => {
     }
 
     await recordAuditEvent(tx, {
-      eventType: 'teammate-provisioned',
+      eventType: TEAMMATE_PROVISIONED_EVENT,
       actorTeammateId: caller.teammateId,
       subjectKind: 'teammate',
       subjectId: row.id,

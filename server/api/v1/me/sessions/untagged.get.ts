@@ -74,7 +74,7 @@ function conversationsQuery(teammateId: string, opts: { dismissed: boolean }): S
           AND ar.project_id IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM session_quarantine sq
-            WHERE sq.teammate_id = ar.teammate_id AND sq.conversation_id = ar.claude_session_id
+            WHERE sq.teammate_id = ar.teammate_id AND sq.conversation_id = ${conversationKeyExpr('ar')}
               AND sq.resolved_at IS NULL AND sq.reason = 'api-uncorroborated')
         GROUP BY ${conversationKeyExpr('ar')}
       ) g

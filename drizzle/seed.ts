@@ -361,13 +361,13 @@ async function main() {
       ON CONFLICT DO NOTHING;
     `)
 
-    // Governance dials: migrations 0049 and 0112 own the canonical platform
+    // Governance dials: migrations 0049, 0112 and 0164 own the canonical platform
     // rows, but SEED_RESET's TRUNCATE … CASCADE wipes them via the teammate→
     // governance_setting(updated_by) FK chain — same trap as rate_card above.
     // The resolver (server/utils/governance-settings.ts) has NO fallback: a
     // missing platform key 500s every reader (org-units, velocity-watch, the
     // reconciliation engine). Re-insert the platform defaults verbatim (values
-    // MUST mirror 0049 + 0112); the partial-unique platform index makes
+    // MUST mirror 0049 + 0112 + 0164); the partial-unique platform index makes
     // ON CONFLICT DO NOTHING safe for append-mode runs.
     await client.unsafe(`
       INSERT INTO governance_setting (key, scope_type, scope_id, value_numeric)
@@ -376,7 +376,8 @@ async function main() {
         ('reconciliation.gap_threshold',    'platform', NULL, 0.1),
         ('reconciliation.epsilon_usd',      'platform', NULL, 0.01),
         ('reconciliation.lag_buffer_hours', 'platform', NULL, 48),
-        ('placement.default_unit_warn_threshold', 'platform', NULL, 20)
+        ('placement.default_unit_warn_threshold', 'platform', NULL, 20),
+        ('projects.pm_own_region_only',     'platform', NULL, 0)
       ON CONFLICT DO NOTHING
     `)
 
@@ -621,7 +622,7 @@ async function main() {
     // (NWB-CIB). runConnectorHealth picks it up and dispatches a
     // sync-conflict inbox item to admins (lena.park per dispatch rule).
     await db.insert(schema.syncConflict).values({
-      connectorId: 'PSR · APAC',
+      connectorId: 'Pathway · APAC',
       targetTable: 'project',
       targetPk: proj3.id,
       manualRowSnapshot: { costOwningUnit: 'MED · Retail risk' },

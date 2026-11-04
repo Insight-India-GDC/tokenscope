@@ -67,7 +67,6 @@ import { requireRegionScope } from '../auth/rbac'
 import { recordAuditEvent } from './audit'
 import { assertOrgUnitInRegion } from './org-units'
 import { PLACEMENT_AUDIT_EVENT, stripProvenanceKeys } from '../reconciliation/placement-provenance'
-import { rehomePlacement, type RehomePlacementRange, type RehomePlacementResult } from '../governance/rehome-placement'
 import { followPlacement } from '../utils/device-lifecycle'
 
 type Tx = PostgresJsDatabase<Record<string, unknown>>
@@ -78,6 +77,14 @@ type Tx = PostgresJsDatabase<Record<string, unknown>>
  */
 export type PlacementTargetPolicy = 'any-active-unit' | 'cost-owning-only'
 
+/**
+ * The 400 detail for a request that still sends `rehome`. Both placement doors
+ * used to accept it to rewrite a person's recorded usage onto their new unit;
+ * reports now group by where people sit now, so that rewrite corrects nothing.
+ * Refused rather than ignored so a stale client fails loudly.
+ */
+export const REHOME_REMOVED_DETAIL = 'Recorded usage no longer moves with a person: reports follow where people sit now.'
+
 export interface PlaceTeammateOpts {
   teammateId: string
   orgUnitId: string
@@ -85,19 +92,8 @@ export interface PlaceTeammateOpts {
   caller: { teammateId: string }
   /** Correlates the rows written by one bulk action. null for a single move. */
   batchId?: string | null
-  /**
-   * Move what this person ALREADY SPENT with them.
-   *
-   * Absent = today's behaviour: placement changes going forward and history
-   * stays put. That default is what makes a directory/graph sync safe — a reorg
-   * must not hand February's consumption to March's Business Unit — and the
-   * sync path cannot pass this field, which a gate asserts rather than assumes.
-   *
-   * Present = an admin is CORRECTING a mis-placement, so the record was always
-   * wrong and history follows. `{ from: 'all' }` is the admin default; a date
-   * floor is for the case where only recent placement was wrong.
-   */
-  rehome?: RehomePlacementRange
+  /** Extra audit payload keys from the caller (placement-check: source, step, provenance). */
+  auditContext?: Record<string, unknown>
   ipAddress?: string | null
   userAgent?: string | null
 }
@@ -128,7 +124,7 @@ export async function assertCostOwningTarget(tx: Tx, orgUnitId: string): Promise
   const detail =
     unit && unit.retired
       ? 'That Business Unit is retired — pick an active one.'
-      : 'Placement targets must be cost-owning units — spend homed anywhere else still reaches no Business Unit.'
+      : 'Placement targets must be Business Units — spend homed anywhere else still reaches no Business Unit.'
   throw createError({
     statusCode: 422,
     statusMessage: detail,
@@ -151,14 +147,7 @@ export interface PlaceTeammateResult {
    * 'noop' — they were ALREADY in this unit, so nothing was written. See the
    * same-unit branch below for why that is a distinct outcome and not a success.
    */
-  /**
-   * 'history-repaired' = they were ALREADY on the target and `rehome` was asked
-   * for, so nothing about their placement changed and their stranded history
-   * moved. See the same-unit branch below.
-   */
-  outcome: 'placed' | 'noop' | 'history-repaired'
-  /** Present only when the caller asked for history to follow. */
-  rehomed?: RehomePlacementResult
+  outcome: 'placed' | 'noop'
 }
 
 /**
@@ -258,64 +247,13 @@ export async function placeTeammate(
    * goes unreported.
    */
   if (target.org_unit_id === opts.orgUnitId) {
-    /*
-     * ── ALREADY THERE, BUT ASK FOR THE HISTORY AND IT STILL MOVES ────────────
-     * This branch used to return unconditionally, which made the one repair the
-     * feature exists for impossible. `bulk-place` moved hundreds of people and
-     * touched no spend row, so the estate is full of teammates sitting on the
-     * RIGHT unit with their history stranded on the wrong one — and the only
-     * remedy was to move them somewhere wrong and back, writing two false audit
-     * entries to fix one real problem.
-     *
-     * A history-only repair is safe here precisely because the placement is not
-     * changing: `UPDATE teammate` is skipped, so the manager-chain provenance is
-     * NOT stripped and the person stays re-derivable, which is the property the
-     * unconditional return was protecting.
-     */
-    if (!opts.rehome) {
-      return {
-        id: target.id,
-        email: target.email,
-        regionId: target.region_id,
-        previousOrgUnitId: target.org_unit_id,
-        orgUnitId: opts.orgUnitId,
-        outcome: 'noop',
-      }
-    }
-
-    const repaired = await rehomePlacement(tx, {
-      teammateId: target.id,
-      toOrgUnitId: opts.orgUnitId,
-      range: opts.rehome,
-    })
-    await recordAuditEvent(tx, {
-      eventType: PLACEMENT_AUDIT_EVENT,
-      actorTeammateId: opts.caller.teammateId,
-      actorSystem: 'admin-ui',
-      subjectKind: 'teammate',
-      subjectId: target.id,
-      payload: {
-        targetEmail: target.email,
-        region_id: target.region_id,
-        previousOrgUnitId: target.org_unit_id,
-        newOrgUnitId: opts.orgUnitId,
-        sessionsRevoked: false,
-        ...(opts.batchId ? { batchId: opts.batchId } : {}),
-        // Named so an auditor can tell a repair from a move at a glance: the
-        // placement did not change, only where the money is reported.
-        rehome: { historyOnly: true, range: opts.rehome, ...repaired },
-      },
-      ipAddress: opts.ipAddress ?? null,
-      userAgent: opts.userAgent ?? null,
-    })
     return {
       id: target.id,
       email: target.email,
       regionId: target.region_id,
       previousOrgUnitId: target.org_unit_id,
       orgUnitId: opts.orgUnitId,
-      outcome: 'history-repaired',
-      rehomed: repaired,
+      outcome: 'noop',
     }
   }
 
@@ -342,34 +280,9 @@ export async function placeTeammate(
 
   // The teammate's live devices move with them, so new spend lands on the new
   // unit (#417; owner ruling: a move within a region counts). Recorded spend
-  // moves only through `rehome` below.
+  // does not move: reports group by where people sit now, not by the stamp.
   const rehomedInstanceIds = await followPlacement(tx as never, target.id)
 
-  /*
-   * IN THE SAME TRANSACTION as the move above, and after it. A re-home that
-   * commits without its placement change (or the reverse) leaves the ledger
-   * disagreeing with the org, which is the failure this whole feature exists to
-   * end. The `noop` branch above returns before reaching here — nothing moved,
-   * so there is nothing to re-home.
-   */
-  const rehomed = opts.rehome
-    ? await rehomePlacement(tx, {
-        teammateId: target.id,
-        toOrgUnitId: opts.orgUnitId,
-        range: opts.rehome,
-      })
-    : null
-
-  /*
-   * AFTER the re-home, not before it, so the audit records what the correction
-   * ACTUALLY moved rather than what was asked for. Both are in this
-   * transaction, so a failed re-home rolls the audit row back with it — an
-   * audit entry for a move that did not happen is worse than none.
-   *
-   * The pre-`rehome` keys are preserved key-for-key; the rest are additive:
-   * `rehomedInstanceIds` appears only when live devices moved (#417), and
-   * `rehome` only when history was asked to follow.
-   */
   await recordAuditEvent(tx, {
     eventType: PLACEMENT_AUDIT_EVENT,
     actorTeammateId: opts.caller.teammateId,
@@ -384,18 +297,9 @@ export async function placeTeammate(
       sessionsRevoked: false,
       // Present only on a bulk action, so one batch is reviewable as a unit.
       ...(opts.batchId ? { batchId: opts.batchId } : {}),
+      ...opts.auditContext,
       // Present only when the teammate had live devices to move.
       ...(rehomedInstanceIds.length > 0 ? { rehomedInstanceIds } : {}),
-      ...(rehomed
-        ? {
-            rehome: {
-              // What was asked for, and what it reached. Both, because "0 rows"
-              // means something different for `all` than for a date floor.
-              range: opts.rehome,
-              ...rehomed,
-            },
-          }
-        : {}),
     },
     ipAddress: opts.ipAddress ?? null,
     userAgent: opts.userAgent ?? null,
@@ -408,6 +312,5 @@ export async function placeTeammate(
     previousOrgUnitId: target.org_unit_id,
     orgUnitId: opts.orgUnitId,
     outcome: 'placed',
-    ...(rehomed ? { rehomed } : {}),
   }
 }

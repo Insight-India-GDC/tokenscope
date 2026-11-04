@@ -20,6 +20,9 @@ import {
 } from '../../../plugin/scripts/claude-config-dir.mjs'
 import { realHome } from '../../../plugin/scripts/real-home.mjs'
 
+// Windows (#430): skipped on win32 because this file assumes tmpdir() is outside the home and HOME steers homedir(); on Windows tmpdir() is inside the profile and homedir() follows USERPROFILE.
+const POSIX_ONLY = process.platform === 'win32'
+
 const made: string[] = []
 function sandbox() {
   const d = mkdtempSync(join(realHome(), '.ts-claude-config-dir-'))
@@ -37,7 +40,7 @@ function quietCwd(base: string) {
   return cwd
 }
 
-describe('resolveClaudeConfigDir', () => {
+describe.skipIf(POSIX_ONLY)('resolveClaudeConfigDir', () => {
   it('unset → <home>/.claude, source default', () => {
     const home = sandbox()
     expect(resolveClaudeConfigDir({ env: {}, home, cwd: quietCwd(home) })).toEqual({
@@ -195,7 +198,7 @@ describe('resolveClaudeConfigDir', () => {
   })
 })
 
-describe('projectSetsEnvKey', () => {
+describe.skipIf(POSIX_ONLY)('projectSetsEnvKey', () => {
   it('walks from cwd to the root, in settings.json and settings.local.json', () => {
     const base = sandbox()
     mkdirSync(join(base, 'a', '.claude'), { recursive: true })

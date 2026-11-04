@@ -21,11 +21,11 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { interpretEmissionProbe } from '../../../plugin/scripts/status.mjs'
+import { interpretEmissionProbe, unverifiedMessage } from '../../../plugin/scripts/status.mjs'
 import { resolvePwsh, childEnv } from './helpers/shells.js'
 
 const ROOT = resolve(__dirname, '../../..')
@@ -334,3 +334,190 @@ describe.skipIf(SKIP)('status.ps1 runs the helper bounded and with a scrubbed en
     if (WIN) expect(seen.SystemRoot).toBeTruthy()
   }, 60_000)
 })
+
+// #475: the work report reads the same folder sources as status.mjs.
+describe.skipIf(SKIP)('status.ps1 work report (Get-TsWork)', () => {
+  const HASH = 'a'.repeat(64)
+  const cases: Array<{ name: string; files: Record<string, string>; want: unknown }> = [
+    {
+      name: 'YAML .tokenscope and a folder default',
+      files: { '.tokenscope': 'project:\n  code: HBR-2041\n', '.claude/settings.local.json': '{"tokenscope":{"activity":" Research "}}' },
+      want: {
+        project: { code: 'HBR-2041', source: 'from .tokenscope' },
+        activity: { label: 'Research', source: 'folder default', note: "applies from the next session, and only if it is one of your region's activity types" },
+      },
+    },
+    {
+      name: 'a one-line .tokenscope',
+      files: { '.tokenscope': '# tagged\nTokenScope-MVP\n' },
+      want: { project: { code: 'TokenScope-MVP', source: 'from .tokenscope' }, activity: { label: null, source: null } },
+    },
+    {
+      name: 'a tag in the committed .claude/settings.json',
+      files: { '.claude/settings.json': JSON.stringify({ env: { OTEL_RESOURCE_ATTRIBUTES: `tool=claude-code,project.code_hash=${HASH}` } }) },
+      want: { project: { code: null, code_hash: HASH, source: 'from .claude/settings.json' }, activity: { label: null, source: null } },
+    },
+    {
+      name: 'an unsafe code and an unsafe activity are none',
+      files: { '.tokenscope': 'project:\n  code: "a b"\n', '.claude/settings.local.json': '{"tokenscope":{"activity":"x,y"}}' },
+      want: { project: { code: null, source: null }, activity: { label: null, source: null } },
+    },
+  ]
+
+  it.each(cases)('$name', ({ files, want }) => {
+    pwshOrThrow()
+    const dir = mkdtempSync(join(tmpdir(), 'ts-ps-work-'))
+    try {
+      for (const [rel, body] of Object.entries(files)) {
+        mkdirSync(dirname(join(dir, rel)), { recursive: true })
+        writeFileSync(join(dir, rel), body)
+      }
+      const script = [`. '${STATUS_PS1}'`, `[Console]::Out.Write((ConvertTo-AsciiJson (Get-TsWork '${dir}')))`].join('\n')
+      const r = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' })
+      expect(r.stderr).toBe('')
+      expect(JSON.parse(r.stdout)).toEqual(want)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+/*
+ * #503: the PowerShell status runs the project-tag check too (it used to leave
+ * `project` null and list it under needs_node), with the Node path's decision
+ * and words: the repo tag's hash, else the committed .tokenscope's, checked at
+ * /project-resolve with this install's endpoint and its bound access token.
+ */
+describe.skipIf(SKIP)('status.ps1 project-tag check (Get-TsProjectCheck, Get-TsProjectBlock)', () => {
+  let srv: http.Server
+  let srvBase = ''
+  let answer: { status: number; body: unknown } = { status: 200, body: { billable: true } }
+  const seen: { url: string; auth: string }[] = []
+  beforeAll(async () => {
+    srv = http.createServer((req, res) => {
+      seen.push({ url: req.url ?? '', auth: String(req.headers.authorization ?? '') })
+      req.resume()
+      req.on('end', () => {
+        res.setHeader('content-type', 'application/json')
+        res.writeHead(answer.status)
+        res.end(JSON.stringify(answer.body))
+      })
+    })
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()))
+    srvBase = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`
+  })
+  afterAll(async () => {
+    await new Promise<void>((r) => srv.close(() => r()))
+  })
+
+  const INST = '203d6725-f9f9-46d5-987b-571adfbb0857'
+  const endpoint = () => `${srvBase}/api/v1/instances/${INST}/bearer`
+
+  function folder(files: Record<string, string>) {
+    const dir = mkdtempSync(join(tmpdir(), 'ts-ps-proj-'))
+    mkdirSync(join(dir, '.git'))
+    for (const [rel, body] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, rel)), { recursive: true })
+      writeFileSync(join(dir, rel), body)
+    }
+    return dir
+  }
+  function stateWith(cache: unknown) {
+    const dir = mkdtempSync(join(tmpdir(), 'ts-ps-state-'))
+    if (cache !== undefined) writeFileSync(join(dir, 'oauth-access.claude-code.json'), JSON.stringify(cache))
+    return dir
+  }
+
+  // ASYNC spawn: the stub server lives in this process.
+  async function check(dir: string, ep: string, state: string) {
+    pwshOrThrow()
+    const script = [
+      `. '${STATUS_PS1}'`,
+      `$c = Get-TsProjectCheck '${dir}' '${ep}' '${state}'`,
+      `[Console]::Out.Write((ConvertTo-AsciiJson ([ordered]@{ check = $c; block = (Get-TsProjectBlock $c) })))`,
+    ].join('\n')
+    const out = await new Promise<{ stdout: string; stderr: string }>((done) => {
+      const c = spawn(PWSH, ['-NoProfile', '-NonInteractive', '-Command', script], { env: childEnv({ PATH: process.env.PATH ?? '' }) })
+      let stdout = ''
+      let stderr = ''
+      c.stdout.on('data', (d) => (stdout += d))
+      c.stderr.on('data', (d) => (stderr += d))
+      c.on('close', () => done({ stdout, stderr }))
+    })
+    expect(out.stderr).toBe('')
+    return JSON.parse(out.stdout) as { check: Record<string, unknown>; block: Record<string, unknown> }
+  }
+
+  it('checks the committed .tokenscope with the bound token, and says it is billable', async () => {
+    answer = { status: 200, body: { billable: true } }
+    seen.length = 0
+    const r = await check(folder({ '.tokenscope': 'project:\n  code: HBR-2041\n' }), endpoint(), stateWith({ access_token: 'tok', bearer_endpoint: endpoint() }))
+    expect(r.check).toMatchObject({ status: 'ok', code: 'HBR-2041' })
+    expect(r.block).toEqual({ code: 'HBR-2041', billable: true, message: 'Project tag “HBR-2041” is billable on this environment.' })
+    expect(seen[0]!.url).toMatch(new RegExp(`^/api/v1/instances/${INST}/project-resolve\\?code_hash=[0-9a-f]{64}$`))
+    expect(seen[0]!.auth).toBe('Bearer tok')
+  })
+
+  it('a not-billable answer names the budgets', async () => {
+    answer = { status: 200, body: { billable: false, your_projects: [{ code: 'A-1' }, { code: 'B-2' }] } }
+    const r = await check(folder({ '.tokenscope': 'HBR-2041\n' }), endpoint(), stateWith({ access_token: 'tok', bearer_endpoint: endpoint() }))
+    expect(r.block).toEqual({
+      code: 'HBR-2041',
+      billable: false,
+      message: 'Wrong-env tag: “HBR-2041” is NOT billable here — spend is landing UNTAGGED. Re-tag via /tokenscope:project. Your budgets: A-1, B-2.',
+    })
+  })
+
+  it('the repo tag’s hash wins over the committed code, which is then not named', async () => {
+    answer = { status: 200, body: { billable: true } }
+    seen.length = 0
+    const hash = 'c'.repeat(64)
+    const dir = folder({
+      '.tokenscope': 'project:\n  code: HBR-2041\n',
+      '.claude/settings.local.json': JSON.stringify({ env: { OTEL_RESOURCE_ATTRIBUTES: `project.code_hash=${hash}` } }),
+    })
+    const r = await check(dir, endpoint(), stateWith({ access_token: 'tok', bearer_endpoint: endpoint() }))
+    expect(r.check).toMatchObject({ status: 'ok' })
+    expect(r.check.code ?? null).toBeNull()
+    expect(seen[0]!.url).toContain(`code_hash=${hash}`)
+  })
+
+  it('names why it could not check', async () => {
+    const tagged = folder({ '.tokenscope': 'HBR-2041\n' })
+    expect((await check(folder({}), endpoint(), stateWith(undefined))).check).toEqual({ status: 'no-tag' })
+    expect((await check(tagged, '', stateWith(undefined))).check).toEqual({ status: 'unverifiable', reason: 'not-configured' })
+    expect((await check(tagged, endpoint(), stateWith(undefined))).check).toEqual({ status: 'unverifiable', reason: 'no-token' })
+    // A token minted for another endpoint is never presented.
+    expect((await check(tagged, endpoint(), stateWith({ access_token: 'tok', bearer_endpoint: `${srvBase}/other/bearer` }))).check).toEqual({
+      status: 'unverifiable',
+      reason: 'no-token',
+    })
+    answer = { status: 401, body: {} }
+    expect((await check(tagged, endpoint(), stateWith({ access_token: 'tok', bearer_endpoint: endpoint() }))).check).toEqual({
+      status: 'unverifiable',
+      reason: 'http-401',
+    })
+    // A redirect is never followed, and reads as Node's fetch reads it.
+    answer = { status: 302, body: {} }
+    expect((await check(tagged, endpoint(), stateWith({ access_token: 'tok', bearer_endpoint: endpoint() }))).check).toEqual({
+      status: 'unverifiable',
+      reason: 'fetch-failed',
+    })
+    // Off-box plain http is refused before any request.
+    expect((await check(tagged, 'http://tokenscope.example/api/v1/instances/x/bearer', stateWith(undefined))).check).toEqual({
+      status: 'unverifiable',
+      reason: 'bad-endpoint',
+    })
+  })
+
+  it('words every unverifiable reason exactly as status.mjs does', () => {
+    pwshOrThrow()
+    for (const reason of ['not-configured', 'no-token', 'fetch-failed', 'http-401', 'http-403', 'http-500', 'bad-json']) {
+      const script = [`. '${STATUS_PS1}'`, `[Console]::Out.Write((ConvertTo-AsciiJson (Get-TsProjectBlock @{ status = 'unverifiable'; reason = '${reason}' })))`].join('\n')
+      const r = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' })
+      expect(r.stderr).toBe('')
+      expect(JSON.parse(r.stdout)).toEqual({ code: null, billable: null, reason, message: unverifiedMessage(reason) })
+    }
+  })
+})
+

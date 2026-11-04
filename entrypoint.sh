@@ -213,6 +213,11 @@ if [ -n "${TOKENSCOPE_APP_DATABASE_URL:-}" ]; then
     echo "[entrypoint] REFUSING TO START: the runtime is configured to connect as the app role, but the schema is not ready for it (see the lines above). The previous revision keeps serving; booting this one would stop the emit fleet behind a healthy-looking deploy"
     exit 1
   }
+  # The server reads only the app-role URL once it is set (drizzle/connect.ts
+  # runtimeDatabaseUrl), so the owner's credential leaves its environment. This
+  # stops an env dump disclosing it; it does not stop code running as the app's
+  # identity from reading the same Key Vault secret.
+  unset DATABASE_URL
 fi
 
 echo "[entrypoint] starting Nitro server on :${NITRO_PORT:-3000}..."

@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   isExcludedUpn,
-  upnGlobToRegExp,
+  upnGlobMatches,
   upnGlobToSqlLike,
   validateExclusionPattern,
 } from '../../server/utils/directory-exclusions'
@@ -43,19 +43,34 @@ describe('isExcludedUpn', () => {
   })
 })
 
-describe('upnGlobToRegExp escaping', () => {
-  it('treats dots as literal (does not over-match)', () => {
-    const re = upnGlobToRegExp('*@*.onmicrosoft.com')
-    expect(re.test('x@a.onmicrosoft.com')).toBe(true)
-    expect(re.test('x@aXonmicrosoftYcom')).toBe(false) // dots are literal
+describe('upnGlobMatches', () => {
+  it('treats dots and other regex metacharacters as literal (does not over-match)', () => {
+    expect(upnGlobMatches('*@*.onmicrosoft.com', 'x@a.onmicrosoft.com')).toBe(true)
+    expect(upnGlobMatches('*@*.onmicrosoft.com', 'x@aXonmicrosoftYcom')).toBe(false)
+    expect(upnGlobMatches('a+b(c)@x.io', 'a+b(c)@x.io')).toBe(true)
+    expect(upnGlobMatches('a+b(c)@x.io', 'aab(c)@x.io')).toBe(false)
   })
 
   it('anchors — a pattern matches the WHOLE upn', () => {
-    const re = upnGlobToRegExp('admin@corp.com')
-    expect(re.test('admin@corp.com')).toBe(true)
-    expect(re.test('admin@corp.com.evil.test')).toBe(false)
-    expect(re.test('x.admin@corp.com')).toBe(false)
+    expect(upnGlobMatches('admin@corp.com', 'admin@corp.com')).toBe(true)
+    expect(upnGlobMatches('admin@corp.com', 'admin@corp.com.evil.test')).toBe(false)
+    expect(upnGlobMatches('admin@corp.com', 'x.admin@corp.com')).toBe(false)
   })
+
+  it('`*` matches any run including the empty one, and runs of `*` behave as one', () => {
+    expect(upnGlobMatches('*-cld@*', '-cld@x')).toBe(true)
+    expect(upnGlobMatches('a**b@x.io', 'ab@x.io')).toBe(true)
+    expect(upnGlobMatches('a*b*c@x.io', 'a-b-b-c@x.io')).toBe(true)
+    expect(upnGlobMatches('a*b*c@x.io', 'a-c-b@x.io')).toBe(false)
+    expect(upnGlobMatches('svc-*@*.example.com', 'svc-@app.example.com')).toBe(true)
+    expect(upnGlobMatches('*@x.io*', 'a@x.io')).toBe(true)
+  })
+
+  it('a many-wildcard pattern against a near-miss upn stays linear (no catastrophic backtracking)', () => {
+    const started = Date.now()
+    expect(isExcludedUpn(`${'a'.repeat(50)}@corp.co`, [`*${'a*'.repeat(10)}@corp.com`])).toBe(false)
+    expect(Date.now() - started).toBeLessThan(50)
+  }, 5_000)
 })
 
 describe('upnGlobToSqlLike (DB-side match count)', () => {

@@ -3,8 +3,8 @@
  *
  * This gate IS the authorization boundary — the RLS policies do not execute, so
  * nothing sits behind it. requireRole returns 403 with the RFC-9457
- * Problem-Details body. Audit-on-denial belongs in the per-actor inbox
- * dispatcher (Epic 7) so it can route the alert.
+ * Problem-Details body. Every denial writes one `authz-denied` warn line (no
+ * audit row: 403s are frequent and expected, e.g. a scoped-out diagnostics card).
  *
  * Async now: requireAuth/tryAuth resolve from OIDC + DB enrichment
  * (see server/utils/auth.ts). The per-event cache there means
@@ -15,16 +15,30 @@
  * stays a one-line idiom in handlers.
  */
 import { createError, type H3Event } from 'h3'
+import { consola } from 'consola'
 import { requireAuth as utilsRequireAuth, type Session } from '../utils/auth'
 import { isRole, isPlatformAdmin, type Role } from '../../shared/auth/roles'
 
 export const requireAuth = utilsRequireAuth
+
+function logDenied(event: H3Event, session: Session, gate: 'role' | 'region', need: string): void {
+  consola.warn('[rbac] authz-denied', {
+    event: 'authz-denied',
+    teammateId: session.teammateId,
+    role: session.role,
+    regionId: session.regionId,
+    path: event.path,
+    gate,
+    need,
+  })
+}
 
 export async function requireRole(event: H3Event, ...allowed: Role[]): Promise<Session> {
   const session = await utilsRequireAuth(event)
   // platform-admin is the cross-region super-admin — satisfies every gate.
   if (isPlatformAdmin(session.role)) return session
   if (!isRole(session.role) || !allowed.includes(session.role)) {
+    logDenied(event, session, 'role', allowed.join(','))
     throw createError({
       statusCode: 403,
       statusMessage: 'Forbidden',
@@ -84,6 +98,7 @@ export async function requireRegionScope(event: H3Event, regionId: string): Prom
   if (isPlatformAdmin(session.role)) return session
   if (session.role === 'admin') {
     if (session.regionId !== regionId) {
+      logDenied(event, session, 'region', regionId)
       throw createError({
         statusCode: 403,
         statusMessage: 'Forbidden',
@@ -98,6 +113,7 @@ export async function requireRegionScope(event: H3Event, regionId: string): Prom
     return session
   }
   // Default DENY: unrecognized / unlisted roles get no region scope.
+  logDenied(event, session, 'region', regionId)
   throw createError({
     statusCode: 403,
     statusMessage: 'Forbidden',

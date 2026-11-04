@@ -358,6 +358,34 @@ describe('/me/identities — link, list, unlink', () => {
     `
     expect(Number(still[0]!.n)).toBe(1)
   })
+
+  it('DELETE of my own directory-sync or admin-manual binding 404s and leaves it in place', async () => {
+    const before = await auditCount('identity-unlinked')
+    for (const source of ['directory-sync', 'admin-manual']) {
+      const [row] = await t.db
+        .insert(schema.teammateIdentityMap)
+        .values({
+          teammateId: devId,
+          system: 'github',
+          identifier: `lr-dev-${source}`,
+          identifierKind: 'username',
+          enterpriseSlug: 'lr-ent',
+          source,
+          verifiedAt: new Date(),
+        })
+        .returning({ id: schema.teammateIdentityMap.id })
+      await expect(
+        identityDeleteHandler(
+          ev({ session: sessionFor(devId, 'developer'), params: { id: row!.id }, method: 'DELETE' }) as never,
+        ),
+      ).rejects.toMatchObject({ statusCode: 404 })
+      const still = await t.client<{ n: string }[]>`
+        SELECT COUNT(*)::text AS n FROM teammate_identity_map WHERE id = ${row!.id}::uuid
+      `
+      expect(Number(still[0]!.n)).toBe(1)
+    }
+    expect(await auditCount('identity-unlinked')).toBe(before)
+  })
 })
 
 describe('GET /me/projects', () => {

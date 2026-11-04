@@ -101,6 +101,6 @@ function onSelect(row: { label: string; value: number; meta?: unknown }) {
     </div>
 
     <!-- I5 cross-link: this usage ranking's §B sibling is chargeback-by-cost-centre. -->
-    <LaneSwitchLink label="See chargeback by cost centre" />
+    <LaneSwitchLink label="See chargeback by Business Unit" />
   </UiCard>
 </template>

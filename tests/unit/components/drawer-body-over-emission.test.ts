@@ -45,6 +45,7 @@ describe('InboxDrawer', () => {
     related_entity_kind: 'over-emission',
     related_entity_id: id,
     target_allocation_id: null,
+    target_project_code: null,
     ack_state: 'unread' as const,
     ack_at: null,
     created_at: '2026-06-22T00:00:00Z',

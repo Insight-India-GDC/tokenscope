@@ -22,7 +22,7 @@
  * with three string fields. Avoiding the `yaml` npm dep keeps the plugin footprint
  * small (both plugins ship into user space).
  */
-import { readFileSync, statSync } from 'node:fs'
+import { lstatSync, readFileSync, statSync } from 'node:fs'
 import { dirname, resolve, join } from 'node:path'
 import { createHash } from 'node:crypto'
 
@@ -58,19 +58,25 @@ function isFile(p) {
  *   { project: { code?, id?, name? }, optional: { client?, practice?, engagement_type?, pm? } }.
  *
  * `project.*` fields are read ONLY from lines indented under a `project:` block;
- * `optional.*` fields are read from TOP-LEVEL keys. A bare one-liner therefore
- * yields `{ project: {}, optional: {} }` (no project.code) — callers must handle
- * the no-code case (resolveRepoProjectCode throws a clear error).
+ * `optional.*` fields are read from TOP-LEVEL keys.
+ *
+ * The bare one-liner (the file's only line is the code itself, e.g.
+ * `TokenScope-MVP`) is what the MCP `project` prompt wrote for a long time, so it
+ * is read as `project.code` too (#485): repos tagged that way were silently
+ * untagged. Only a lone line with no `key:` shape that passes the same
+ * SAFE_PROJECT_CODE check counts; anything else is not a code.
  */
 export function parseTokenscope(filePath) {
   const text = readFileSync(filePath, 'utf8')
   const lines = text.split(/\r?\n/)
   const out = { project: {}, optional: {} }
   let inProject = false
+  const meaningful = []
 
   for (const raw of lines) {
     const line = raw.replace(/#.*$/, '').replace(/\s+$/, '')
     if (line.trim() === '') continue
+    meaningful.push(line.trim())
     if (/^[A-Za-z][A-Za-z0-9_-]*:\s*$/.test(line)) {
       const key = line.split(':')[0]
       inProject = key === 'project'
@@ -91,6 +97,9 @@ export function parseTokenscope(filePath) {
     }
   }
 
+  if (meaningful.length === 1 && !meaningful[0].includes(':') && isSafeProjectCode(meaningful[0])) {
+    out.project.code = meaningful[0]
+  }
   return out
 }
 
@@ -118,6 +127,54 @@ export function computeCodeHash(code) {
  * URL query param, or a rendered warning.
  */
 const SAFE_PROJECT_CODE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$/
+
+/**
+ * #475: the folder's default activity, `tokenscope.activity` in
+ * `<dir>/.claude/settings.local.json` (the uncommitted, per-developer file; never
+ * the committed `.tokenscope` or `.claude/settings.json`). It rides telemetry as
+ * the `tokenscope.activity` resource attribute and the SERVER accepts it only
+ * when it names one of the region's standard activity types, so a client or bid
+ * name typed here is dropped there. This shape check only keeps it a plain
+ * label (letters, digits, spaces and `_ - & / . ( ) +`, as admin-made activity
+ * types use, at most 64 characters); `,` and `=` would break the attribute string.
+ */
+const SAFE_ACTIVITY = /^[A-Za-z0-9][A-Za-z0-9 _&/.()+-]{0,63}$/
+
+/** The folder's default activity label, or null (absent, unreadable or not a plain label). */
+export function readFolderActivity(dir) {
+  const file = join(dir, '.claude', 'settings.local.json')
+  try {
+    // A regular file only: a committed symlink or FIFO is not read (same rule as the repo tag).
+    if (!lstatSync(file).isFile()) return null
+    const value = JSON.parse(readFileSync(file, 'utf8'))?.tokenscope?.activity
+    if (typeof value !== 'string') return null
+    const label = value.trim()
+    return SAFE_ACTIVITY.test(label) ? label : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The default activity of the nearest folder, walking up from `startDir`, that
+ * has a `.claude/settings.local.json` (a Copilot session can start in a
+ * subfolder of the project). Null when that file names none.
+ */
+export function findFolderActivity(startDir) {
+  let dir = resolve(startDir)
+  for (let i = 0; i < 256; i++) {
+    try {
+      lstatSync(join(dir, '.claude', 'settings.local.json'))
+      return readFolderActivity(dir)
+    } catch {
+      /* no file here: keep walking */
+    }
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+  return null
+}
 
 /** True if `code` is a `.tokenscope`-safe project code (see SAFE_PROJECT_CODE). */
 export function isSafeProjectCode(code) {

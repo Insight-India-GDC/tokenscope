@@ -1,23 +1,17 @@
 /*
- * Placement derivation for cost-centre-unplaced users (mig 0068 region + the unit/practice
- * extension; docs/design/org-entra-region-derivation.md + manager-chain-unit-placement.md).
- * PRECEDENCE, highest first (derivePlacement below):
- *   0. UNIT RULE — a curated directory-attribute rule naming a cost-owning unit
- *      (mig 0112). An explicit admin statement outranks an inferred chain walk.
- *   1. UNIT (practice): the nearest chain ancestor who is an active cou_owner of EXACTLY
- *      ONE cost-owning unit → place in that unit (Entra is the org truth → chargeable).
- *   2. REGION RULE — a curated attribute rule naming a region → region holding node.
- *   3. REGION: else the nearest ancestor who is a configured region_leader → region holding.
+ * Placement derivation for people no cost-centre code places. PRECEDENCE, highest first
+ * (decidePlacement):
+ *   1. unit rule    — a directory-attribute rule naming a cost-owning unit (mig 0112).
+ *   2. chain unit   — the nearest chain member who owns EXACTLY ONE cost-owning unit.
+ *   3. chain region — the nearest chain member who is a region leader.
+ *   4. region rule  — a directory-attribute rule naming a region.
+ * A chain unit beats a nearer region leader, so the walk only stops early on a unit owner.
  *
- * UNIT ALWAYS WINS over region regardless of hop distance: a region-leader nearer than a
- * unit-owner must NOT short-circuit (a unit may sit above it). So the walk only breaks on a
- * UNIT hit; a region hit is remembered as a fallback and the walk keeps climbing.
- *
- * PURE-ish: the Graph manager fetch is injected (GetManager) so this is unit-testable with
- * fakes; the SQL maps are loaded by the store. Caches are created ONCE per worker run and
- * threaded through (AEUF's cross-user optimisation). A non-404 Graph error PROPAGATES (the
- * walk aborts before back-propagation) so a transient failure is never cached as a miss.
+ * The decision is a pure function of the evidence (attributes + chain); the Graph manager
+ * fetch is injected (GetManager). A non-404 Graph error propagates out of the live walk
+ * and is never cached as a miss.
  */
+import type { ChainLink, WalkEnd, PlacementStep } from '../../shared/placement/placement-check'
 import type { DirectoryUser } from '../azure/directory'
 import type { DerivedManager, PlacementDerivation } from './placement-service'
 import {
@@ -26,57 +20,48 @@ import {
   type RegionAttributeKey,
 } from '../../shared/placement/region-attributes'
 
+/** Managers above the person a walk may reach (the person themself is hop 0). */
+export const MAX_CHAIN_HOPS = 12
+
 /** A manager edge from the Entra `/users/{id}/manager` hop. */
 export interface ManagerEdge {
   oid: string
   email: string | null
+  name?: string | null
 }
 
-/** Fetch a user's manager (null = top of chart / no manager). MUST map 404 → null and
- *  PROPAGATE any other error (the walk aborts; the per-user worker isolation retries). */
+/** Fetch a user's manager (null = top of chart). MUST map 404 → null and throw on any
+ *  other error. */
 export type GetManager = (oid: string) => Promise<ManagerEdge | null>
 
-/** A cost-owning unit owned by a chain ancestor (cou_owner → org_unit). */
+/** A cost-owning unit owned by a chain member (cou_owner → org_unit). */
 export interface OwnedUnit {
   orgUnitId: string
   regionId: string
 }
 
-/** The resolved placement from a chain walk. null = neither signal resolved. */
+/** The chain's own answer, ignoring rules. null = neither an owner nor a leader. */
 export type ChainPlacement =
   | { kind: 'unit'; orgUnitId: string; regionId: string; ownerOid: string }
-  | { kind: 'region'; regionId: string }
+  | { kind: 'region'; regionId: string; leaderOid: string }
   | null
 
 export interface ChainCaches {
   /** oid → manager edge | null (top of chart). Shared across users in one run. */
   managerCache: Map<string, ManagerEdge | null>
-  /** oid → fully-resolved ChainPlacement, back-propagated through each walked path so
-   *  siblings short-circuit. Stores the FINAL outcome only (never a mid-walk region). */
+  /** oid → that person's own ChainPlacement, so a later walk through them stops there. */
   placementCache: Map<string, ChainPlacement>
 }
 
-/**
- * What ONE curated rule places a matching teammate into.
- *
- * `orgUnitId` is the mig-0112 extension: a rule may name a cost-owning UNIT
- * rather than only a region. It is the SAME rule, the same matcher and the same
- * table — only the target is finer. `regionId` is always populated (for a unit
- * rule it is the unit's own region, held true by the composite FK), so every
- * existing region-shaped reader keeps working unchanged.
- */
+/** What one curated rule places a matching teammate into. `regionId` is always set (for a
+ *  unit rule it is the unit's region); `orgUnitId` null = a region rule. */
 export interface RuleTarget {
   regionId: string
-  /** NULL = region rule. Non-null = place into this cost-owning unit. */
   orgUnitId: string | null
 }
 
-/**
- * The curated directory rules, pre-indexed for lookup. `exact` is a nested
- * attribute→value→target map (O(1) hits, no string-composite key); the `prefix`
- * list is scanned longest-value-first so the most specific prefix wins.
- * Built by the store's loadDirectoryRegionRules().
- */
+/** The curated rules, pre-indexed: exact attribute→value→target, and prefixes sorted
+ *  longest-first so the most specific prefix wins. */
 export interface RegionRuleSet {
   exact: Map<RegionAttributeKey, Map<string, RuleTarget>>
   prefix: Array<{ attribute: RegionAttributeKey; value: string; target: RuleTarget }>
@@ -84,64 +69,51 @@ export interface RegionRuleSet {
 
 const EMPTY_RULE_SET: RegionRuleSet = { exact: new Map(), prefix: [] }
 
-// Compile-time guard: every catalog key MUST be a real string field on
-// DirectoryUser, so dirAttrValue's lookup can't silently no-op if the catalog
-// and the interface ever drift.
+// Every catalog key must be a string field on DirectoryUser.
 type _AssertAttrsAreDirectoryFields = RegionAttributeKey extends keyof DirectoryUser ? true : never
 const _assertAttrsAreDirectoryFields: _AssertAttrsAreDirectoryFields = true
 void _assertAttrsAreDirectoryFields
 
-/** Read a directory attribute value off a DirectoryUser by key (nullable). */
-function dirAttrValue(dir: DirectoryUser, attr: RegionAttributeKey): string | null {
-  return dir[attr] ?? null
+/** The directory attributes rules match on (every catalog key). */
+export type DirectoryAttributes = Record<RegionAttributeKey, string | null>
+
+export function directoryAttributesOf(dir: Pick<DirectoryUser, RegionAttributeKey> | null): DirectoryAttributes {
+  const out = {} as DirectoryAttributes
+  for (const key of REGION_ATTRIBUTE_KEYS) out[key] = dir?.[key] ?? null
+  return out
 }
 
 export interface AttributeMatch {
   regionId: string
-  /** The matched rule's UNIT target (mig 0112), or null for a region rule. */
+  /** The rule's unit target, or null for a region rule. */
   orgUnitId: string | null
   attribute: RegionAttributeKey
-  /** True if a LOWER-precedence attribute also matched but to a DIFFERENT TARGET
-   *  — another region, or another unit, or a region where this one names a unit
-   *  (a misconfiguration worth surfacing; the highest-precedence match wins). */
+  /** The matched rule's value (normalised; the prefix itself for a prefix rule). */
+  value: string
+  /** A lower-precedence attribute also matched a DIFFERENT target (region or unit). */
   conflict: boolean
 }
 
 /**
- * Resolve a placement target from the directory rules, trying attributes in
- * catalog PRECEDENCE order (companyName → … → department). Exact match first,
- * then prefix. Highest-precedence hit wins; a divergent lower hit is flagged as
- * a conflict. Returns null when no attribute matches (→ manager-walk / global
- * fallback).
- *
- * `conflict` compares the COMPLETE TARGET — region AND unit. Comparing regions
- * alone reported "no conflict" for two rules that match one person and name two
- * DIFFERENT cost centres in the same region, so the broad-catalogue rule quietly
- * won and the narrow one an admin had just written did nothing. That is not "an
- * ordering the precedence catalog decides": which cost centre a person's spend
- * charges is the decision this feature exists to make, and two rules disagreeing
- * about it is a misconfiguration in exactly the way two regions is. A rule naming
- * a unit versus one naming only the region is a divergence too — one places, the
- * other does not.
- *
- * The highest-precedence hit still WINS; `conflict` is how the divergence is
- * surfaced rather than swallowed (placement-sync counts it, and the derivation
- * carries it out on PlacementDerivation.conflict).
+ * Match the curated rules in catalog precedence order, exact before prefix. The
+ * highest-precedence hit wins; any hit naming a different complete target (region AND
+ * unit) sets `conflict`. null = no attribute matched.
  */
 export function mapAttributesToRegion(
-  dir: DirectoryUser,
+  dir: Pick<DirectoryUser, RegionAttributeKey>,
   rules: RegionRuleSet = EMPTY_RULE_SET,
 ): AttributeMatch | null {
-  const hits: Array<{ attribute: RegionAttributeKey; target: RuleTarget }> = []
+  const hits: Array<{ attribute: RegionAttributeKey; value: string; target: RuleTarget }> = []
   for (const attr of REGION_ATTRIBUTE_KEYS) {
-    const norm = normalizeMatchValue(dirAttrValue(dir, attr))
+    const norm = normalizeMatchValue(dir[attr] ?? null)
     if (!norm) continue
-    let target = rules.exact.get(attr)?.get(norm)
-    if (!target) {
-      const pfx = rules.prefix.find((p) => p.attribute === attr && norm.startsWith(p.value))
-      if (pfx) target = pfx.target
+    const exact = rules.exact.get(attr)?.get(norm)
+    if (exact) {
+      hits.push({ attribute: attr, value: norm, target: exact })
+      continue
     }
-    if (target) hits.push({ attribute: attr, target })
+    const pfx = rules.prefix.find((p) => p.attribute === attr && norm.startsWith(p.value))
+    if (pfx) hits.push({ attribute: attr, value: pfx.value, target: pfx.target })
   }
   if (hits.length === 0) return null
   const winner = hits[0]!
@@ -153,230 +125,247 @@ export function mapAttributesToRegion(
     regionId: winner.target.regionId,
     orgUnitId: winner.target.orgUnitId,
     attribute: winner.attribute,
+    value: winner.value,
     conflict,
   }
 }
 
 /**
- * THE rule that decides whether a cou_owner can be a placement target at all.
- *
- * An owner of exactly one active cost-owning unit resolves; an owner of two or
- * more is AMBIGUOUS — the walk cannot tell which of their units a report belongs
- * to, so it skips them entirely and keeps climbing. Such an owner places nobody,
- * on either unit, and on screen looks identical to one that works.
- *
- * Exported because the ADMIN SURFACE has to warn about exactly this, and a second
- * predicate written to describe the same condition is a warning that drifts from
- * the behaviour it describes. The walk below calls this function; so does
- * server/api/v1/admin/org-units.get.ts. There is one condition, in one place.
- *
- * Both read the SAME map (`PlacementStore.loadActiveUnitOwners`), so "active",
- * "cost-owning", "not retired" and "has a real Entra oid" are also one definition
- * rather than a re-derived approximation.
+ * Whether a cou_owner can be a placement target: exactly one active cost-owning unit. An
+ * owner of more is ambiguous and the walk climbs past them. The admin surface
+ * (org-units.get.ts) warns from this same predicate.
  */
 export function resolvesToSingleUnit(owned: OwnedUnit[] | undefined): owned is [OwnedUnit] {
   return resolvesToSingleUnitCount(owned?.length ?? 0)
 }
 
-/**
- * The SAME rule, expressed over a count rather than the rows.
- *
- * The admin org-unit tree needs the ambiguity verdict for owners whose second
- * unit may sit in a region the caller cannot read, so it reads aggregate counts
- * from the `owner_active_unit_counts()` SECURITY DEFINER function (mig 0111)
- * rather than the rows. It must reach the same verdict as the walk, so both go
- * through this one predicate — `resolvesToSingleUnit` above is now a thin
- * wrapper over it. Changing the rule in one place changes it in both, which is
- * the property the warning depends on: a chip that claimed a behaviour the walk
- * does not have would be worse than no chip.
- */
+/** The same rule over a count, for readers holding aggregate counts (mig 0111). */
 export function resolvesToSingleUnitCount(unitCount: number): boolean {
   return unitCount === UNAMBIGUOUS_OWNER_UNIT_COUNT
 }
 
-/**
- * How many active cost-owning units an owner may hold and still be a placement
- * target. Named, and exported, because SQL readers need the same number:
- * server/reconciliation/unit-owner-eligibility.ts folds the ambiguity rule into a
- * query, and a literal `1` written there would be the second definition this
- * whole arrangement exists to avoid.
- */
+/** Units an owner may hold and still be a placement target; SQL readers use this too. */
 export const UNAMBIGUOUS_OWNER_UNIT_COUNT = 1
 
-/**
- * Walk the manager chain and resolve a UNIT (cou_owner) or REGION (region_leader) placement.
- * Unit always wins over region. A cou_owner of >1 active cost-owning unit is AMBIGUOUS (we
- * can't tell which unit the report belongs to) → skipped as a unit target (keep climbing for
- * an unambiguous owner; else fall to region). Hop cap + cycle guard + cross-user cache.
- */
-export async function resolvePlacementViaManagerChain(
-  startOid: string,
-  deps: {
-    unitOwnerMap: Map<string, OwnedUnit[]>
-    leaderMap: Map<string, string>
-    getManager: GetManager
-    caches: ChainCaches
-    maxHops?: number
-  },
-): Promise<ChainPlacement> {
-  const maxHops = deps.maxHops ?? 5
-  const { managerCache, placementCache } = deps.caches
-  const { unitOwnerMap, leaderMap } = deps
-  const path: string[] = []
-  let current = startOid
-  let hops = 0
-  let cachedHit: ChainPlacement | undefined
-  let unitResult: ChainPlacement = null
-  let regionResult: ChainPlacement = null
-  while (current && hops <= maxHops) {
-    const cached = placementCache.get(current)
-    if (cached !== undefined) {
-      cachedHit = cached // a previously fully-resolved outcome — reuse it
-      break
-    }
-    // UNIT: an unambiguous (exactly one) cost-owning unit → nearest unit wins, unit beats
-    // region → final. (>1 = ambiguous: skip as a unit target, keep climbing.)
-    const owned = unitOwnerMap.get(current)
+export type { ChainLink, WalkEnd, PlacementStep } from '../../shared/placement/placement-check'
+
+export interface PlacementEvidence {
+  attributes: DirectoryAttributes
+  /** chain[0] is the person themself (they can be an owner or leader), then their
+   *  manager, upward. A `graph-error` walk keeps the links fetched before the error. */
+  chain: ChainLink[]
+  walkEnd: WalkEnd
+}
+
+export interface PlacementConfig {
+  rules: RegionRuleSet
+  unitOwnerMap: Map<string, OwnedUnit[]>
+  leaderMap: Map<string, string>
+  maxHops: number
+}
+
+
+export interface PlacementDecision {
+  orgUnitId?: string
+  regionId?: string
+  step: PlacementStep | null
+  ownerOid?: string
+  leaderOid?: string
+  /** The deciding rule (unit-rule / region-rule only). */
+  rule?: { attribute: RegionAttributeKey; value: string }
+  /** Owners of 2+ units met before the first usable owner, nearest first. */
+  ambiguousOwners: Array<{ oid: string; units: OwnedUnit[] }>
+  /** The deciding rule had a divergent lower-precedence match. */
+  conflict?: boolean
+}
+
+type ChainMaps = Pick<PlacementConfig, 'unitOwnerMap' | 'leaderMap'>
+
+interface ChainScan {
+  unit?: { orgUnitId: string; regionId: string; ownerOid: string }
+  leader?: { oid: string; regionId: string }
+  ambiguousOwners: PlacementDecision['ambiguousOwners']
+}
+
+function scanChain(oids: readonly string[], maps: ChainMaps): ChainScan {
+  const scan: ChainScan = { ambiguousOwners: [] }
+  for (const oid of oids) {
+    const owned = maps.unitOwnerMap.get(oid)
     if (resolvesToSingleUnit(owned)) {
-      unitResult = { kind: 'unit', orgUnitId: owned[0]!.orgUnitId, regionId: owned[0]!.regionId, ownerOid: current }
-      placementCache.set(current, unitResult)
+      scan.unit = { orgUnitId: owned[0].orgUnitId, regionId: owned[0].regionId, ownerOid: oid }
       break
     }
-    // REGION: remember the FIRST region leader only; do NOT break (a unit may be above).
-    if (!regionResult) {
-      const rid = leaderMap.get(current)
-      if (rid !== undefined) regionResult = { kind: 'region', regionId: rid }
+    if (owned?.length) scan.ambiguousOwners.push({ oid, units: owned })
+    if (!scan.leader) {
+      const regionId = maps.leaderMap.get(oid)
+      if (regionId !== undefined) scan.leader = { oid, regionId }
     }
-    if (path.includes(current)) break // cycle — no unit; regionResult (if any) stands
-    path.push(current)
-    if (!managerCache.has(current)) {
-      // May throw on a non-404 Graph error → propagates (NOT cached).
-      managerCache.set(current, await deps.getManager(current))
-    }
-    const manager = managerCache.get(current)!
-    if (manager === null) break // top of chart
-    current = manager.oid
-    hops += 1
   }
-  const result: ChainPlacement = cachedHit !== undefined ? cachedHit : (unitResult ?? regionResult ?? null)
-  // Back-propagate the FINAL result to every visited intermediary (all share the chain
-  // above the resolution point, so the outcome is the same for each). Mid-walk region hits
-  // were never cached, so a unit found higher up correctly overrides them here.
-  for (const p of path) placementCache.set(p, result)
-  return result
+  return scan
+}
+
+/** `tail` = the cached answer of the person the walk stopped at, above `scan`'s links. */
+function chainOutcome(scan: ChainScan, tail: ChainPlacement | undefined): ChainPlacement {
+  if (scan.unit) return { kind: 'unit', ...scan.unit }
+  if (tail?.kind === 'unit') return tail
+  if (scan.leader) return { kind: 'region', regionId: scan.leader.regionId, leaderOid: scan.leader.oid }
+  return tail ?? null
+}
+
+function decide(
+  byAttr: AttributeMatch | null,
+  chain: ChainPlacement,
+  ambiguousOwners: PlacementDecision['ambiguousOwners'],
+): PlacementDecision {
+  const rule = byAttr ? { attribute: byAttr.attribute, value: byAttr.value } : undefined
+  if (byAttr?.orgUnitId) {
+    return { orgUnitId: byAttr.orgUnitId, regionId: byAttr.regionId, step: 'unit-rule', rule, conflict: byAttr.conflict, ambiguousOwners }
+  }
+  if (chain?.kind === 'unit') {
+    return { orgUnitId: chain.orgUnitId, regionId: chain.regionId, step: 'chain-unit', ownerOid: chain.ownerOid, ambiguousOwners }
+  }
+  if (chain?.kind === 'region') {
+    return { regionId: chain.regionId, step: 'chain-region', leaderOid: chain.leaderOid, ambiguousOwners }
+  }
+  if (byAttr) {
+    return { regionId: byAttr.regionId, step: 'region-rule', rule, conflict: byAttr.conflict, ambiguousOwners }
+  }
+  return { step: null, ambiguousOwners }
+}
+
+/** The placement the evidence yields under `config`. Ignores `walkEnd`: a caller treats
+ *  `graph-error` / `not-in-directory` evidence as undecided. */
+export function decidePlacement(evidence: PlacementEvidence, config: PlacementConfig): PlacementDecision {
+  const oids = evidence.chain.slice(0, config.maxHops + 1).map((l) => l.oid)
+  const scan = scanChain(oids, config)
+  return decide(mapAttributesToRegion(evidence.attributes, config.rules), chainOutcome(scan, undefined), scan.ambiguousOwners)
 }
 
 /**
- * Resolve a placement for an unplaced (no cost-centre match) bill user. Order: a chain UNIT
- * wins (finest); else a directory-attribute→region rule OR a chain region; else null. The
- * attribute rules let each tenant key on whichever directory field is region-correlated on
- * their directory (companyName at Insight; department on AEUF-shaped tenants).
+ * Walk the whole chain (to the top or the hop cap) for stored evidence. Uses the manager
+ * cache only, so the chain is this person's own. A Graph error ends the walk as
+ * `graph-error` with the links fetched so far.
+ */
+export async function gatherPlacementEvidence(
+  dir: DirectoryUser | null,
+  deps: { getManager: GetManager; managerCache: Map<string, ManagerEdge | null>; maxHops?: number },
+): Promise<PlacementEvidence> {
+  const attributes = directoryAttributesOf(dir)
+  if (!dir?.oid) return { attributes, chain: [], walkEnd: 'not-in-directory' }
+  const maxHops = deps.maxHops ?? MAX_CHAIN_HOPS
+  const chain: ChainLink[] = [{ oid: dir.oid, name: dir.displayName || null, email: dir.email || null }]
+  for (;;) {
+    const at = chain[chain.length - 1]!.oid
+    let manager: ManagerEdge | null
+    try {
+      manager = await fetchManager(at, deps.getManager, deps.managerCache)
+    } catch {
+      return { attributes, chain, walkEnd: 'graph-error' }
+    }
+    if (!manager?.oid) return { attributes, chain, walkEnd: 'top-of-chart' }
+    if (chain.some((l) => l.oid === manager.oid)) return { attributes, chain, walkEnd: 'cycle' }
+    if (chain.length > maxHops) return { attributes, chain, walkEnd: 'hop-cap' }
+    chain.push({ oid: manager.oid, name: manager.name ?? null, email: manager.email })
+  }
+}
+
+async function fetchManager(
+  oid: string,
+  getManager: GetManager,
+  managerCache: Map<string, ManagerEdge | null>,
+): Promise<ManagerEdge | null> {
+  if (!managerCache.has(oid)) managerCache.set(oid, await getManager(oid))
+  return managerCache.get(oid)!
+}
+
+export interface ChainWalkDeps extends ChainMaps {
+  getManager: GetManager
+  caches: ChainCaches
+  maxHops?: number
+}
+
+/**
+ * The live walk: lazy (stops at the first usable unit owner or at a person whose answer
+ * is cached) and strict (a Graph error throws). Caches each walked person's own answer,
+ * except above the start on a capped or cyclic walk, where it is not known.
+ */
+async function walkChain(startOid: string, deps: ChainWalkDeps): Promise<{ path: string[]; tail?: ChainPlacement }> {
+  const maxHops = deps.maxHops ?? MAX_CHAIN_HOPS
+  const { managerCache, placementCache } = deps.caches
+  const path: string[] = []
+  let tail: ChainPlacement | undefined
+  let complete = true
+  let current = startOid
+  for (;;) {
+    const cached = placementCache.get(current)
+    if (cached !== undefined) {
+      tail = cached
+      break
+    }
+    if (path.includes(current)) {
+      complete = false
+      break
+    }
+    path.push(current)
+    if (resolvesToSingleUnit(deps.unitOwnerMap.get(current))) break
+    const manager = await fetchManager(current, deps.getManager, managerCache)
+    if (!manager?.oid) break
+    if (path.length > maxHops) {
+      complete = false
+      break
+    }
+    current = manager.oid
+  }
+  const cacheable = complete ? path.length : Math.min(1, path.length)
+  for (let i = 0; i < cacheable; i++) {
+    placementCache.set(path[i]!, chainOutcome(scanChain(path.slice(i), deps), tail))
+  }
+  return { path, tail }
+}
+
+/** The chain's own answer for `startOid`: a usable unit owner beats any leader; else the
+ *  nearest leader. */
+export async function resolvePlacementViaManagerChain(startOid: string, deps: ChainWalkDeps): Promise<ChainPlacement> {
+  const { path, tail } = await walkChain(startOid, deps)
+  return chainOutcome(scanChain(path, deps), tail)
+}
+
+/**
+ * The live derivation for one directory user. A unit rule answers without walking. The
+ * chain is walked whenever an owner or a leader exists, since either outranks a region
+ * rule; a Graph error throws rather than falling through to a rule.
  */
 export async function derivePlacement(
   dir: DirectoryUser,
-  deps: {
-    rules: RegionRuleSet
-    unitOwnerMap: Map<string, OwnedUnit[]>
-    leaderMap: Map<string, string>
-    getManager: GetManager
-    caches: ChainCaches
-    maxHops?: number
-  },
+  deps: ChainWalkDeps & { rules: RegionRuleSet },
 ): Promise<PlacementDerivation> {
-  const walkArgs = {
-    unitOwnerMap: deps.unitOwnerMap,
-    leaderMap: deps.leaderMap,
-    getManager: deps.getManager,
-    caches: deps.caches,
-    maxHops: deps.maxHops,
-  }
-  /*
-   * The attribute match is resolved ONCE, up front, because it can now answer at
-   * two different precedence levels: a UNIT rule outranks the chain walk (step 0)
-   * while a REGION rule still sits below it (step 2). Matching twice would be two
-   * evaluations of one rule set that could disagree after an edit between them.
-   */
   const byAttr = mapAttributesToRegion(dir, deps.rules)
-
-  /*
-   * 0. A UNIT RULE BEATS THE MANAGER CHAIN (spec C5, owner decision O1).
-   *
-   * An admin writing "department = X ⇒ cost centre U" is making an explicit
-   * statement about their org; the chain walk is an INFERENCE from reporting
-   * lines. The explicit statement wins — which is also how region rules already
-   * behave (step 2 beats step 3), so the two rule kinds agree rather than
-   * ordering themselves differently for no reason a user could predict.
-   *
-   * It sits at the same level as the cost-centre-code match in
-   * provisionAndPlace, which is evaluated before this function is called at all.
-   *
-   * No manager oid is reported here: nothing walked, so nothing knows it. The
-   * caller distinguishes "we never asked" from "asked, top of chart".
-   */
-  if (byAttr?.orgUnitId) {
-    return {
-      orgUnitId: byAttr.orgUnitId,
-      regionId: byAttr.regionId,
-      via: 'unit-rule',
-      attribute: byAttr.attribute,
-      conflict: byAttr.conflict,
-    }
-  }
-
   let chain: ChainPlacement = null
-  let walked = false
-  // 1. UNIT (practice) wins over a region, so we MUST walk before step 2 when any unit
-  //    owners exist (a chain unit beats an attribute-mapped region). When there are no
-  //    unit owners we skip this walk so an attribute-mapped user is not blocked by a
-  //    transient Graph error.
-  if (dir.oid && deps.unitOwnerMap.size > 0) {
-    chain = await resolvePlacementViaManagerChain(dir.oid, walkArgs)
-    walked = true
-    if (chain?.kind === 'unit') {
-      return {
-        orgUnitId: chain.orgUnitId,
-        regionId: chain.regionId,
-        ownerOid: chain.ownerOid,
-        via: 'unit',
-        manager: directManagerFrom(deps.caches, dir.oid),
-      }
-    }
+  let manager: DerivedManager | undefined
+  const chainCanAnswer = deps.unitOwnerMap.size > 0 || deps.leaderMap.size > 0
+  if (!byAttr?.orgUnitId && dir.oid && chainCanAnswer) {
+    const { path, tail } = await walkChain(dir.oid, deps)
+    chain = chainOutcome(scanChain(path, deps), tail)
+    manager = directManagerFrom(deps.caches, dir.oid)
   }
-  // 2. directory-attribute → region rule, beats a chain region leader.
-  if (byAttr) {
-    return {
-      regionId: byAttr.regionId,
-      via: 'attribute',
-      attribute: byAttr.attribute,
-      conflict: byAttr.conflict,
-      manager: walked && dir.oid ? directManagerFrom(deps.caches, dir.oid) : undefined,
-    }
+  const d = decide(byAttr, chain, [])
+  switch (d.step) {
+    case 'unit-rule':
+      return { orgUnitId: d.orgUnitId, regionId: d.regionId, via: 'unit-rule', attribute: d.rule!.attribute, conflict: d.conflict }
+    case 'chain-unit':
+      return { orgUnitId: d.orgUnitId, regionId: d.regionId, ownerOid: d.ownerOid, via: 'unit', manager }
+    case 'chain-region':
+      return { regionId: d.regionId, via: 'manager', manager }
+    case 'region-rule':
+      return { regionId: d.regionId, via: 'attribute', attribute: d.rule!.attribute, conflict: d.conflict, manager }
+    default:
+      return { via: null, manager }
   }
-  // 3. chain region leader (run the walk now if step 1 was skipped).
-  if (dir.oid && deps.leaderMap.size > 0) {
-    if (chain === null) {
-      chain = await resolvePlacementViaManagerChain(dir.oid, walkArgs)
-      walked = true
-    }
-    if (chain?.kind === 'region') {
-      return { regionId: chain.regionId, via: 'manager', manager: directManagerFrom(deps.caches, dir.oid) }
-    }
-  }
-  return { via: null, manager: walked && dir.oid ? directManagerFrom(deps.caches, dir.oid) : undefined }
 }
 
 /**
- * The teammate's OWN manager, read from the per-run cache the walk populates.
- *
- * CACHE-ONLY, never a fetch — that is the whole design. C9 needs each occupant's
- * direct manager to group "who does this person actually report to", and the very
- * first hop of the chain walk already asked Graph that exact question. Reading it
- * back costs nothing and adds no new failure mode; issuing a fetch here would add
- * a Graph call (and a throw path) to a derivation that had already decided.
- *
- * `undefined` = the walk never ran for this oid, so we do not know and must not
- * overwrite what a previous run captured. `null` = we asked and they are the top
- * of the chart. The two are different facts and the snapshot keeps them apart.
+ * The person's own manager from the walk's cache, never a fetch. `undefined` = never
+ * asked (callers keep what an earlier run captured); `oid: null` = top of chart.
  */
 function directManagerFrom(caches: ChainCaches, oid: string): DerivedManager | undefined {
   if (!caches.managerCache.has(oid)) return undefined

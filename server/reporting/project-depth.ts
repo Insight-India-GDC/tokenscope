@@ -222,7 +222,7 @@ export interface ProjectContributionRow {
    * that asymmetry is the whole reason this field exists. A row is NAMED when
    * the subject is anywhere in the viewer's PEOPLE scope — every cost centre
    * they own, plus their own subtree. A LINK, though, carries exactly one
-   * `?src=` frame, and the target recomputes D34's emit-time conjunct against
+   * `?src=` frame, and the target recomputes D34's in-frame conjunct against
    * THAT frame alone. A viewer owning CC-A and CC-B who enters with `src=cc:A`
    * therefore sees contributors named through CC-B whose drill correctly 403s —
    * the live-looking dead button `drill-contract.ts` exists to forbid, produced
@@ -340,7 +340,7 @@ export async function splitProjectContribution(
 ): Promise<ProjectContribution> {
 
   /*
-   * D34's emit-time conjunct, evaluated against the CARRIED frame — the
+   * D34's in-frame conjunct (current placement), evaluated against the CARRIED frame — the
    * subject's in-window rows anywhere inside that frame, NOT just this
    * project's, because that is exactly what the drill target itself recomputes
    * (`subjectHasInScopeRow`). ONE set query for every contributor, not one
@@ -355,7 +355,7 @@ export async function splitProjectContribution(
     )
     const hits = await tx.execute<{ teammate_id: string }>(sql`
       SELECT DISTINCT u.teammate_id::text AS teammate_id
-        FROM v_complete_usage u
+        FROM v_complete_usage_current u
        WHERE u.teammate_id IN (${ids})
          AND ${scopeSql(viewer.drill.scope)}
          AND u.identity_state IS DISTINCT FROM 'provisional'

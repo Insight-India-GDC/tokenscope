@@ -297,7 +297,10 @@ describe('runReconciliation', () => {
     const target = rows.find((r) => r.category === 'untagged-backlog')
     expect(target).toBeDefined()
     expect(target!.severity).toBe('info')
-    expect(target!.subject).toContain('attribution gap')
+    // The gap is Anthropic's total vs ALL recorded sessions (tagged or not), so the
+    // subject says unrecorded, never "untagged" (PR 508 review).
+    expect(target!.subject).toContain('Unrecorded spend')
+    expect(target!.subject).not.toMatch(/tagged/i)
   })
 
   it('does not duplicate the same-month inbox item', async () => {

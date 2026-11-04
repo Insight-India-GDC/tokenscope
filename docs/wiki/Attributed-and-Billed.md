@@ -106,15 +106,10 @@ provider's figure, per (person, UTC day, tool), every two hours over a trailing
 |---|---|---|
 | Project membership | A tag naming a project the person is not on | Refused at join and audited; the spend lands untagged |
 | Heartbeat coverage | Recent Claude Code records whose session falls outside the device's live window: from its enrolment to its latest ingest-token fetch (`/bearer`, authenticated by the device credential), with about 35 minutes' grace at each end. It does not need a fetch near each record, so a spoofed record inside a live device's window passes. It does not cover Copilot, devices that never fetched a token, or a stolen credential, whose fetches look like the owner's | The device owner, as quarantined spend, plus an audit event |
-| Over-reporting flag (§3) | Telemetry more than double the provider figure and more than $25 over it | The developer, in their review list. **Escalated** flags reach the admins of the person's region and the platform admins as an inbox notice. A quarantine is also lifted and escalated automatically when the quarantined conversation has records outside the flagged day and tool |
+| Over-reporting flag (§3) | Telemetry more than double the provider figure and more than $25 over it | The developer, in their review list. **Escalated** flags reach the Admins, and any remaining Region admin of the person's region, as an inbox notice. A quarantine is also lifted and escalated automatically when the quarantined conversation has records outside the flagged day and tool |
 | Unaccounted usage (§3) | Under-reported or unenrolled usage | The developer's needs-tagging list; Business Unit owners see current members whose unallocated spend over the period reaches the soft cap |
-| Attribution gap | A device that has been attributed before and still fetches ingest tokens (`/bearer`), but whose last attributed record is more than 72 hours older than its latest fetch. A fetch is not proof of spend or of a person signing in, so an idle device can show up too. A device that has never been attributed is not covered: it looks the same as one that has not spent yet | Platform admins |
-| Audit log | Every accept, quarantine, escalate, tag and dismiss, with who and when | Platform admins at `/admin/audit`. Region admins see events whose actor or subject teammate is in their region, which leaves out system-authored flag events |
-
-An admin with an active report-access deny (`revoke-all`) is not sent the
-admin-routed notices that carry report data (over-emission escalations and
-Copilot bill notices) and does not see them while the deny lasts. See
-[Authentication & Security](Authentication-and-Security.md).
+| Attribution gap | A device that has been attributed before and still fetches ingest tokens (`/bearer`), but whose last attributed record is more than 72 hours older than its latest fetch. A fetch is not proof of spend or of a person signing in, so an idle device can show up too. A device that has never been attributed is not covered: it looks the same as one that has not spent yet | Admins |
+| Audit log | Every accept, quarantine, escalate, tag and dismiss, with who and when | Admins at `/admin/audit`. Region admins see events whose actor or subject teammate is in their region, which leaves out system-authored flag events |
 
 ---
 

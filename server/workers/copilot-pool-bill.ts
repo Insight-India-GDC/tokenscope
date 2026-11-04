@@ -57,6 +57,7 @@ import {
   persistCopilotOverageAllocation,
   type PersistCopilotOverageAllocationResult,
 } from '../governance/copilot-overage-allocation'
+import { describeError } from '../utils/redact-probe-error'
 
 type Db = PostgresJsDatabase<typeof schema>
 
@@ -409,7 +410,7 @@ async function alertUnsettled(
       month: args.monthStart,
       usageGrossUsd: args.agg.usageGrossUsd,
       overageNetUsd: args.agg.overageNetUsd,
-      hint: 'The enterprise billing usage report has Copilot usage for this org-month but yielded no read license charge — either no "Copilot Enterprise" SKU line, or every money field read $0 (a likely bill-shape drift). No license charge was written (never a flat-rate fallback); the month reports unsettled on the Finance Σ=bill check. Verify the bill report or the SKU/field naming.',
+      hint: 'The enterprise billing usage report has Copilot usage for this org-month but yielded no read license charge — either no "Copilot Enterprise" SKU line, or every money field read $0 (a likely bill-shape drift). No license charge was written (never a flat-rate fallback); the month reports unsettled on the Finance chargeback = bill check. Verify the bill report or the SKU/field naming.',
     },
     relatedEntityKind: 'provider-org',
     relatedEntityId: args.providerOrgId,
@@ -446,7 +447,7 @@ async function alertResidualUnsettled(
       month: args.monthStart,
       usageGrossUsd: args.agg.usageGrossUsd,
       overageNetUsd: args.agg.overageNetUsd,
-      hint: 'The unallocated enterprise-residual (org-less / unregistered-org bill lines) has Copilot usage but no read "Copilot Enterprise" license line, so the month reports unsettled on the Finance Σ=bill check with no per-org owner. Onboard the org(s) into provider_org (+ map a CoU) or verify the bill report.',
+      hint: 'The unallocated enterprise-residual (org-less / unregistered-org bill lines) has Copilot usage but no read "Copilot Enterprise" license line, so the month reports unsettled on the Finance chargeback = bill check with no per-org owner. Onboard the org(s) into provider_org (and map a Business Unit) or verify the bill report.',
     },
     relatedEntityKind: 'provider-enterprise',
     relatedEntityId: args.enterpriseId,
@@ -483,7 +484,7 @@ async function alertOrgNameMismatch(
       month: args.monthStart,
       registeredOrgCount: args.registeredCount,
       billOrgNames: args.billOrgNames,
-      hint: 'The enterprise has registered provider_org rows, but NONE of the billing report\'s organizationName values matched any registered org by login (external_org_id) OR display name — every chargeable org folded into the unallocated residual (no per-CoU homing). Likely the bill\'s organizationName is the org DISPLAY name (not the login), or the provider_org registry is stale. Verify the org registry mapping.',
+      hint: 'The enterprise has registered provider_org rows, but NONE of the billing report\'s organizationName values matched any registered org by login (external_org_id) OR display name — every chargeable org folded into the unallocated residual (no per-Business Unit homing). Likely the bill\'s organizationName is the org DISPLAY name (not the login), or the provider_org registry is stale. Verify the org registry mapping.',
     },
     relatedEntityKind: 'provider-enterprise',
     relatedEntityId: args.enterpriseId,
@@ -527,11 +528,11 @@ async function alertUnclassified(
   if (existing.length > 0) return false
   const subject =
     args.kind === 'conservation-violation'
-      ? `Copilot bill conservation violation — classified columns ≠ Σ raw Copilot net for ${args.orgName} (${args.monthStart})`
+      ? `Copilot bill conservation violation — classified columns ≠ the sum of raw Copilot net for ${args.orgName} (${args.monthStart})`
       : `Copilot bill unclassified spend — ${args.orgName} has unclassified Copilot lines (${args.monthStart})`
   const hint =
     args.kind === 'conservation-violation'
-      ? 'license_net + overage_net + unclassified_net diverged from the Σ of raw Copilot bill-line netAmount for this org-month (the C1 conservation assertion). A SKU classifier is dropping or double-booking money — fix the classification, then re-run the month.'
+      ? 'license_net + overage_net + unclassified_net diverged from the sum of raw Copilot bill-line netAmount for this org-month (the C1 conservation assertion). A SKU classifier is dropping or double-booking money — fix the classification, then re-run the month.'
       : 'One or more Copilot-product bill lines matched neither the license nor the usage (AI-credit/agent) SKU classifier. The amount is booked to the visible copilot-unclassified lane and is NEVER charged. Classify the SKU by extending the worker SKU maps, then re-run the month. Do not enable Copilot chargeback mode while unclassified > 0 for the billing month (runbook: docs/build/worker-scheduler.md).'
   const dispatched = await dispatchInbox(db, {
     category: 'copilot-bill-unclassified',
@@ -613,7 +614,7 @@ export async function runCopilotPoolBill(db: Db, opts?: CopilotPoolBillOptions):
       } catch (err) {
         // MissingGithubAppKeyError (App-opted enterprise, key unwired) — fail-loud, isolated.
         result.enterprisesErrored += 1
-        consola.warn(`[copilot-pool-bill] credential resolve failed for ${ent.external_id}: ${String(err)}`)
+        consola.warn(`[copilot-pool-bill] credential resolve failed for ${ent.external_id}: ${describeError(err)}`)
         continue
       }
       if (!credential) {
@@ -638,7 +639,7 @@ export async function runCopilotPoolBill(db: Db, opts?: CopilotPoolBillOptions):
         // MEDIUM-1(a): an ABSENT/renamed NET money field makes the client's Zod parse THROW, so a
         // bill-shape drift lands HERE (fail-loud, month isolated) — never coerced to a $0 report.
         result.enterprisesErrored += 1
-        consola.warn(`[copilot-pool-bill] ${ent.external_id} billing report ${mk.monthStart} failed: ${String(err)}`)
+        consola.warn(`[copilot-pool-bill] ${ent.external_id} billing report ${mk.monthStart} failed: ${describeError(err)}`)
         continue
       }
       entRan = true
@@ -860,7 +861,7 @@ export async function runCopilotPoolBill(db: Db, opts?: CopilotPoolBillOptions):
       } catch (err) {
         result.enterprisesErrored += 1
         consola.warn(
-          `[copilot-pool-bill] ${ent.external_id} bill/allocation persist ${mk.monthStart} failed: ${String(err)}`,
+          `[copilot-pool-bill] ${ent.external_id} bill/allocation persist ${mk.monthStart} failed: ${describeError(err)}`,
         )
         continue
       }

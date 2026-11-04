@@ -9,13 +9,14 @@
  *
  * T26 (link-or-plain), T27 (echo round-trip), plus the two-rules pin.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import DriversTable from '../../../app/components/reporting/DriversTable.vue'
 import DrillName from '../../../app/components/reporting/DrillName.vue'
 import {
   drillQuery,
   entryReportRoute,
+  frameWindow,
   projectDrillTarget,
   dimFact, teammateDrillTarget,
   NO_DRILL_GRANTS,
@@ -339,7 +340,8 @@ describe('T27 — echo round-trip: scope + window out, entry report back', () =>
  */
 describe('an absent fact never admits a drill', () => {
   const grants = { teammate: 'people-scope' } as never
-  const frame = { src: 'cc:11111111-1111-4111-8111-111111111111' } as never
+  // No explicit window: the server's day names the default one (frameWindow).
+  const frame = { src: 'cc:11111111-1111-4111-8111-111111111111', today: '2026-08-15' } as never
 
   it('plain-texts a row whose isProvisional never arrived', () => {
     const row = { id: '22222222-2222-4222-8222-222222222222', isActive: true } as never
@@ -435,5 +437,39 @@ describe('dimFact keeps an unknown unknown', () => {
       { month: '2026-08' } as never,
     )
     expect(d.admit).toBe(false)
+  })
+})
+
+/*
+ * The default window is the SERVER's month, never the browser's (issue 491,
+ * clock-and-day-boundary.md D3). The browser clock is pinned to a different UTC
+ * day AND month from the server's, so a browser read would show up as the wrong
+ * month here.
+ */
+describe('frameWindow: the default month comes from the server clock', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('a frame with no window is at the server day\'s month, whatever the browser says', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-01T02:00:00Z'))
+    expect(frameWindow({ src: 'cc:c', today: '2026-08-31' })).toEqual({ from: '2026-08-01', to: '2026-08-01' })
+  })
+
+  it('with no server day yet there is no window, and the rule refuses rather than guessing', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-01T02:00:00Z'))
+    expect(frameWindow({ src: 'cc:c' })).toBeNull()
+    expect(frameWindow({ src: 'cc:c', today: null })).toBeNull()
+    const row = { id: '22222222-2222-4222-8222-222222222222', isActive: true, isProvisional: false }
+    expect(teammateDrillTarget(GRANTED, row, { src: 'cc:c' })).toBeNull()
+    expect(teammateDrillTarget(GRANTED, row, { src: 'cc:c', today: '2026-08-31' })).not.toBeNull()
+  })
+
+  it('an explicit window wins over the server day, and the day never rides the link', () => {
+    expect(frameWindow({ src: 'cc:c', month: '2026-07', today: '2026-08-31' })).toEqual({ from: '2026-07-01', to: '2026-07-01' })
+    expect(frameWindow({ src: 'cc:c', from: '2026-06-03', to: '2026-06-09', today: '2026-08-31' })).toEqual({ from: '2026-06-03', to: '2026-06-09' })
+    expect(drillQuery({ src: 'cc:c', today: '2026-08-31' })).toEqual({ src: 'cc:c' })
   })
 })

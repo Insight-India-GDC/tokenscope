@@ -16,7 +16,6 @@ import { injectTestSession } from '../../helpers/auth'
 import type { Session } from '../../../server/utils/auth'
 import patchHandler from '../../../server/api/v1/admin/projects/[id].patch'
 import previewHandler from '../../../server/api/v1/admin/projects/[id]/migrate-preview.post'
-import ownersDiagHandler from '../../../server/api/v1/admin/diagnostics/multi-bu-owners.get'
 
 let t: TestDb
 let regionA = ''
@@ -263,34 +262,5 @@ describe('PATCH /admin/projects/{id} — the migrate path', () => {
     await expect(
       patchHandler(ev({ session: admin(), id: projectId, method: 'PATCH', body: { migrate_expect_token: 'x' } })),
     ).rejects.toMatchObject({ statusCode: 400 })
-  })
-})
-
-describe('GET /admin/diagnostics/multi-bu-owners', () => {
-  it('is clean when nobody owns two', async () => {
-    const res = (await ownersDiagHandler(ev({ session: admin(), method: 'GET' }))) as {
-      clean: boolean
-      violations: unknown[]
-    }
-    expect(res.clean).toBe(true)
-    expect(res.violations).toEqual([])
-  })
-
-  it('reports a teammate owning two Business Units', async () => {
-    await t.client`INSERT INTO cou_owner (org_unit_id, teammate_id) VALUES (${buFrom}::uuid, ${teammateId}::uuid)`
-    await t.client`INSERT INTO cou_owner (org_unit_id, teammate_id) VALUES (${buTo}::uuid, ${teammateId}::uuid)`
-    const res = (await ownersDiagHandler(ev({ session: admin(), method: 'GET' }))) as {
-      clean: boolean
-      violations: { teammateId: string; unitCount: number }[]
-    }
-    expect(res.clean).toBe(false)
-    expect(res.violations[0]).toMatchObject({ teammateId, unitCount: 2 })
-    await t.client`DELETE FROM cou_owner`
-  })
-
-  it('a developer cannot read it', async () => {
-    await expect(ownersDiagHandler(ev({ session: dev(), method: 'GET' }))).rejects.toMatchObject({
-      statusCode: 403,
-    })
   })
 })

@@ -18,13 +18,18 @@ import {
   buildHelperCommand,
   parseHelperCommand,
   reconcileHelperCommand,
+  reconcilePluginPaths,
+  sharedHomeEquivalent,
 } from '../../../plugin/scripts/env-builder.mjs'
+
+// Windows (#430): skipped on win32 because this file builds from POSIX fixture paths (the win32 command shape is tested here with platform: 'win32' on every OS).
+const POSIX_ONLY = process.platform === 'win32'
 
 const LINUX = { record: { tool: 'claude-code', platform: 'linux' }, scriptsDir: '/plugin/scripts' }
 const LINUX_CMD = '"/plugin/scripts/otel-headers-helper.sh" --tool claude-code'
 const PS = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
-describe('buildRepoResourceAttrs', () => {
+describe.skipIf(POSIX_ONLY)('buildRepoResourceAttrs', () => {
   it('carries the instance id, project.code_hash, and tool in the server attr ordering', () => {
     expect(buildRepoResourceAttrs('sid', 'abc123')).toBe(
       'tokenscope.instance_id=sid,project.code_hash=abc123,tool=claude-code',
@@ -32,7 +37,7 @@ describe('buildRepoResourceAttrs', () => {
   })
 })
 
-describe('mergeClaudeSettings', () => {
+describe.skipIf(POSIX_ONLY)('mergeClaudeSettings', () => {
   it('preserves existing keys, sets the helper, merges the env block', () => {
     const existing = { permissions: { allow: ['Bash(node:*)'] }, env: { FOO: 'bar' } }
     const merged = mergeClaudeSettings(existing, LINUX, {
@@ -66,7 +71,7 @@ describe('mergeClaudeSettings', () => {
   })
 })
 
-describe('buildHelperCommand', () => {
+describe.skipIf(POSIX_ONLY)('buildHelperCommand', () => {
   it('POSIX: quoted script, --tool always, --state-dir only when the record has one', () => {
     expect(buildHelperCommand({ tool: 'claude-code', platform: 'darwin' }, { scriptsDir: '/p/scripts' })).toBe(
       '"/p/scripts/otel-headers-helper.sh" --tool claude-code',
@@ -127,7 +132,7 @@ describe('buildHelperCommand', () => {
  * repository) before PATH, and a repository can set PATH: a bare interpreter
  * name lets a repo pick the program that receives the refresh token.
  */
-describe('the persisted Windows command never starts with a bare interpreter', () => {
+describe.skipIf(POSIX_ONLY)('the persisted Windows command never starts with a bare interpreter', () => {
   const rec = { tool: 'claude-code', platform: 'win32' } as const
 
   it('starts with the absolute, quoted powershell.exe', () => {
@@ -171,7 +176,7 @@ describe('the persisted Windows command never starts with a bare interpreter', (
   })
 })
 
-describe('parseHelperCommand — reads back only what we could have written', () => {
+describe.skipIf(POSIX_ONLY)('parseHelperCommand — reads back only what we could have written', () => {
   it('the pre-sprint bare path, spaces and all, with a hand-added --state-dir', () => {
     expect(parseHelperCommand('/Users/Jo Do/x/otel-headers-helper.sh --state-dir /tmp/s')).toEqual({
       script: '/Users/Jo Do/x/otel-headers-helper.sh',
@@ -196,7 +201,7 @@ describe('parseHelperCommand — reads back only what we could have written', ()
  * assumes. Every one of these failed on 8f5d8293, where the self-heal replaced
  * the value with the bare active path (or did not exist as a function).
  */
-describe('reconcileHelperCommand — migrating a value already on disk', () => {
+describe.skipIf(POSIX_ONLY)('reconcileHelperCommand — migrating a value already on disk', () => {
   const v = (ver: string) => `/h/.claude/plugins/cache/tokenscope/tokenscope/${ver}/scripts`
   const ACTIVE = v('1.1.0')
   const everything = () => true
@@ -274,5 +279,75 @@ describe('reconcileHelperCommand — migrating a value already on disk', () => {
   it('is idempotent: a healed value heals to itself', () => {
     const once = heal(`${v('1.0.0')}/otel-headers-helper.sh --state-dir "/home/a b"`)!
     expect(heal(once)).toBe(once)
+  })
+
+  // #455: setup from a directory marketplace (a local checkout) wrote the
+  // checkout's path, which the self-heal did not recognise, so it stayed after
+  // the marketplace went back to GitHub.
+  it('a checkout path from a directory-marketplace setup → moved to the versioned active install', () => {
+    expect(heal('"/home/u/src/TokenScope/plugin/scripts/otel-headers-helper.sh" --tool claude-code')).toBe(
+      `"${ACTIVE}/otel-headers-helper.sh" --tool claude-code`,
+    )
+  })
+
+  it('a checkout path is left alone by a session running from the checkout itself', () => {
+    const checkout = '/home/u/src/TokenScope/plugin/scripts'
+    const cmd = `"${checkout}/otel-headers-helper.sh" --tool claude-code`
+    expect(reconcileHelperCommand(cmd, { scriptsDir: checkout, platform: 'linux', exists: everything })).toBeNull()
+  })
+
+  it('a helper of the same name outside a plugin/scripts folder is still not ours', () => {
+    expect(heal('/home/u/bin/otel-headers-helper.sh')).toBeNull()
+  })
+})
+
+// #447: one ~/.claude shared by a host (/home/u) and a container (/home/claude).
+describe.skipIf(POSIX_ONLY)('shared ~/.claude: the self-heal never ping-pongs between sides', () => {
+  const HOST = '/home/u/.claude/plugins/cache/tokenscope/tokenscope/0.1.51/scripts'
+  const CONT = '/home/claude/.claude/plugins/cache/tokenscope/tokenscope/0.1.51/scripts'
+  // Seen from inside the container: only its own spelling exists.
+  const inContainer = (p: string) => p.startsWith('/home/claude/')
+  // The host has run a session recently (recorded in tokenscope-sides.json).
+  const otherSides = ['/home/u/.claude']
+
+  it('recognises the host spelling as the same install', () => {
+    expect(sharedHomeEquivalent(`${HOST}/otel-headers-helper.sh`, CONT, inContainer, otherSides)).toBe(`${CONT}/otel-headers-helper.sh`)
+  })
+
+  it('is not a shared home when the prefix is the same, or the file is not here', () => {
+    expect(sharedHomeEquivalent(`${CONT}/otel-headers-helper.sh`, CONT, inContainer)).toBeNull()
+    expect(sharedHomeEquivalent(`${HOST}/otel-headers-helper.sh`, CONT, () => false)).toBeNull()
+    expect(sharedHomeEquivalent('/usr/local/bin/otel-headers-helper.sh', CONT, inContainer)).toBeNull()
+  })
+
+  it('leaves the host-written helper alone in the container (it used to rewrite it)', () => {
+    const hostCmd = `"${HOST}/otel-headers-helper.sh" --tool claude-code`
+    expect(reconcileHelperCommand(hostCmd, { scriptsDir: CONT, platform: 'linux', exists: inContainer, otherSides })).toBeNull()
+  })
+
+  it('repairs it as before when no other side has run: a renamed or restored home', () => {
+    const oldHome = `"${HOST}/otel-headers-helper.sh" --tool claude-code`
+    expect(reconcileHelperCommand(oldHome, { scriptsDir: CONT, platform: 'linux', exists: inContainer })).toBe(
+      `"${CONT}/otel-headers-helper.sh" --tool claude-code`,
+    )
+  })
+
+  it('still repairs a path that is gone on every side', () => {
+    const gone = '"/home/old/.claude/plugins/cache/tokenscope/tokenscope/0.1.40/scripts/otel-headers-helper.sh" --tool claude-code'
+    const onlyActive = (p: string) => p.startsWith(CONT)
+    // Not a shared home: the same suffix (0.1.40) does not exist here either.
+    expect(reconcileHelperCommand(gone, { scriptsDir: CONT, platform: 'linux', exists: onlyActive })).toBe(
+      `"${CONT}/otel-headers-helper.sh" --tool claude-code`,
+    )
+  })
+
+  it('leaves the host-written status line alone in the container too', () => {
+    const hostLine = { type: 'command', command: `"/usr/bin/node" "${HOST.replace('0.1.51', '0.1.50')}/statusline.mjs"` }
+    const exists = (p: string) => p.startsWith('/home/claude/')
+    const { changed } = reconcilePluginPaths(
+      { statusLine: hostLine },
+      { statuslinePath: `${CONT}/statusline.mjs`, scriptsDir: CONT, platform: 'linux', exists, otherSides },
+    )
+    expect(changed).toBe(false)
   })
 })

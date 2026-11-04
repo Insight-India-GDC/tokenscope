@@ -90,7 +90,7 @@ export default defineEventHandler(async (event) => {
           type: 'https://tokenscope.example.com/errors/forbidden',
           title: 'Forbidden',
           status: 403,
-          detail: 'Persona override is restricted to admin / platform-admin roles.',
+          detail: 'Persona override is restricted to Admins.',
         },
       })
     }

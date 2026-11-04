@@ -133,6 +133,16 @@ describe('refreshLanded — fail-open guards', () => {
     expect(r).toEqual({ ok: false, reason: 'fetch-failed' })
   })
 
+  it('never follows a redirect: the scheme guard checked only the first URL', async () => {
+    writeConfig()
+    writeAccess()
+    const spy = vi.fn(() => ({ ok: false, status: 500 }))
+    vi.stubGlobal('fetch', spy as never)
+    await refreshLanded({ dir })
+    expect(spy).toHaveBeenCalledOnce()
+    expect((spy.mock.calls[0] as unknown[])[1]).toMatchObject({ redirect: 'error' })
+  })
+
   it('non-2xx → http-<status>', async () => {
     writeConfig()
     writeAccess()
@@ -151,7 +161,7 @@ describe('refreshLanded — fail-open guards', () => {
 })
 
 describe('refreshLanded — success path', () => {
-  it('200 → ok with last_emission + writes last-landed.json cache', async () => {
+  it('200 → ok with last_emission + writes last-landed.copilot-cli.json cache', async () => {
     writeConfig()
     writeAccess()
     mockFetch(() => ({
@@ -164,8 +174,8 @@ describe('refreshLanded — success path', () => {
     expect(r.silent).toBe(false)
     expect(r.revoked).toBe(false)
 
-    expect(existsSync(join(dir, 'last-landed.json'))).toBe(true)
-    const cache = JSON.parse(readFileSync(join(dir, 'last-landed.json'), 'utf8'))
+    expect(existsSync(join(dir, 'last-landed.copilot-cli.json'))).toBe(true)
+    const cache = JSON.parse(readFileSync(join(dir, 'last-landed.copilot-cli.json'), 'utf8'))
     expect(cache.instanceId).toBe(INSTANCE)
     expect(cache.lastEmission).toBe('2026-06-22T08:14:03Z')
     expect(cache.checkedAt).toBeTruthy()

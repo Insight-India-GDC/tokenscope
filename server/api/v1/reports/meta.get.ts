@@ -18,11 +18,7 @@ import { defineEventHandler, setHeader } from 'h3'
 import { sql } from 'drizzle-orm'
 import { requireAuth } from '../../../auth/rbac'
 import { withRequestRls } from '../../../db/request-rls'
-import {
-  resolveReportGrants,
-  resolveReportPermissions,
-  resolveReportAccessRevoked,
-} from '../../../auth/report-scope'
+import { resolveReportGrants, resolveReportPermissions } from '../../../auth/report-scope'
 import { regionScopeGrant } from '../../../../shared/auth/report-visibility'
 import { providerStatesForMonth } from '../../../reports/settling'
 import { copilotFinanceMode } from '../../../reports/copilot-mode'
@@ -50,10 +46,10 @@ export default defineEventHandler(async (event) => {
     //
     // Concurrent issuance on ONE tx connection: postgres-js pipelines and
     // answers in order (docs/design/request-floor-performance.md F5). The
-    // floors read shares nothing with the grant resolution; revoked/permissions
-    // below are NOT in the wave — resolveReportGrants resolves both internally
-    // and memoises them on the event, so a concurrent call would re-issue the
-    // same queries instead of hitting that memo.
+    // floors read shares nothing with the grant resolution; permissions below
+    // are NOT in the wave — resolveReportGrants resolves them internally and
+    // memoises them on the event, so a concurrent call would re-issue the same
+    // query instead of hitting that memo.
     const [g, floorRows] = await Promise.all([
       resolveReportGrants(event, tx, session),
       tx.execute<FloorRow>(sql`
@@ -61,11 +57,7 @@ export default defineEventHandler(async (event) => {
                (SELECT to_char(MIN(period_month), 'YYYY-MM') FROM v_finance_bill_totals_month) AS bill,
                (SELECT to_char(MIN(period_date), 'YYYY-MM') FROM reconciliation_record) AS reconciliation`),
     ])
-    const revoked = await resolveReportAccessRevoked(event, tx, session.teammateId)
-    // A REVOKE zeroes access (resolveReportGrants already returned the empty
-    // grant set), so a leftover positive grant must NOT surface as an "elevated
-    // access" chip beside an empty shell — the chip would contradict the page.
-    const permissions = revoked ? [] : await resolveReportPermissions(event, tx, session.teammateId)
+    const permissions = await resolveReportPermissions(event, tx, session.teammateId)
 
     /*
      * Map the per-scope grant object onto the tab booleans, in REPORT_SCOPES order
@@ -139,9 +131,7 @@ export default defineEventHandler(async (event) => {
      * grant fields moved in. The cost was real: a browser holding an hour-old
      * empty-scopes response renders "You don't have access to any reports" with
      * NO request to this endpoint at all, so a freshly granted admin sees the
-     * refusal until the entry expires or they force a reload. In the other
-     * direction a REVOKE stays invisible in the shell for up to an hour — the
-     * data endpoints still 403, so nothing leaks, but the UI contradicts them.
+     * refusal until the entry expires or they force a reload.
      *
      * `no-store` matches every sibling that returns per-caller report data
      * (teammate/[id]/index.get.ts:112,271; teammate/[id]/export.get.ts:73). The

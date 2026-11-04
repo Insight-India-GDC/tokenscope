@@ -462,6 +462,11 @@ describe('T17 — the route serves BOTH row kinds, and the old routes are gone',
     await expect(list('cursor=not-a-cursor')).rejects.toMatchObject({ statusCode: 400 })
   })
 
+  it('rejects a well-formed cursor carrying an impossible day as a 400, not a 500 from ::date', async () => {
+    const forged = Buffer.from(JSON.stringify(['2026-02-31', 0, 'x', 'y']), 'utf8').toString('base64url')
+    await expect(list(`cursor=${forged}`)).rejects.toMatchObject({ statusCode: 400 })
+  })
+
   // A shape-only regex let `2026-02-31` through to the `::date` cast in the
   // branch predicates, where Postgres aborts the query — the caller got a 500
   // for their own typo. The bound is validated at the boundary now, so it is a

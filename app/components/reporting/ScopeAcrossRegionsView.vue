@@ -358,7 +358,7 @@ const chargebackLaneMode = computed(() => chargebackLegend.value.length >= 2)
         </h2>
         <!-- CONTROLS stay above the fold; COMMENTARY goes in the one disclosure
              beside them. The settling chips, the coverage marker, the
-             point-in-time note and the lane explainer used to stack here as six
+             placement note and the lane explainer used to stack here as six
              lines of caveat before the first figure. -->
         <div class="mt-2 flex items-center gap-3 flex-wrap" data-testid="across-settling">
           <UiRegionSelector
@@ -371,7 +371,7 @@ const chargebackLaneMode = computed(() => chargebackLegend.value.length >= 2)
           <ReportHeaderNotes
             :provider-states="providerStates"
             :coverage="coverage"
-            :point-in-time-dims="report?.meta.pointInTimeDims === true"
+            placement-note
             :lane="lane"
           />
         </div>

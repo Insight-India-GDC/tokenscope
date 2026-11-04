@@ -43,7 +43,7 @@ export async function requireActivityScope(
           status: 403,
           detail:
             'Region admins cannot manage the global (standard) activity vocabulary. ' +
-            'A platform-admin must do so.',
+            'An Admin must do so.',
         },
       })
     }

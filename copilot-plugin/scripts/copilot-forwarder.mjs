@@ -53,6 +53,7 @@
  */
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { trustedGitPath } from './trusted-git.mjs'
 import { join, dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
@@ -66,6 +67,8 @@ import {
 import { detectManagedTelemetry } from './managed-telemetry.mjs'
 import { realHome } from './real-home.mjs'
 import { resolveStorePath } from './device-store.mjs'
+import { findFolderActivity } from './tokenscope-project.mjs'
+import { recordLastSession } from './copilot-session.mjs'
 import {
   TOKENSCOPE_DIR,
   CONFIG_PATH,
@@ -215,15 +218,32 @@ async function forwardSpans(spans) {
   ]
   if (!logRecords.length) return 0
 
-  const payload = buildCopilotOtlpPayload(logRecords, instanceId, projectCodeHash, { githubOrg })
+  // #475: the folder's default activity (the daemon's cwd is the project root).
+  const activity = findFolderActivity(process.cwd())
+  const payload = buildCopilotOtlpPayload(logRecords, instanceId, projectCodeHash, { githubOrg, activity })
   const proto = encodeExportLogsServiceRequest(payload)
 
   const result = await postWithRetry(cfg.logs_endpoint, proto, mintBearer, httpsPost)
 
   if (result.status >= 200 && result.status < 300) {
+    recordLastConversation(logRecords)
     return logRecords.length
   }
   throw new Error(`Azure Monitor forward HTTP ${result.status}: ${result.body}`)
+}
+
+/**
+ * #475: note the session this folder last forwarded usage for (copilot-session.mjs),
+ * so the Copilot `activity` skill can tag "this session". Its id is Copilot's own
+ * `gen_ai.conversation.id`, the record's `session.id`.
+ */
+export function recordLastConversation(logRecords, cwd = process.cwd(), stateDir) {
+  let id = null
+  for (const r of logRecords) {
+    const v = (r?.attributes ?? []).find((a) => a?.key === 'session.id')?.value?.stringValue
+    if (typeof v === 'string' && v) id = v
+  }
+  if (id) recordLastSession(id, cwd, stateDir)
 }
 
 // ── file tail ─────────────────────────────────────────────────────────────────
@@ -275,7 +295,12 @@ export function persistOffset(filePath) {
     } catch {
       /* best effort */
     }
-    fs.writeFileSync(OFFSET_FILE, JSON.stringify({ offset, ino }), { encoding: 'utf8' })
+    // Temp file + rename: OFFSET_FILE sits in <project>/.tokenscope.local, which a
+    // cloned repository can ship, and writing through a planted symlink there
+    // would overwrite whatever it points at. rename replaces a link, never follows it.
+    const tmp = `${OFFSET_FILE}.tmp.${process.pid}.${randomBytes(6).toString('hex')}`
+    fs.writeFileSync(tmp, JSON.stringify({ offset, ino }), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+    fs.renameSync(tmp, OFFSET_FILE)
   } catch {
     /* best effort */
   }
@@ -340,16 +365,16 @@ export function isForeignOwned(st) {
 
 /**
  * True if `filePath` is tracked by git (staged or committed) in its containing
- * repo — the committed-file vector this guard exists to kill. `git ls-files
- * --error-unmatch` exits 0 iff the path is tracked; anything else (not a repo, git
- * absent, untracked, any spawn failure) is treated as "not tracked" — this check
- * NEVER throws, so a missing git binary degrades to "no extra protection", not a
- * crashed forwarder. Exported for unit testing.
+ * repo — the committed-file vector this guard exists to kill — or if there is no
+ * trusted git to ask: an unanswerable check fails CLOSED, so the legacy span file
+ * is not read on such a host. `git ls-files --error-unmatch` exits 0 iff the path
+ * is tracked; any other outcome (not a repo, untracked, a spawn failure) is "not
+ * tracked". NEVER throws. Exported for unit testing.
  */
 export function isGitTracked(filePath) {
   try {
     const git = trustedGitPath()
-    if (!git) return false // no trusted git — treat as untracked, never name-lookup
+    if (!git) return true // no trusted git — cannot tell, so refuse; never name-lookup
     execFileSync(git, ['ls-files', '--error-unmatch', filePath], {
       cwd: dirname(filePath),
       stdio: ['ignore', 'ignore', 'ignore'],
@@ -389,7 +414,7 @@ export function readNewSpans(filePath) {
   }
   if (isGitTracked(filePath)) {
     console.error(
-      `[tokenscope-fwd] refusing ${filePath}: file is tracked by git — a committed span file is never forwarded (provenance guard)`,
+      `[tokenscope-fwd] refusing ${filePath}: file is tracked by git, or no trusted git was found to check — a committed span file is never forwarded (provenance guard)`,
     )
     return []
   }

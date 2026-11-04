@@ -251,8 +251,15 @@ describe('legacy scalar / API compatibility + overageAllocationPolicy', () => {
       unclassifiedNetUsd: '0',
     })
     const [tmA] = await t.db.insert(schema.teammate).values({ entraOid: `oid-pol-a-${randomUUID().slice(0, 6)}`, email: `pol.a.${randomUUID().slice(0, 6)}@x.test`, regionId, orgUnitId: couA }).returning()
+    const slug = (await t.client<{ external_id: string }[]>`SELECT external_id FROM provider_enterprise WHERE id = ${entId}::uuid`)[0]!.external_id
+    // Directory-bound, so the usage homes on couA (a self-only login would weigh as unallocated).
+    await t.db.insert(schema.teammateIdentityMap).values({
+      teammateId: tmA!.id, system: 'github', identifier: 'pol-a-gh', identifierKind: 'username',
+      enterpriseSlug: slug, source: 'directory-sync', verifiedAt: new Date(),
+    })
     await t.db.insert(schema.reconciliationRecord).values({
-      teammateId: tmA!.id, provider: 'github', enterpriseRef: (await t.client<{ external_id: string }[]>`SELECT external_id FROM provider_enterprise WHERE id = ${entId}::uuid`)[0]!.external_id,
+      raw: { login: 'pol-a-gh' },
+      teammateId: tmA!.id, provider: 'github', enterpriseRef: slug,
       licenseOrg: 'acme', periodDate: '2026-06-10', category: 'copilot_interactive', scope: 'teammate',
       costOwningUnitId: couA, providerEnterpriseId: entId,
       actualUsd: '10', otelAttributedUsd: '0', deltaUsd: '10', spendClass: 'indicative', disposition: 'under', status: 'applied',

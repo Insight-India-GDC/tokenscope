@@ -44,7 +44,8 @@ export default defineEventHandler(async (event) => {
   // X-Forwarded-For); otherwise the same best-effort capture as
   // setup/enroll.post.ts. Both are caller-controlled on a publicly reachable
   // origin, because require-front-door trusts X-Azure-FDID, which is not a
-  // secret. HARD_MAX_OAUTH_CLIENTS is the bound that holds regardless.
+  // secret. HARD_MAX_OAUTH_CLIENTS is the bound that holds regardless; at the
+  // ceiling registerClient reaps abandoned registrations before refusing.
   let ip: string | null
   try {
     const frontDoorSocketIp = process.env.AZURE_FRONT_DOOR_ID

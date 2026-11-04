@@ -3,11 +3,19 @@
  * OAuth consent page. GET /api/v1/oauth/authorize validates the session + client
  * and 302s here; Approve/Deny POSTs back with Accept: application/json and gets
  * the callback URL as DATA. An approved LOOPBACK callback (RFC 8252 native app)
- * is delivered in a tab opened on the Approve click (a navigation, so Local
- * Network Access does not block it), and this page stays put. It polls
- * /api/v1/oauth/code-status: redeemed → connected; not redeemed within
- * UNDELIVERED_AFTER_MS → the loopback is unreachable (e.g. a containerized
- * client), so it leads with the Copy-URL paste-back.
+ * is delivered in a small popup opened on the Approve click (a navigation, so
+ * Local Network Access does not block it), and this page stays in view behind
+ * it. It polls /api/v1/oauth/code-status: redeemed → close the popup, Connected;
+ * not redeemed within UNDELIVERED_AFTER_MS → the loopback is unreachable (a
+ * client in a container or over SSH), so it closes the popup, whose browser
+ * error page would otherwise sit in front, and leads with the paste-back steps
+ * (#478). The words follow Claude Code's own prompt for an MCP sign-in, which
+ * asks for "the URL from your browser's address bar" at `URL >`.
+ *
+ * Closing the popup after it has navigated needs the window handle to survive
+ * the cross-origin navigation, so this page is served with COOP
+ * `same-origin-allow-popups` (nuxt.config.ts routeRules); the site default
+ * `same-origin` severs it.
  */
 import { isAllowedCallbackScheme, isLoopbackCallback } from '#shared/oauth-callback'
 import type { AuthorizeResult } from '#shared/schemas/oauth'
@@ -107,9 +115,18 @@ const POLL_UNTIL_MS = 2 * 60 * 1000
 const STATUS_TIMEOUT_MS = 4000
 const AUTHORIZE_TIMEOUT_MS = 15_000
 const delivery = ref<'none' | 'delivering' | 'delivered' | 'undelivered'>('none')
-// Only closable while still same-origin about:blank: once it navigates, COOP
-// same-origin (nuxt-security default) severs this handle.
+// A popup, not a tab, so this page stays visible behind it. Opened as
+// about:blank in the click (popup blockers allow it) and navigated once the
+// callback URL passes the scheme guard.
+const DELIVERY_POPUP = 'popup,width=480,height=360'
 let blankTab: Window | null = null
+// The popup the code was delivered in, kept to close it once the outcome is
+// known: on redeemed (the client's own page has done its job) and on undelivered
+// (it shows a browser error that would hide the paste-back steps).
+let deliveryPopup: Window | null = null
+// The popup never opened (blocked) or was closed before it could deliver: the
+// cause is the browser, not a container, and the copy says so.
+const popupMissing = ref(false)
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let undeliveredTimer: ReturnType<typeof setTimeout> | null = null
 let statusAbort: AbortController | null = null
@@ -122,6 +139,15 @@ let unmounted = false
 // blockers allow.
 const handoffUrl = ref<string | null>(null)
 const handoffSent = ref(false)
+
+function closeDeliveryPopup() {
+  try {
+    deliveryPopup?.close()
+  } catch {
+    /* a severed handle: nothing to close from here */
+  }
+  deliveryPopup = null
+}
 
 onBeforeUnmount(() => {
   unmounted = true
@@ -166,6 +192,7 @@ function pollRedeemed(code: string, startedAt: number, lastFailed = false) {
       })
       if (res.redeemed && !unmounted) {
         if (undeliveredTimer) clearTimeout(undeliveredTimer)
+        closeDeliveryPopup()
         delivery.value = 'delivered'
         return
       }
@@ -183,18 +210,24 @@ function pollRedeemed(code: string, startedAt: number, lastFailed = false) {
 /** Loopback only. `code` is null for a deny / error callback: hand it over so the client stops waiting, nothing to watch. */
 function startDelivery(url: string, code: string | null) {
   if (unmounted) return
-  const delivered = navigate(takeBlankTab(), url)
+  const popup = takeBlankTab()
+  const delivered = navigate(popup, url)
   if (!code) {
     handoffSent.value = delivered
     return
   }
   if (delivered) {
+    deliveryPopup = popup
     delivery.value = 'delivering'
     undeliveredTimer = setTimeout(() => {
       undeliveredTimer = null
-      if (delivery.value === 'delivering') delivery.value = 'undelivered'
+      if (delivery.value === 'delivering') {
+        closeDeliveryPopup()
+        delivery.value = 'undelivered'
+      }
     }, UNDELIVERED_AFTER_MS)
   } else {
+    popupMissing.value = true
     delivery.value = 'undelivered'
   }
   pollRedeemed(code, Date.now())
@@ -205,11 +238,12 @@ async function handleSubmit(action: 'approve' | 'deny') {
   submitError.value = null
   handoffUrl.value = null
   handoffSent.value = false
+  popupMissing.value = false
   submitAction.value = action
   // Opened synchronously inside the click so popup blockers allow it; it is
   // navigated only once the callback URL passes the scheme guard.
   if (isLoopbackCallback(redirectUri.value)) {
-    blankTab = window.open('', '_blank')
+    blankTab = window.open('', '_blank', DELIVERY_POPUP)
     if (blankTab) blankTab.opener = null
   }
   const abort = (authorizeAbort = new AbortController())
@@ -349,24 +383,54 @@ async function copyCallbackUrl() {
       <!-- Approved + redeemed: the client has its token -->
       <div v-else-if="callbackUrl && submitAction === 'approve' && delivery === 'delivered'" class="rounded-lg border border-rag-green/30 bg-rag-green/5 p-3" data-testid="authorize-delivered">
         <p class="text-sm font-semibold text-rag-green">Connected</p>
-        <p class="mt-1 text-xs text-carbon-2">Your MCP client is signed in. You may close this window and the client's tab.</p>
+        <p class="mt-1 text-xs text-carbon-2">Your MCP client is signed in. You can close this window.</p>
       </div>
 
-      <!-- Approved → callback URL; Copy URL is the paste-back path when delivery fails or is not attempted -->
+      <!-- Approved, not picked up: the paste-back steps lead (#478), in Claude Code's words -->
+      <div v-else-if="callbackUrl && submitAction === 'approve' && delivery === 'undelivered'" class="space-y-3" data-testid="authorize-approved">
+        <div class="rounded-lg border border-rag-amber/40 bg-rag-amber/10 p-3" data-testid="authorize-undelivered">
+          <p class="text-sm font-semibold text-carbon">Finish signing in from your terminal</p>
+          <p v-if="popupMissing" class="mt-1 text-xs text-carbon-2" data-testid="authorize-popup-missing">
+            Your browser blocked the window that hands the sign-in to your MCP client, or it was closed.
+          </p>
+          <p v-else class="mt-1 text-xs text-carbon-2">
+            Your MCP client didn't pick up the sign-in by itself. That is normal when it runs in a container or over SSH.
+          </p>
+          <ol class="mt-2 list-decimal space-y-1 pl-4 text-xs text-carbon-2">
+            <li>Copy the URL below.</li>
+            <li>
+              Paste it into your MCP client where it asks for the URL from your browser's address bar (Claude Code shows
+              <span class="font-mono">URL &gt;</span>) and press Enter.
+            </li>
+          </ol>
+          <p class="mt-2 text-xs text-carbon-2">If you paste it within two minutes, this page shows Connected once your client has signed in.</p>
+        </div>
+        <UiButton kind="primary" class="w-full" data-testid="authorize-copy" @click="copyCallbackUrl">
+          {{ copied ? 'Copied!' : 'Copy URL' }}
+        </UiButton>
+        <p class="break-all rounded-lg border border-calm-2 bg-calm p-3 text-xs font-mono text-carbon-2" data-testid="authorize-callback-url">{{ callbackUrl }}</p>
+        <p class="text-xs font-semibold text-carbon" data-testid="authorize-url-warning">
+          This URL works like a password. Paste it only into the session that asked you to sign in, never for anyone else.
+        </p>
+        <button class="block w-full text-center text-[11px] text-carbon-3 hover:text-carbon-2" data-testid="authorize-open" @click="openCallback">
+          Or try opening the callback in a new tab
+        </button>
+      </div>
+
+      <!-- Approved → callback URL; Copy URL is the paste-back path while delivering, or when delivery is not attempted -->
       <div v-else-if="callbackUrl && submitAction === 'approve'" class="space-y-3" data-testid="authorize-approved">
         <div class="rounded-lg border border-rag-green/30 bg-rag-green/5 p-3">
           <p class="text-sm font-semibold text-rag-green">Authorization approved</p>
           <p v-if="delivery === 'delivering'" class="mt-1 text-xs text-carbon-2" data-testid="authorize-delivering">
             Sending the sign-in to your MCP client…
           </p>
-          <p v-else-if="delivery === 'undelivered'" class="mt-1 text-xs text-carbon-2" data-testid="authorize-undelivered">
-            We couldn't confirm that your MCP client received this. If it runs in a container, the other tab shows a
-            connection error (close it): copy the URL below and paste it into your client when prompted.
-          </p>
           <p v-else class="mt-1 text-xs text-carbon-2">Copy the URL below and paste it into your MCP client when prompted.</p>
+          <p v-if="delivery !== 'delivering'" class="mt-1 text-xs font-semibold text-carbon" data-testid="authorize-url-warning">
+            This URL works like a password. Paste it only into the session that asked you to sign in, never for anyone else.
+          </p>
         </div>
         <div class="relative rounded-lg border border-calm-2 bg-calm p-3">
-          <button class="absolute right-2 top-2 rounded px-2 py-0.5 text-[11px] font-medium bg-calm-2 text-carbon-2 hover:bg-calm-3" data-testid="authorize-copy" @click="copyCallbackUrl">
+          <button class="absolute right-2 top-2 rounded px-2 py-0.5 text-[11px] font-medium bg-calm-2 text-carbon-2 hover:bg-calm" data-testid="authorize-copy" @click="copyCallbackUrl">
             {{ copied ? 'Copied!' : 'Copy URL' }}
           </button>
           <p class="break-all pr-16 text-xs font-mono text-carbon-2" data-testid="authorize-callback-url">{{ callbackUrl }}</p>
@@ -389,10 +453,10 @@ async function copyCallbackUrl() {
         </p>
         <p v-else class="text-xs text-carbon-2">Your MCP client is still waiting for this answer. Open it, or copy the URL and paste it into the client.</p>
         <div class="flex gap-2">
-          <button class="rounded px-2 py-1 text-xs font-medium bg-calm-2 text-carbon-2 hover:bg-calm-3" data-testid="authorize-handoff-open" @click="handOffToClient">
+          <button class="rounded px-2 py-1 text-xs font-medium bg-calm-2 text-carbon-2 hover:bg-calm" data-testid="authorize-handoff-open" @click="handOffToClient">
             Open in a new tab
           </button>
-          <button class="rounded px-2 py-1 text-xs font-medium bg-calm-2 text-carbon-2 hover:bg-calm-3" data-testid="authorize-handoff-copy" @click="copyHandoffUrl">
+          <button class="rounded px-2 py-1 text-xs font-medium bg-calm-2 text-carbon-2 hover:bg-calm" data-testid="authorize-handoff-copy" @click="copyHandoffUrl">
             {{ copied ? 'Copied!' : 'Copy URL' }}
           </button>
         </div>
@@ -406,6 +470,9 @@ async function copyCallbackUrl() {
           {{ submitting ? 'Authorizing…' : 'Approve' }}
         </UiButton>
       </div>
+      <p v-if="!paramError && !clientInfoError && !callbackUrl && !handoffUrl && isLoopbackCallback(redirectUri)" class="mt-3 text-center text-[11px] text-carbon-2" data-testid="authorize-paste-hint">
+        If your MCP client runs in a container or over SSH, you'll be asked to paste a URL back into it.
+      </p>
 
       <p class="mt-4 text-center text-[11px] text-carbon-3">You can revoke access any time from your account settings.</p>
     </div>

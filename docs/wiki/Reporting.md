@@ -299,7 +299,7 @@ never by axis alone: see rule 8.
    - `teammateDrillAdmission(viewer, subject, scopePredicate, window)` — may
      this viewer OPEN the subject's page? Its conjuncts are the `teammate`
      grant, a scope frame the viewer holds, ≥1 in-window row already inside
-     that frame (**emit-time homing**, never current placement) and
+     that frame (judged by where the subject sits **now**) and
      `teammate.is_active`.
 
    A name can be named by the first rule and plain text by the second — a named
@@ -395,8 +395,11 @@ never by axis alone: see rule 8.
     on the page: *am I on track* is answered by what the BU is **charged**
     (§B), *what is driving it* by what its people **consumed** (§A).
 
-    In the usage lane the headline is the §A **burn**, homed by emit-time
-    `cost_owning_unit_id`, and it matches the tracker row. In the chargeback lane
+    In the usage lane the headline is the §A **burn**: usage tagged to a
+    project counts toward the project's Business Unit, and provider-reported
+    usage toward the Business Unit its person sits in now. Untagged usage the
+    client emitted and API-reconciled usage carry no Business Unit, so they are
+    in region and person totals but not in any burn. It matches the tracker row. In the chargeback lane
     it is the §B **charge**, the same figure that BU's card carries in the
     list — one shared fetcher serves both, so the list and the drill cannot
     disagree. The two are never summed and never shown together (rule 1).
@@ -445,11 +448,12 @@ never by axis alone: see rule 8.
    (`page_freshness.settled_source`). What the lag means for the reports:
    - A figure may lag the live §A lane by up to the worker cadence
      (**15 minutes**) — plus, for retroactive mutations that change history
-     with no timestamp (a quarantine flip, a placement re-home), however many
-     runs the `usage_rollup_refresh` queue takes to reach the request: the
-     drain is capped per run, so a mass correction (a bulk re-home) clears in
-     batches across successive 15-minute ticks rather than on the very next
-     one. All of it sits far inside the settlement-state tolerances of §4,
+     with no timestamp (a quarantine flip), however many runs the
+     `usage_rollup_refresh` queue takes to reach the request: the drain is
+     capped per run, so a mass change clears in batches across successive
+     15-minute ticks rather than on the very next one. A placement change is
+     not one of these: reports read where people sit at query time, so it shows
+     within the report cache's minute. All of it sits far inside the settlement-state tolerances of §4,
      which are hours-grain.
    - A region report row and a drill that reads the live view can therefore
      disagree by ≤ one cadence on the still-filling day. Transient and
@@ -620,7 +624,9 @@ the allocation is zero.
 `provider_enterprise.overage_allocation_policy` is the per-enterprise switch
 (default `consumption-share`); `copilot_overage_allocation` is the persisted
 grain — `(provider_enterprise_id, month, cost_owning_unit_id)`, recipients are
-the **seat-holder's own cost-owning unit** (not the org's mapped CoU), which is
+the **seat-holder's own cost-owning unit** where they sit when the split is
+computed (not the org's mapped CoU; none when their unit has no cost-owning
+ancestor, which is the unallocated bucket), which is
 the point of the mechanism: a single shared GitHub org's overage can split
 across every practice that actually consumed. `server/governance/copilot-
 overage-allocation.ts`'s `persistCopilotOverageAllocation` is idempotent
@@ -834,6 +840,38 @@ Report access grants are layered on top by
 documented exception to the "every handler has `requireRole`" rule.
 
 
+## Placement: reports follow where people sit now
+
+Every report groups and scopes a person's usage, history included, by where that
+person sits **now** (`teammate.region_id`, `teammate.org_unit_id`, and the
+nearest active cost-owning ancestor of that unit for their Business Unit). Move
+someone in Org setup, the placement check or the Users page and every report
+reflects it within the report cache's minute; nothing is rewritten.
+
+- Readers go through `v_usage_rollup_current`, `v_complete_usage_current` and
+  `v_provider_usage_fact_current` (mig 0162), which project current placement
+  over the stamped sources, and scope by the set of people who sit in a region or
+  subtree now (`currentPlacementTeammates`, `server/reporting/engine/scope.ts`).
+- On Business Unit pages, usage tagged to a project counts toward the
+  **project's** Business Unit and provider-reported usage toward the person's
+  current one. Untagged usage the client emitted and API-reconciled usage carry
+  no Business Unit (as before the lens), so they count in region and person
+  totals but in no Business Unit's burn. A region total therefore differs from
+  the sum of its Business Units.
+- A row with no teammate keeps its recorded dimensions: whole-company views that
+  group by region or Business Unit place it there, and a region- or unit-scoped
+  view, which scopes by the people who sit in it, leaves it out. A person whose
+  unit has no cost-owning ancestor has no Business Unit; nothing invents one, and
+  they still count in the region they sit in.
+- Each usage row still records where its person sat when it was written (its
+  *recorded placement*), and nothing edits it or reports on it.
+- What a month read when it was reported is finance's export. The reporting
+  snapshot holds company totals only, so it does not flag a restructure that
+  moves money between regions or Business Units.
+- The one persisted split is the Copilot overage allocation: the current and
+  previous month follow a restructure on the next daily run; an older month keeps
+  its split until it is re-pulled.
+
 ## The Business Unit
 
 The reported unit is a **Business Unit (BU)**. "Cost centre" is a different
@@ -862,9 +900,10 @@ When the rolling band below carries spend over its own (different) window, the
 empty state says so rather than being suppressed — the month figure is true, and
 the two windows are reconciled instead of one being hidden.
 
-### Spend keeps the BU it was recorded under
+### Project spend keeps the project's Business Unit
 
-`attribution_record.cost_owning_unit_id` is stamped at write time. Re-homing a
+`attribution_record.cost_owning_unit_id` is the project's Business Unit, stamped at
+write time. Re-homing a
 project changes future usage only, so a project row can show a real total beside
 `$0.00 from this Business Unit`; the row says so. An admin applies the change to
 recorded usage with **Migrate** (`API-Reference.md`).
@@ -875,3 +914,40 @@ Read from the server clock (`Forecast.dayOfMonth`), not from the data.
 `daysElapsed` anchors the RUN-RATE on the latest event and falls back to the
 month start when a scope has no usage yet, which is correct for the projection
 and wrong for the caption.
+
+## Project budgets
+
+A project's budget is its **pool**: the `baseline` and `top-up` allocation rows
+in force now that carry no `teammate_id`. Burst rows are excluded. A
+per-developer cap is one member's share of that pool, sitting over the pool's
+exact period ([Data Model](Data-Model.md#allocation)), so it is never added to
+the total. Budgets block nothing: they are figures to report against.
+
+Every project budget figure reads the pool the same way: the project page, the
+My projects cards, My usage's per-project rows, the project at reports depth,
+the Business Unit pages (each project's budget and the unit's total), the
+budget drivers axis and the teammate drill's TokenSheet.
+
+The per-project figure on Home and in `my_usage` is the viewer's own: their cap
+in force now; else, when a pool baseline is in force, the pool rows overlapping
+the month; else their caps overlapping the month; else the pool rows
+overlapping it.
+
+**Budget coverage.** The note under the region, whole-company and Business Unit
+heroes (usage lens only) splits the window's usage into four parts:
+
+- **on a budget**: tagged to a project that has a pool row over $0 whose period
+  overlaps the window;
+- **tagged, no budget**: tagged to a project without one;
+- **untagged**: no project, from a source that can be tagged;
+- **untaggable**: no project, provider-reported usage.
+
+The parts foot to the hero's total. Only pool rows make a project budgeted: a
+cap with no pool behind it does not. Coverage answers "was there a budget for
+it", not "was it within budget".
+
+**The budget alert.** The hourly `budget-alert` worker compares each project's
+month-to-date complete spend (Claude and Copilot) with the project's budget,
+read by the project page's own reader at the run's instant. A project with no
+budget is never over. A project over its budget gets one `over-budget` inbox
+item per month ([Background Workers](Background-Workers.md)).

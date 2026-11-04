@@ -25,6 +25,7 @@
 import { computed, ref, watch } from 'vue'
 import UiButton from '../ui/Button.vue'
 import { apiErrorDetail } from '../../composables/useApiError'
+import { useModalA11y } from '../../composables/useModalA11y'
 import { BU_LABEL } from '#shared/reports/vocabulary'
 
 interface TargetUnit {
@@ -36,11 +37,8 @@ interface TargetUnit {
 
 interface PlaceResult {
   teammate_id: string
-  /**
-   * 'noop' = already in that Business Unit; nothing was written for them.
-   * 'history-repaired' = already there, and their stranded history moved.
-   */
-  status: 'placed' | 'noop' | 'history-repaired' | 'failed'
+  /** 'noop' = already in that Business Unit; nothing was written for them. */
+  status: 'placed' | 'noop' | 'failed'
   reason?: string
 }
 
@@ -62,7 +60,6 @@ const emit = defineEmits<{
     summary: {
       placed: number
       noop: number
-      historyRepaired: number
       unitName: string
       unitId: string
       placedIds: string[]
@@ -77,28 +74,6 @@ const emit = defineEmits<{
 }>()
 
 const targetId = ref('')
-/*
- * MOVE WHAT THEY ALREADY SPENT, TOO.
- *
- * The server has accepted `rehome` on this door since the correction shipped,
- * and this dialog never sent it — so the bulk workflow, which is the ONE that
- * matters when finance finds hundreds of people mis-placed, still left every
- * dollar of history behind.
- *
- * No per-person span preview here, deliberately: N previews is N round trips
- * and a wall of figures nobody reads. The single-teammate door on the users
- * table is where you check one person's history before moving it; this door
- * states the effect plainly and applies it to each person in the batch.
- */
-const moveHistory = ref(false)
-/*
- * The server refuses a history batch above this (BULK_REHOME_MAX): six tables
- * per teammate in one transaction is a far bigger write than a placement, and
- * an oversized one outlives the browser's patience while still committing.
- * Offering a checkbox that will 400 teaches an admin the feature is broken.
- */
-const REHOME_MAX = 50
-const tooManyForHistory = computed(() => props.teammateIds.length > REHOME_MAX)
 const saving = ref(false)
 const error = ref<string | null>(null)
 const failures = ref<PlaceResult[]>([])
@@ -112,14 +87,22 @@ watch(
   (isOpen) => {
     if (!isOpen) return
     targetId.value = ''
-    // Every open starts from "placement only" — a remembered checkbox would
-    // restate a second batch's history on one click.
-    moveHistory.value = false
     error.value = null
     failures.value = []
   },
   { immediate: true },
 )
+
+// Shared dialog contract: Escape closes, Tab is trapped, the Business Unit
+// picker takes focus on open and focus returns to the opener on close.
+const dialogEl = ref<HTMLElement | null>(null)
+const targetEl = ref<HTMLSelectElement | null>(null)
+useModalA11y({
+  isOpen: () => props.open,
+  dialogEl,
+  firstField: targetEl,
+  onClose: () => emit('close'),
+})
 
 async function submit() {
   if (!targetId.value || !props.teammateIds.length) return
@@ -130,7 +113,6 @@ async function submit() {
     const res = await $fetch<{
       placed: number
       noop: number
-      historyRepaired?: number
       failed: number
       results: PlaceResult[]
     }>(
@@ -140,8 +122,6 @@ async function submit() {
         body: {
           teammate_ids: props.teammateIds,
           org_unit_id: targetId.value,
-          // Absent unless asked for: the sync path's behaviour is the default.
-          ...(moveHistory.value ? { rehome: { from: 'all' } } : {}),
         },
       },
     )
@@ -166,10 +146,6 @@ async function submit() {
     emit('placed', {
       placed: res.placed,
       noop,
-      // Reported separately in the toast: on the estate this exists to fix,
-      // most of a batch can be repairs rather than moves, and calling those
-      // "placed" would claim placements that did not happen.
-      historyRepaired: res.historyRepaired ?? 0,
       unitName: targetName.value,
       unitId: targetId.value,
       placedIds: res.results.filter((r) => r.status === 'placed').map((r) => r.teammate_id),
@@ -190,6 +166,7 @@ async function submit() {
     @click.self="emit('close')"
   >
     <div
+      ref="dialogEl"
       class="w-full max-w-lg bg-white rounded-xl shadow-xl max-h-[85vh] overflow-y-auto"
       role="dialog"
       aria-modal="true"
@@ -210,8 +187,9 @@ async function submit() {
         <label for="bulk-place-target" class="text-[12px] font-semibold text-carbon">Business Unit</label>
         <select
           id="bulk-place-target"
+          ref="targetEl"
           v-model="targetId"
-          class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+          class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
           data-testid="bulk-place-target"
         >
           <option value="">Choose a Business Unit…</option>
@@ -220,43 +198,19 @@ async function submit() {
           </option>
         </select>
         <p class="text-[11px] text-carbon-3 mt-1">
-          Only cost-owning units are listed. Their spend then rolls up to this
+          Only Business Units are listed. Their spend then rolls up to this
           unit's P&amp;L instead of stopping at the region.
         </p>
 
-        <div class="mt-3 rounded-lg border border-rag-amber/40 bg-rag-amber/5 px-3 py-2.5">
-          <p class="text-[12px] text-carbon">
-            <strong>Usage already recorded stays where it is.</strong>
-            Usage is stamped with its {{ BU_LABEL }} when it is recorded, so this
-            applies to future usage only.
-          </p>
-          <p v-if="tooManyForHistory" class="mt-2 text-[11px] text-carbon-2" data-testid="bulk-place-history-capped">
-            Bringing the recorded usage across is limited to {{ REHOME_MAX }} teammates
-            at a time. Place these {{ teammateIds.length }} now, then move the history
-            in smaller batches.
-          </p>
-          <label
-            v-else
-            class="mt-2 flex items-start gap-2 text-[12px] text-carbon cursor-pointer"
-          >
-            <input
-              v-model="moveHistory"
-              type="checkbox"
-              class="mt-0.5 rounded border-calm-2"
-              data-testid="bulk-place-move-history"
-            >
-            <span>
-              Also move everything these {{ teammateIds.length }} already recorded.
-              <span class="text-carbon-3">
-                Restates reported usage, and repairs anyone already in this
-                {{ BU_LABEL }} whose history was left behind by an earlier move.
-              </span>
-            </span>
-          </label>
-        </div>
+        <p class="mt-3 text-[12px] text-carbon" data-testid="bulk-place-explainer">
+          Reports group usage by where each person sits now, so their usage,
+          including what they have already recorded, will report under
+          {{ targetName }}. Usage tagged to a project stays with that project's
+          {{ BU_LABEL }}.
+        </p>
 
         <p v-if="!targets.length" class="text-xs text-rag-amber mt-3" data-testid="bulk-place-no-targets">
-          This region has no cost-owning units yet — create one on the Business Units
+          This region has no Business Units yet — create one on the Business Units
           tab first, otherwise there is nowhere for this spend to land.
         </p>
 

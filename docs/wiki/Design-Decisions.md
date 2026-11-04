@@ -89,10 +89,12 @@ see [Attributed and Billed](Attributed-and-Billed.md).
 
 The repository-local settings file that tags a repo to a project holds no state
 that an upgrade could leave behind. On every launch in that repo it is rebuilt
-from the device's current enrolment. It carries the device's instance id and the repo's
-`project.code_hash` in `OTEL_RESOURCE_ATTRIBUTES`, and leaves out the keys that
-turn telemetry on, which current Claude Code refuses from a project file. When
-the rebuild finds the instance has changed, the session start tells the
+from the device's current enrolment. It carries an instance id and the repo's
+`project.code_hash` in `OTEL_RESOURCE_ATTRIBUTES`, and nothing else; the helper,
+endpoints and credential apply from each install's own settings. The instance is
+this install's, or another local install's when that one is enrolled with the
+same deployment, so Claude Desktop and the CLI do not rewrite it in turn. When
+the rebuild replaces any other instance, the session start tells the
 developer to relaunch. "Emitting" means records have landed, not that a
 credential is present. A repo that is never reopened is not rebuilt.
 

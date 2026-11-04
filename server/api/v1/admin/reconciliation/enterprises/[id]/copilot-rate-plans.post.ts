@@ -21,17 +21,18 @@ import { assertSameOrigin } from '../../../../../../auth/csrf'
 import { withRequestRls } from '../../../../../../db/request-rls'
 import { requireUuidParam } from '../../../../../../utils/require-uuid-param'
 import { readValidated } from '../../../../../../utils/validated-body'
+import { isRealUtcDay } from '#shared/schemas/activity'
 import {
   createCopilotRatePlan,
   CopilotRatePlanError,
 } from '../../../../../../governance/copilot-rate-plan'
 
 const Body = z.object({
-  validFrom: z.string().datetime({ offset: true }).or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  validFrom: z.string().datetime({ offset: true }).or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(isRealUtcDay, 'not a real calendar day')),
   validTo: z
     .string()
     .datetime({ offset: true })
-    .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/))
+    .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(isRealUtcDay, 'not a real calendar day'))
     .nullish(),
   flatSeatPriceUsd: z.number().min(0).max(1_000_000).nullish(),
   includedAllowanceUsd: z.number().min(0).max(1_000_000).nullish(),

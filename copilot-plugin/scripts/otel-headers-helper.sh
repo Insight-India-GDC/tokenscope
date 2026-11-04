@@ -475,6 +475,9 @@ RESOLVED=0
 # environment afterwards would pair the DEVICE's ambient token with repo-supplied
 # endpoints; see the refusal before source 4.
 TRUSTED_SEEN_UNUSABLE=0
+# What made it unusable, named for the refusal below (#452): a user who lost or
+# removed the store must read that, not "my store is broken".
+UNUSABLE_WHY=''
 
 # ── source 1: this lane's own store ───────────────────────────────────────────
 if [ "$RESOLVED" -eq 0 ] && [ -f "$STORE" ]; then
@@ -542,7 +545,14 @@ if [ "$RESOLVED" -eq 0 ] && [ -f "$LEGACY_STORE" ]; then
     [ -f "$_set_file" ] && _set_bear="$(json_str "$(cat "$_set_file" 2>/dev/null || echo '')" TOKENSCOPE_BEARER_ENDPOINT)"
     _a="$(bearer_instance "$_lg_bear")"
     [ -n "$_a" ] && [ "$_a" = "$(bearer_instance "$_set_bear")" ] && _lg_claimed=1
-    [ "$_lg_claimed" -eq 1 ] || TRUSTED_SEEN_UNUSABLE=1
+    if [ "$_lg_claimed" -ne 1 ]; then
+      TRUSTED_SEEN_UNUSABLE=1
+      if [ -n "$_a" ] && [ -n "$(bearer_instance "$_set_bear")" ]; then
+        UNUSABLE_WHY="${UNUSABLE_WHY} The older shared store ${LEGACY_STORE} belongs to another enrolment (instance ${_a}; ${_set_file} names $(bearer_instance "$_set_bear"))."
+      else
+        UNUSABLE_WHY="${UNUSABLE_WHY} The older shared store ${LEGACY_STORE} could not be matched to this lane (no instance in it and in ${_set_file} to compare)."
+      fi
+    fi
   fi
   if [ "$_lg_claimed" -eq 1 ]; then
     _lg_tok="$(json_str "$_lg" oauth_refresh_token)"
@@ -571,9 +581,11 @@ if [ "$RESOLVED" -eq 0 ]; then
     # the credential key. Anything else that fails extraction is unusable.
     if [ -z "$_gs_tok" ]; then
       case "$_gs" in
-        *TOKENSCOPE_OAUTH_REFRESH_TOKEN*) TRUSTED_SEEN_UNUSABLE=1 ;;
+        *TOKENSCOPE_OAUTH_REFRESH_TOKEN*) TRUSTED_SEEN_UNUSABLE=1
+          UNUSABLE_WHY="${UNUSABLE_WHY} ${_gs_file} mentions a TokenScope credential that could not be read." ;;
         *'"env"'*) : ;;
-        *) TRUSTED_SEEN_UNUSABLE=1 ;;
+        *) TRUSTED_SEEN_UNUSABLE=1
+          UNUSABLE_WHY="${UNUSABLE_WHY} ${_gs_file} could not be read as a settings file." ;;
       esac
     fi
     # No credential here => nothing of ours to protect => absent.
@@ -593,7 +605,7 @@ fi
 # trusted source that was present and unusable means the ambient token is the
 # device's and the endpoints beside it are the repository's: refuse.
 if [ "$RESOLVED" -eq 0 ] && [ "$TRUSTED_SEEN_UNUSABLE" -eq 1 ] && [ -n "${TOKENSCOPE_OAUTH_REFRESH_TOKEN:-}" ]; then
-  refuse_source "trusted source unusable, ambient credential present" "this device has a stored enrolment this lane cannot use, and the session environment is not an acceptable substitute while a durable credential is reachable. Re-run the tokenscope-setup MCP prompt."
+  refuse_source "trusted source unusable, ambient credential present" "this device has a stored enrolment this lane cannot use, and the session environment is not an acceptable substitute while a durable credential is reachable. This lane's device store ${STORE} is missing.${UNUSABLE_WHY} Re-run the tokenscope-setup MCP prompt."
 fi
 
 # ── source 4: the process environment ─────────────────────────────────────────
@@ -653,6 +665,13 @@ assert_safe_endpoint() {
   esac
   case "$_ep" in
     https://*) return 0 ;;
+    # Userinfo: curl reads http://localhost:x@evil/ as user 'localhost', password
+    # 'x', host evil, so the loopback globs below would pass an off-box host.
+    http://*@*)
+      echo "TokenScope: emission auth FAILED (${_label} must not carry userinfo) — telemetry is being DROPPED." >&2
+      write_sentinel 0 "${_label} carries userinfo"
+      exit 1
+      ;;
     http://127.0.0.1|http://127.0.0.1:*|http://127.0.0.1/*) return 0 ;;
     http://localhost|http://localhost:*|http://localhost/*) return 0 ;;
     http://\[::1\]|http://\[::1\]:*|http://\[::1\]/*) return 0 ;;

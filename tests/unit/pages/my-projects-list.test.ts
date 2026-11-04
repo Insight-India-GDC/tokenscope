@@ -59,11 +59,12 @@ const STUBS = {
 
 const fmtUsd = (v: string | number) => `$${Number(v).toFixed(2)}`
 
-async function mountPage(projects: ProjectCard[], untaggedUsd = '0.00') {
+async function mountPage(projects: ProjectCard[], untaggedUsd = '0.00', query: Record<string, string> = {}) {
   // Script-scope refs resolve via globalThis; template refs via the instance
   // proxy (mocks). Provide both (the consumption-one-scalar idiom).
   vi.stubGlobal('fmtUsd', fmtUsd)
   vi.stubGlobal('useSession', () => ({ session: ref({ teammateId: 't1' }), ensure: async () => {} }))
+  vi.stubGlobal('useRoute', () => ({ query }))
   vi.stubGlobal('useFetch', () => ({
     data: ref({ projects, total: projects.length, untagged_usd: untaggedUsd }),
     pending: ref(false),
@@ -129,6 +130,19 @@ describe('/projects — the headline band (T20, D25)', () => {
     const w = await mountPage([card()])
     expect(w.find('[data-testid="date-range-control"]').exists()).toBe(false)
     expect(w.find('[data-testid="window-30"]').exists()).toBe(false)
+  })
+})
+
+describe('/projects — after creating a project for someone else', () => {
+  it('names the created project and says why it is not listed', async () => {
+    const w = await mountPage([card()], '0.00', { created: 'NEW-9' })
+    const note = w.find('[data-testid="projects-created-notice"]').text()
+    expect(note).toContain('NEW-9 was created')
+    expect(note).toContain('not a member')
+  })
+  it('no notice on a plain visit', async () => {
+    const w = await mountPage([card()])
+    expect(w.find('[data-testid="projects-created-notice"]').exists()).toBe(false)
   })
 })
 

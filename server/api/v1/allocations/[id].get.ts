@@ -148,6 +148,10 @@ export default defineEventHandler(async (event) => {
               AND scope_id = ${focusedRow.scope_id}::uuid
               AND teammate_id IS NULL
               AND id <> ${id}::uuid
+              -- Only rows that share the displayed row's period: the editor
+              -- adds these to it as that period's budget, so an expired or
+              -- future row would inflate the figure.
+              AND effective && ${focusedRow.effective}::tstzrange
             ORDER BY effective DESC
           `)
         : []

@@ -39,7 +39,6 @@ export const meta = {
     { vendor: 'usage' as const, state: 'settling' as const, settlesAt: '2026-09-04', closeRun: false as const },
   ],
   scope: 'regional' as const,
-  pointInTimeDims: true,
 }
 
 export const providerSplit: ProviderSplit = {

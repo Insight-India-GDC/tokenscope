@@ -20,16 +20,19 @@
  *     400 same-role-noop      — target already has the requested role.
  *         400 (not 200) so the UI surfaces a clear "nothing to do"
  *         signal instead of silently succeeding.
- *     409 last-admin-protected — target is the LAST active admin in
- *         their REGION and is being demoted. Per-region (not install-
- *         wide) because admin scope IS region-scoped; platform-admin
- *         peers are cross-region and intentionally NOT counted. The
- *         handler runs the count under withRequestRls in the target's
- *         region, so this is consistent with what the mutation sees.
  *
  *   Allow:
  *     { allowed: true } — handler proceeds with the update + audit
  *     row.
+ *
+ * There is no last-admin protection. The one it had (409
+ * last-admin-protected: the last `admin` holder in a region) guarded a
+ * role nobody holds any more — Region admin can no longer be granted
+ * (canAssignRole), so a stray holder must be demotable, and "promote a
+ * second one first" is no longer a way out. The last platform-admin
+ * needs no guard either: only a platform-admin may modify one
+ * (canModifyHolderOf) and self-change is refused above, so the caller
+ * always remains.
  *
  * The caller's role gate (admin / platform-admin only) is NOT
  * evaluated here — requireRole(...) handles that at the handler edge.
@@ -37,7 +40,7 @@
  */
 import type { Session } from '../utils/auth'
 import type { Role } from '../../shared/auth/roles'
-import { isRetiredRole } from '../../shared/auth/roles'
+import { isRetiredRole, isUngrantableRole } from '../../shared/auth/roles'
 
 export interface RoleChangeTarget {
   id: string
@@ -52,7 +55,6 @@ export function evaluateRoleChange(
   callerSession: Pick<Session, 'role' | 'teammateId'>,
   target: RoleChangeTarget,
   newRole: Role,
-  currentAdminCount: number,
 ): RoleChangeVerdict {
   // Self-role-change — block ANY caller from changing their OWN role
   // (R1 F3 — earlier scope was admin-callers-only, which left global-
@@ -74,19 +76,6 @@ export function evaluateRoleChange(
     return { allowed: false, status: 400, reason: 'same-role-noop' }
   }
 
-  // Last-admin protection — if the target is currently admin and the
-  // new role is non-admin, and there is exactly one admin in the
-  // install, refuse. currentAdminCount is the caller-supplied count
-  // queried inside the same RLS-scoped txn so this is consistent
-  // with what the mutation will see.
-  if (
-    target.role === 'admin' &&
-    newRole !== 'admin' &&
-    currentAdminCount <= 1
-  ) {
-    return { allowed: false, status: 409, reason: 'last-admin-protected' }
-  }
-
   return { allowed: true }
 }
 
@@ -94,25 +83,19 @@ export function evaluateRoleChange(
 //
 // Pure decision for POST /api/v1/admin/users/:id/revoke-sessions.
 //
-// Wave VII brief explicitly carves out the contour: revoking sessions
-// does NOT change the role — the user just has to sign back in. The
-// "last-admin protection" that gates evaluateRoleChange does NOT apply
-// here. Self-revoke is allowed (forced sign-out of oneself is a
-// legitimate operator action).
-//
-// The decision surface therefore reduces to a single positive verdict.
-// This stub exists for two reasons:
-//   1. Symmetry with evaluateRoleChange — every admin-guard mutation
-//      has a corresponding pure decision function the handler threads.
-//   2. Future-proofing — if a refusal contour ever lands (e.g. rate-
-//      limiting, last-admin-of-only-region with no other operator who
-//      could re-promote), the gate point already exists.
+// Revoking sessions does NOT change the role — the user just has to sign
+// back in — so the "last-admin protection" of evaluateRoleChange does NOT
+// apply. Self-revoke is allowed (forced sign-out of oneself is a legitimate
+// operator action). The one refusal is the holder rule the role PATCH
+// already applies: a lower tier may not act on a higher-role holder
+// (canModifyHolderOf).
 //
 // Caller role + RBAC are validated at the handler edge (requireRole +
 // requireRegionScope); this function assumes that's already passed.
 export interface RevokeSessionsTarget {
   id: string
   regionId: string
+  role: Role
 }
 
 export type RevokeSessionsVerdict =
@@ -120,9 +103,12 @@ export type RevokeSessionsVerdict =
   | { allowed: false; status: 400 | 403 | 409; reason: string }
 
 export function evaluateRevokeSessions(
-  _callerSession: Pick<Session, 'role' | 'teammateId'>,
-  _target: RevokeSessionsTarget,
+  callerSession: Pick<Session, 'role' | 'teammateId'>,
+  target: RevokeSessionsTarget,
 ): RevokeSessionsVerdict {
+  if (!canModifyHolderOf(callerSession.role, target.role)) {
+    return { allowed: false, status: 403, reason: 'holder-outranks-caller' }
+  }
   return { allowed: true }
 }
 
@@ -162,8 +148,9 @@ export function canAssignRole(callerRole: Role, targetRole: Role): boolean {
   // platform-admin. Without this arm, retiring `global-finops` would have
   // LOOSENED the guard: once it stopped counting as an org-wide grant it fell
   // through to the permissive tail below, so a region admin could have assigned
-  // it. The same arm closes the identical, older hole for `finance`.
-  if (isRetiredRole(targetRole)) return false
+  // it. The same arm closes the identical, older hole for `finance`, and refuses
+  // Region admin (`admin`), which is no longer granted: there is one admin role.
+  if (isUngrantableRole(targetRole)) return false
   const orgWideGrant = targetRole === 'platform-admin'
   if (orgWideGrant) return callerRole === 'platform-admin'
   return true

@@ -41,11 +41,16 @@ import type { FinanceCouRow, FinanceCouLane } from '../finance-report-types'
 // The §B Copilot chargeback lanes (registry-driven — never hand literals).
 const COPILOT_CHARGEBACK_LANE_SET = new Set<string>(GITHUB_ALL_CHARGEBACK_LANES)
 
-const props = defineProps<{
-  cous: FinanceCouRow[]
-  /** Copilot pooled chargeback not yet validated (pool-utilisation mode). */
-  copilotPending: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    cous: FinanceCouRow[]
+    /** Copilot pooled chargeback not yet validated (pool-utilisation mode). */
+    copilotPending: boolean
+    /** Admin-only "Fix org homing →" (the container decides; fail-closed). */
+    canFixHoming?: boolean
+  }>(),
+  { canFixHoming: false },
+)
 
 const emit = defineEmits<{ drill: [couId: string] }>()
 
@@ -122,13 +127,13 @@ const legendLanes = computed<LaneSeg[]>(() => {
 <template>
   <UiCard data-testid="finance-cou-table">
     <div class="flex items-center justify-between gap-2 mb-1 flex-wrap">
-      <div class="text-sm font-semibold text-carbon-1">Chargeback by cost-owning unit</div>
+      <div class="text-sm font-semibold text-carbon-1">Chargeback by Business Unit</div>
       <UiBadge
         v-if="copilotPending"
         kind="rag-amber"
         dot="amber"
         data-testid="finance-copilot-pending-chip"
-        title="Copilot pooled chargeback is not yet validated on Dev (Σ=bill) — held back from the chargeable total."
+        title="Copilot pooled chargeback is not yet validated against the bill, so it is held back from the chargeable total."
       >Copilot chargeback pending</UiBadge>
       <UiBadge v-else kind="vision" dot="vision" data-testid="finance-copilot-chargeback-chip">Copilot pooled net included</UiBadge>
     </div>
@@ -164,7 +169,7 @@ const legendLanes = computed<LaneSeg[]>(() => {
         <table class="w-full text-sm min-w-[680px]">
           <thead>
             <tr class="text-[11px] uppercase tracking-wide text-carbon-3 border-b border-calm-2">
-              <th class="text-left font-semibold py-2">Cost-owning unit</th>
+              <th class="text-left font-semibold py-2">Business Unit</th>
               <th class="text-left font-semibold py-2 pl-4 min-w-[180px]">Surface mix</th>
               <th class="text-right font-semibold py-2">Anthropic</th>
               <th class="text-right font-semibold py-2">Copilot</th>
@@ -189,9 +194,9 @@ const legendLanes = computed<LaneSeg[]>(() => {
                 <span
                   v-else
                   class="font-medium text-carbon-2 italic"
-                  title="No cost-owning unit mapped — visible unallocated bucket, never dropped."
+                  title="No Business Unit mapped — a visible unallocated bucket, never dropped."
                 >{{ c.displayName }}</span>
-                <UnallocatedRemediationLink v-if="!c.couId" class="ml-2 align-middle" />
+                <UnallocatedRemediationLink v-if="!c.couId" class="ml-2 align-middle" :can-fix="props.canFixHoming" />
                 <span v-if="c.regionCode" class="text-carbon-3 text-[11px]"> · {{ c.regionCode.toUpperCase() }}</span>
               </td>
               <!-- Per-CoU surface-mix bar (#142): stacked lanes, 2px gaps, rounded
@@ -226,7 +231,7 @@ const legendLanes = computed<LaneSeg[]>(() => {
               <td
                 class="py-2.5 text-right tabular-nums"
                 :class="c.copilotPending ? 'text-carbon-3 italic' : 'text-carbon-1'"
-                :title="c.copilotPending ? 'pooled — pending correct writer' : undefined"
+                :title="c.copilotPending ? 'Pooled Copilot net, held back until it is validated against the bill' : undefined"
               >
                 {{ c.copilotPending ? `${fmtUsd(c.copilotUsd)} (pending)` : fmtUsd(c.copilotUsd) }}
                 <UiBadge
@@ -252,7 +257,7 @@ const legendLanes = computed<LaneSeg[]>(() => {
       data-testid="finance-cou-empty"
     >
       <div class="text-sm font-semibold text-carbon-2">No chargeback for this month</div>
-      <div class="mt-1 text-[12px] text-carbon-3">As the month's bills land and home to cost-owning units, they appear here.</div>
+      <div class="mt-1 text-[12px] text-carbon-3">As the month's bills land and home to Business Units, they appear here.</div>
     </div>
   </UiCard>
 </template>

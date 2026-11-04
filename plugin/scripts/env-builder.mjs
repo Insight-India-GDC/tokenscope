@@ -9,14 +9,14 @@
  *
  *   - REPO  ./.claude/settings.local.json — per-repo tag (written by the
  *     SessionStart hook via tag-repo.mjs): overrides OTEL_RESOURCE_ATTRIBUTES
- *     with the device instance id PLUS the repo's project.code_hash.
+ *     with an instance id PLUS the repo's project.code_hash, and nothing else.
  *   - the status-line install/remove helpers (statusline-toggle.mjs).
  *   - readDeviceEnrolment — reads the instance id + helper command back out of
- *     the global config so the repo tag can self-heal against it (ADR-0006).
+ *     the global config.
  *   - buildHelperCommand — the ONE producer of the `otelHeadersHelper` string.
  */
 import { existsSync } from 'node:fs'
-import { join, posix, win32 } from 'node:path'
+import { dirname, join, posix, win32 } from 'node:path'
 import { assertHelperRecord } from './device-store.mjs'
 import { helperScriptName, windowsPowerShellPath, DEFAULT_WINDOWS_POWERSHELL } from './emit-helper-spawn.mjs'
 
@@ -58,8 +58,8 @@ function quoteCmd(value, { always = false } = {}) {
  * (the plugin install whose script it names).
  *
  * The ONLY producer of that string. Every writer (redeem, enrol, the
- * session-start self-heal, the repo pin) goes through it, so the state dir and
- * the platform choice cannot be dropped by one of four hand-built copies again
+ * session-start self-heal) goes through it, so the state dir and
+ * the platform choice cannot be dropped by one of several hand-built copies again
  * (#410). The record is `{ tool, platform, stateDir? }` (assertHelperRecord):
  *   POSIX:   "<scripts>/otel-headers-helper.sh" --tool <tool> [--state-dir <abs>]
  *   Windows: "<abs>\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass
@@ -199,9 +199,17 @@ export function parseHelperCommand(value) {
  * Resource-attr string for a REPO tag (repo-local config): the device session id
  * PLUS the project's code_hash. Matches the server's attested-token attrs ordering
  * (sid, project.code_hash, tool) so the join key is identical either side.
+ *
+ * Either part may be absent: a folder with only a default activity (#475) carries
+ * no code_hash, and `activity` (readFolderActivity) is appended percent-encoded,
+ * as OTEL_RESOURCE_ATTRIBUTES values must be (a label may hold a space).
  */
-export function buildRepoResourceAttrs(sessionId, projectCodeHash) {
-  return `tokenscope.instance_id=${sessionId},project.code_hash=${projectCodeHash},tool=claude-code`
+export function buildRepoResourceAttrs(sessionId, projectCodeHash, activity = null) {
+  const parts = [`tokenscope.instance_id=${sessionId}`]
+  if (projectCodeHash) parts.push(`project.code_hash=${projectCodeHash}`)
+  parts.push('tool=claude-code')
+  if (activity) parts.push(`tokenscope.activity=${encodeURIComponent(activity)}`)
+  return parts.join(',')
 }
 
 /**
@@ -215,11 +223,9 @@ export function buildRepoResourceAttrs(sessionId, projectCodeHash) {
  * Top-level non-`env` keys (e.g. `permissions`) are always preserved. The `env`
  * block is handled per `replaceEnv`:
  *   - false (default): ADDITIVE key-merge onto the existing env.
- *   - true: REPLACE the env block wholesale with `envBlock` — used by the repo
- *     pin (writeRepoTag), which must re-derive env from the CURRENT global
- *     enrolment each launch (ADR-0006 self-heal). A key the current global no
- *     longer emits (e.g. a legacy session token after migrating to OAuth) must
- *     NOT survive in the repo file — an additive merge would leave it at rest.
+ *   - true: REPLACE the env block wholesale with `envBlock` — used by redeem on
+ *     a cross-environment move, so a key the new environment does not emit
+ *     (e.g. a legacy session token) does not survive at rest.
  */
 export function mergeClaudeSettings(existing, helper, envBlock, { replaceEnv = false } = {}) {
   if (typeof helper === 'string') throw new TypeError('mergeClaudeSettings takes { record, scriptsDir }, not a path')
@@ -229,9 +235,35 @@ export function mergeClaudeSettings(existing, helper, envBlock, { replaceEnv = f
   return settings
 }
 
-/** The TokenScope status-line config (emission health + session id). */
-export function tokenscopeStatusLine(statuslinePath) {
-  return { type: 'command', command: `node ${JSON.stringify(statuslinePath)}`, padding: 0 }
+/**
+ * The TokenScope status-line config (emission health + session id).
+ *
+ * The interpreter is an ABSOLUTE, quoted path (the node running this), never a
+ * bare `node`: Claude Code resolves a bare name through its own PATH, which a
+ * repository's settings env can set, and on Windows cmd.exe searches the
+ * current directory (the repository) first. Same rule as buildHelperCommand.
+ */
+export function tokenscopeStatusLine(statuslinePath, { node = process.execPath, platform = process.platform } = {}) {
+  const quote = platform === 'win32' ? quoteCmd : quoteSh
+  return {
+    type: 'command',
+    command: `${quote(node, { always: true })} ${quote(statuslinePath, { always: true })}`,
+    padding: 0,
+  }
+}
+
+/**
+ * Does a status-line command start with an interpreter that is not an existing
+ * absolute path (the old bare `node`, or a node since removed by an upgrade)?
+ */
+function statusLineNeedsInterpreter(command, platform, exists) {
+  const token = readToken(command, 0, platform === 'win32' ? 'cmd' : 'sh')
+  if (!token) return true
+  try {
+    return !pathFor(platform).isAbsolute(token[0]) || !exists(token[0])
+  } catch {
+    return true
+  }
 }
 
 /** True if `settings.statusLine` is TokenScope's (so we can refresh/remove only OUR own). */
@@ -245,11 +277,61 @@ function isOurStatusLine(statusLine) {
 }
 
 /** True if `p` is one of OUR plugin's script paths (under a tokenscope plugin dir),
- * so the self-heal only ever repoints paths we own — never a user's custom one. */
+ * so the self-heal only ever repoints paths we own — never a user's custom one.
+ *
+ * A directory-marketplace install (a local checkout) runs the plugin in place, so
+ * setup writes `<checkout>/plugin/scripts/...` (#455). That path is ours too, by
+ * its own file name under the repo's `plugin/scripts/`: it is unversioned, so a
+ * versioned active install moves it forward (isForwardMove), and a session running
+ * from the checkout itself leaves it alone. */
 function isOurPluginPath(p) {
   return (
-    typeof p === 'string' && /[\\/]plugins[\\/](cache|marketplaces)[\\/]tokenscope[\\/]/.test(p)
+    typeof p === 'string' &&
+    (/[\\/]plugins[\\/](cache|marketplaces)[\\/]tokenscope[\\/]/.test(p) ||
+      /[\\/]plugin[\\/]scripts[\\/](otel-headers-helper\.(sh|ps1)|statusline\.mjs)"?$/.test(p))
   )
+}
+
+/**
+ * The SAME install seen from another side of a shared `~/.claude` (#447), or null.
+ *
+ * When one `~/.claude` is shared between a host and its containers, each side
+ * sees the plugin cache under its own home: `/home/u/.claude/plugins/cache/...`
+ * on the host, `/home/claude/.claude/plugins/cache/...` in the container. A path
+ * written by the other side does not exist here, but the part from `plugins/`
+ * on does, under this side's own config folder. Rewriting it to this side's path
+ * only breaks the other side, which rewrites it back at its next session start.
+ *
+ * A home that was simply renamed or restored elsewhere looks the same from here,
+ * and its path SHOULD be repaired. The difference is that the other side is
+ * still running: each side's SessionStart records its config folder in
+ * `tokenscope-sides.json` beside the shared settings (recordClaudeSide, in the
+ * SessionStart hook), and only a prefix in `otherSides` (seen recently, not
+ * ours) counts.
+ *
+ * Returns this side's spelling of `script` when (a) `script` is under a
+ * `plugins/cache|marketplaces/` folder whose prefix differs from the active
+ * install's, (b) that prefix is one of `otherSides`, and (c) that spelling
+ * exists here. `exists` is injectable for tests.
+ */
+export function sharedHomeEquivalent(script, scriptsDir, exists = existsSync, otherSides = []) {
+  const root = /^(.*?)[\\/]plugins[\\/](?:cache|marketplaces)[\\/]/
+  if (typeof script !== 'string' || typeof scriptsDir !== 'string') return null
+  const cur = root.exec(script)
+  const act = root.exec(`${scriptsDir}/`)
+  if (!cur || !act || cur[1] === act[1] || !otherSides.includes(cur[1])) return null
+  const local = act[1] + script.slice(cur[1].length)
+  try {
+    return exists(local) ? local : null
+  } catch {
+    return null
+  }
+}
+
+/** The statusline.mjs path inside one of our status-line commands, or null. */
+function statusLineScript(command) {
+  const m = typeof command === 'string' && /"((?:[^"\\]|\\.)*statusline\.mjs)"\s*$/.exec(command)
+  return m ? m[1].replace(/\\(.)/g, '$1') : null
 }
 
 /** The cache version [maj,min,patch] embedded in a tokenscope plugin path, or null
@@ -333,6 +415,7 @@ export function reconcilePluginPaths(
     recordFor = () => null,
     exists = existsSync,
     defaultStateDir,
+    otherSides = [],
   } = {},
 ) {
   const settings = existing && typeof existing === 'object' ? { ...existing } : {}
@@ -340,8 +423,27 @@ export function reconcilePluginPaths(
 
   const sl = settings.statusLine
   if (statuslinePath && isOurStatusLine(sl) && isOurPluginPath(sl.command)) {
-    const wantCommand = tokenscopeStatusLine(statuslinePath).command
-    if (sl.command !== wantCommand && isForwardMove(sl.command, statuslinePath)) {
+    let wantCommand = null
+    try {
+      wantCommand = tokenscopeStatusLine(statuslinePath, { platform }).command
+    } catch {
+      // inexpressible on this platform: leave it rather than break it
+    }
+    // Same version: only the interpreter is repaired, so two hosts sharing one
+    // home with different (working) node paths do not rewrite it back and forth.
+    const curVer = pluginPathVersion(sl.command)
+    const actVer = pluginPathVersion(statuslinePath)
+    const sameVersion = Boolean(curVer && actVer && curVer.join('.') === actVer.join('.'))
+    // #447: a path the other side of a shared ~/.claude wrote is left alone.
+    const curScript = statusLineScript(sl.command)
+    const otherSide = Boolean(curScript && !exists(curScript) && sharedHomeEquivalent(curScript, dirname(statuslinePath), exists, otherSides))
+    if (
+      !otherSide &&
+      wantCommand &&
+      sl.command !== wantCommand &&
+      (isForwardMove(sl.command, statuslinePath) ||
+        (sameVersion && statusLineNeedsInterpreter(sl.command, platform, exists)))
+    ) {
       settings.statusLine = { ...sl, command: wantCommand }
       changed = true
     }
@@ -353,6 +455,7 @@ export function reconcilePluginPaths(
     recordFor,
     exists,
     defaultStateDir,
+    otherSides,
   })
   if (want !== null && want !== settings.otelHeadersHelper) {
     settings.otelHeadersHelper = want
@@ -402,7 +505,14 @@ function isHelperSnapshot(parsed, defaultStateDir) {
  */
 export function reconcileHelperCommand(
   current,
-  { scriptsDir, platform = process.platform, recordFor = () => null, exists = existsSync, defaultStateDir } = {},
+  {
+    scriptsDir,
+    platform = process.platform,
+    recordFor = () => null,
+    exists = existsSync,
+    defaultStateDir,
+    otherSides = [],
+  } = {},
 ) {
   const parsed = parseHelperCommand(current)
   if (!parsed || !(isOurPluginPath(parsed.script) || isHelperSnapshot(parsed, defaultStateDir))) return null
@@ -419,6 +529,10 @@ export function reconcileHelperCommand(
   const curVer = pluginPathVersion(parsed.script)
   const actVer = scriptsDir ? pluginPathVersion(join(scriptsDir, file)) : null
   const broken = !exists(parsed.script)
+  // #447: written by the other side of a shared ~/.claude, where it is valid.
+  // Rewriting it here breaks that side, which rewrites it back: leave it, and
+  // the SessionStart hook says how to make it valid on this side too.
+  if (broken && sharedHomeEquivalent(parsed.script, scriptsDir, exists, otherSides)) return null
   let dir = null
   if (has(scriptsDir) && (broken || isForwardMove(parsed.script, join(scriptsDir, file)))) dir = scriptsDir
   else if (!broken && curVer && actVer && curVer.join('.') === actVer.join('.') && has(parsed.scriptDir)) dir = parsed.scriptDir
@@ -454,11 +568,7 @@ export function readDeviceEnrolment(globalSettings) {
       typeof globalSettings.otelHeadersHelper === 'string'
         ? globalSettings.otelHeadersHelper
         : null,
-    // The full device env block (endpoint, exporter, bearer endpoint + OAuth emit
-    // credential, resource attrs). The repo-local tag copies ALL of it (overriding
-    // only OTEL_RESOURCE_ATTRIBUTES) so it's self-contained — Claude applies the
-    // highest-precedence `env` by REPLACEMENT, not key-merge, so a repo-local
-    // env block carrying only the resource attrs would drop the endpoint/bearer.
+    // The full device env block (endpoint, exporter, bearer endpoint, resource attrs).
     env: globalSettings.env && typeof globalSettings.env === 'object' ? globalSettings.env : null,
   }
 }

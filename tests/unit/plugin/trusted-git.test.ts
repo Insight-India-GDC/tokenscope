@@ -17,9 +17,12 @@ import { isAbsolute, join } from 'node:path'
 import { gitRemoteOrgUrl } from '../../../plugin/scripts/copilot-forwarder.mjs'
 import { trustedGitPath, resetTrustedGitPathCache } from '../../../plugin/scripts/trusted-git.mjs'
 
+// Windows (#430): skipped on win32 because this file chdirs to /tmp.
+const POSIX_ONLY = process.platform === 'win32'
+
 afterEach(() => resetTrustedGitPathCache())
 
-describe('trustedGitPath', () => {
+describe.skipIf(POSIX_ONLY)('trustedGitPath', () => {
   it('returns an ABSOLUTE path to a real binary, or null — never a bare name', () => {
     const p = trustedGitPath()
     if (p === null) return // a host without git in a trusted location is allowed
@@ -50,7 +53,7 @@ describe('trustedGitPath', () => {
   })
 })
 
-describe('the CALL SITES resolve git through the trusted path, not by name', () => {
+describe.skipIf(POSIX_ONLY)('the CALL SITES resolve git through the trusted path, not by name', () => {
   /*
    * Testing the resolver alone proves nothing about the callers — the defect is
    * a call site doing a NAME lookup, and only exercising one can show that.

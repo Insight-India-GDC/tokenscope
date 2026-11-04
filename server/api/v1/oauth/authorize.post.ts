@@ -139,6 +139,8 @@ export default defineEventHandler(async (event) => {
       scope: granted.join(' '),
       codeChallenge: body.code_challenge,
       codeChallengeMethod: body.code_challenge_method,
+      // The exchange refuses the code if this session is revoked before it (#431).
+      sessionIssuedAt: session.issuedAt,
     })
 
     await recordAuditEvent(tx, {

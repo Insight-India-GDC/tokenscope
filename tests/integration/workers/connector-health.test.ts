@@ -100,7 +100,7 @@ describe('runConnectorHealth (sync-conflict producer)', () => {
     await clearSyncConflicts()
 
     await t.db.insert(schema.syncConflict).values({
-      connectorId: 'PSR · APAC',
+      connectorId: 'Pathway · APAC',
       targetTable: 'project',
       targetPk: projId,
       manualRowSnapshot: { costOwningUnit: 'MED · Retail risk' },
@@ -130,7 +130,7 @@ describe('runConnectorHealth (sync-conflict producer)', () => {
     const row = rows[0]!
     expect(row.category).toBe('sync-conflict')
     expect(row.severity).toBe('info')
-    expect(row.subject).toContain('PSR · APAC')
+    expect(row.subject).toContain('Pathway · APAC')
     expect(row.subject).toContain('Connector Health Test')
     expect(row.related_entity_kind).toBe('project')
     expect(row.related_entity_id).toBe(projId)
@@ -138,7 +138,7 @@ describe('runConnectorHealth (sync-conflict producer)', () => {
     expect(row.body.field).toBe('Cost owning unit')
     expect(row.body.manual).toBe('MED · Retail risk')
     expect(row.body.sync).toBe('MED · Risk Analytics')
-    expect(row.body.source).toBe('PSR · APAC')
+    expect(row.body.source).toBe('Pathway · APAC')
     // Traceability marker for idempotency:
     expect(typeof row.body.sync_conflict_id).toBe('string')
   })
@@ -148,7 +148,7 @@ describe('runConnectorHealth (sync-conflict producer)', () => {
     await clearSyncConflicts()
 
     await t.db.insert(schema.syncConflict).values({
-      connectorId: 'PSR · APAC',
+      connectorId: 'Pathway · APAC',
       targetTable: 'project',
       targetPk: projId,
       manualRowSnapshot: { costOwningUnit: 'A' },
@@ -171,7 +171,7 @@ describe('runConnectorHealth (sync-conflict producer)', () => {
     await clearSyncConflicts()
 
     await t.db.insert(schema.syncConflict).values({
-      connectorId: 'PSR · APAC',
+      connectorId: 'Pathway · APAC',
       targetTable: 'project',
       targetPk: projId,
       manualRowSnapshot: { costOwningUnit: 'A' },
@@ -219,7 +219,7 @@ describe('runConnectorHealth (sync-conflict producer)', () => {
 
     await t.db.insert(schema.syncConflict).values([
       {
-        connectorId: 'PSR · APAC',
+        connectorId: 'Pathway · APAC',
         targetTable: 'project',
         targetPk: projId,
         manualRowSnapshot: { costOwningUnit: 'A' },
@@ -248,7 +248,7 @@ describe('runConnectorHealth (sync-conflict producer)', () => {
       ORDER BY subject
     `
     expect(rows.length).toBe(2)
-    expect(rows.some((r) => r.subject.includes('PSR · APAC'))).toBe(true)
+    expect(rows.some((r) => r.subject.includes('Pathway · APAC'))).toBe(true)
     expect(rows.some((r) => r.subject.includes('Workday'))).toBe(true)
   })
 })

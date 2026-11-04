@@ -24,6 +24,7 @@ import { runArchiveLedger } from './archive-ledger'
 import { runAnalyticsPollReconciledOrgs, sourceForOrg } from './analytics-poller'
 import { runPlacementSync } from './placement-sync'
 import { runRegionReenrichment } from './region-reenrichment'
+import { runPlacementCheck, runScheduledPlacementCheck } from './placement-check'
 import { runPrivilegedIdentityCleanup } from './privileged-identity-cleanup'
 import { runPendingPlacementGc } from './pending-placement-gc'
 import {
@@ -98,6 +99,11 @@ export interface WorkerRunContext {
     // Strongly recommended alongside a window override — an unscoped override
     // re-pulls every reconciled org serially against the shared 60-RPM cap.
     externalOrgId?: string
+    // placement-check: re-gather only this cycle's failed lookups.
+    retryFailed?: boolean
+    // Set by the run-worker endpoint (the scheduler), never parsed from the body.
+    // placement-check: run the scheduled read instead of one admin-page pass.
+    scheduled?: boolean
   }
 }
 
@@ -191,6 +197,16 @@ export const WORKERS: ReadonlyArray<WorkerEntry> = [
     run: (db) => runRegionReenrichment(db),
     recommendedCron: '0 */6 * * *',
     description: 'Re-derive region for bill teammates on a holding node (mig 0068 heal/backfill; rehome-safe only)',
+  },
+  {
+    name: 'placement-check',
+    run: (db, ctx) =>
+      ctx?.opts?.scheduled === true
+        ? runScheduledPlacementCheck(db)
+        : runPlacementCheck(db, { retryFailed: ctx?.opts?.retryFailed === true }),
+    recommendedCron: '17 * * * *',
+    description:
+      'Hourly: once the top of the organisation is set in Org setup, start a placement-check cycle when the monthly or weekly re-read is due, gather directory evidence (attributes + full manager chain) for up to 150 people not yet checked in it, and once everyone is read look up each active unit owner and region leader. The admin page runs the same pass on demand; {retryFailed:true} re-gathers only failed lookups (docs/design/org-setup/00-spec.md)',
   },
   {
     name: 'privileged-identity-cleanup',
@@ -298,6 +314,9 @@ export const WORKERS: ReadonlyArray<WorkerEntry> = [
           // have to special-case the empty tick).
           costingRungs: { provider: 0, rateCard: 0, carrier: 0, skipped: 0 },
           spansSpilledUnauthorized: 0,
+          sessionRecordsRepointed: 0,
+          sessionReportsRefused: 0,
+          projectFallbackRetries: 0,
           spansSpilledEnded: 0,
           errors: 0,
           // Nothing was read, so nothing was deep-read.
@@ -371,14 +390,14 @@ export const WORKERS: ReadonlyArray<WorkerEntry> = [
     run: (db, ctx) => runReconciliationSync(db, { runId: ctx?.runId ?? null }),
     recommendedCron: '0 */1 * * *', // hourly freshness; daily-grain truth, monthly invoice true-up
     description:
-      'Pull vendor billing via adapters and reconcile into reconciliation_record (Phase 0 foundation: clean no-op until an adapter registers)',
+      'Pull vendor billing via the registered adapters (Anthropic, GitHub) and reconcile into reconciliation_record, for every org or enterprise with a credential',
   },
   {
     name: 'identity-sync',
     run: (db) => runIdentitySync(db),
     recommendedCron: '0 3 * * *', // daily — seed teammate_identity_map from provider directories
     description:
-      'Seed teammate_identity_map from provider seats/SCIM directories (Phase 0 foundation: clean no-op until a resolver registers)',
+      'Seed teammate_identity_map from provider seats/SCIM directories via the registered resolvers (GitHub today)',
   },
   {
     name: 'usage-reconciliation',

@@ -81,9 +81,10 @@
  * region (platform-admin pass through, rbac.ts:55):
  *   - the TARGET teammate being mapped TO (tm.region_id) — stops routing a login's spend INTO
  *     another region.
- *   - the teammate CURRENTLY bound to this login (if any), resolved on the same widened key the
- *     upsert's ON CONFLICT targets — stops a region-A admin pulling a login AWAY FROM a
- *     region-B teammate (the one-ended clamp's leak in mirror image).
+ *   - every teammate CURRENTLY bound to this login (if any), in this enterprise's lane OR the
+ *     self lane — stops a region-A admin pulling a login AWAY FROM a region-B teammate (the
+ *     one-ended clamp's leak in mirror image). The self lane counts because the enterprise-lane
+ *     row written here outranks it in both roster readers.
  * Both checks run after their row is resolved (404-before-403), so an unknown teammateId still
  * 404s and this endpoint never becomes an existence oracle for other regions' teammate ids.
  */
@@ -262,21 +263,18 @@ export default defineEventHandler(async (event) => {
     // onto a leaver's row hides it from every surface that filters on is_active.
     if (!tm.is_active) badRequest('Cannot map to a deactivated teammate — pick an active teammate.')
 
-    // Region-scope the CURRENTLY-bound teammate for this login, if any, resolved on the SAME
-    // widened key the upsert's ON CONFLICT targets (system, COALESCE(enterprise_slug,''),
-    // lower(identifier)) — stops a region-A admin pulling a login AWAY FROM a region-B teammate
-    // (the target-only clamp's leak in mirror image). No existing binding is the common,
-    // unremarkable case (an UNRESOLVED login) — nothing to clamp.
+    // Region-scope every teammate CURRENTLY bound to this login: this enterprise's lane, and the
+    // self lane (enterprise_slug NULL), which the enterprise-lane row written below outranks in
+    // both roster readers. No existing binding is the common case (an UNRESOLVED login).
     const boundRows = await tx.execute<{ region_id: string }>(sql`
-      SELECT t.region_id::text AS region_id
+      SELECT DISTINCT t.region_id::text AS region_id
       FROM teammate_identity_map tim
       JOIN teammate t ON t.id = tim.teammate_id
-      WHERE tim.system = 'github' AND COALESCE(tim.enterprise_slug, '') = ${slug}
+      WHERE tim.system = 'github'
+        AND (COALESCE(tim.enterprise_slug, '') = ${slug} OR tim.enterprise_slug IS NULL)
         AND lower(tim.identifier) = ${login}
-      LIMIT 1
     `)
-    const bound = [...boundRows][0]
-    if (bound) await requireRegionScope(event, bound.region_id)
+    for (const bound of boundRows) await requireRegionScope(event, bound.region_id)
 
     // Authoritative ENTERPRISE-lane upsert on the widened, case-insensitive key. Cannot clobber a
     // self-service link (NULL lane → different COALESCE('') key). Idempotent admin re-bind.

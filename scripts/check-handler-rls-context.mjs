@@ -82,6 +82,10 @@ export const ALLOWLIST = new Map([
     'Bearer bootstrap + the 401 CATCH path, which by construction has no identity (the credential was refused). The authenticated path runs in withMachineRls. See the file header for the phase-2 `teammate` LEFT JOIN hazard.',
   ],
   [
+    'server/api/v1/instances/[instanceId]/claude-sessions.post.ts',
+    'Bearer bootstrap only — the token→teammate lookup that RESOLVES the identity (§5 lane). All handler work runs in withMachineRls.',
+  ],
+  [
     'server/api/v1/instances/[instanceId]/end.post.ts',
     'Bearer bootstrap only — the token→teammate lookup that RESOLVES the identity (§5 lane). All handler work runs in withMachineRls.',
   ],

@@ -16,12 +16,15 @@
  * to roll a structural change to every environment on its next deploy) and otherwise no-ops —
  * never overriding manual UI edits. A manual run (no flag) always applies + stamps the version.
  *
- * Idempotent by (region, code): regions upsert by code; units upsert by (region, code), never
- * disturbing an existing unit's ltree path/children. The APAC codes here are ALIGNED to the live
- * structure ('apac-<x>'), so re-running upserts the existing rows rather than duplicating them.
- * CAUTION generally: dedup only works when codes MATCH — if EMEA / North America turn out to be
- * already set up with DIFFERENT codes than this scaffold, scope to just the empty regions with
- * `SEED_ONLY_REGIONS=emea,north-america,global-it npm run db:seed:org-structure` to avoid dupes.
+ * A REGION THAT HAS BEEN SET UP IS NEVER TOUCHED AGAIN. The seed builds a region's units only
+ * when the region has none besides its `default` unit and its Unplaced holding node. Otherwise it
+ * leaves every unit alone: no renames, no re-marking, no un-retiring, and no duplicates after an
+ * Admin changes a code (docs/design/org-setup/01-second-run-fixes.md, item 3). Regions are
+ * inserted by code if missing; the `default` unit is inserted if missing and never un-retired.
+ * The holding node is recognised as a parentless unit whose code starts with '_', which no
+ * Admin-made code can (ORG_UNIT_CODE_PATTERN); this boot script cannot import the shared sentinel.
+ * Each region is seeded in one transaction, and a region whose `default` unit is retired is left
+ * alone with a warning.
  * It does NOT create region leaders or cou_owners (those need real Entra
  * OIDs/teammates) — set leaders via Admin → Regions → Leaders (resolves the OID from the
  * directory) and practice owners via the org-unit owners flow; both then drive manager-chain
@@ -110,25 +113,22 @@ async function main(): Promise<void> {
   const client = createDbClient(url, { max: 1, idle_timeout: 5 })
   const db = drizzle(client, { schema })
 
-  // Upsert one unit (and recurse into its children). Cost-owning defaults to true for a leaf,
+  // Insert one unit (and recurse into its children). Cost-owning defaults to true for a leaf,
   // false for a container (a unit with children); unit_type defaults to 'bu'.
-  async function upsertUnit(regionId: string, parentId: string | null, parentPath: string, u: Unit): Promise<void> {
+  type Exec = Pick<typeof db, 'execute'>
+  async function insertUnit(tx: Exec, regionId: string, parentId: string | null, parentPath: string, u: Unit): Promise<void> {
     const path = `${parentPath}.${label(u.code)}`
     const costOwning = u.costOwning ?? !(u.children && u.children.length)
     const unitType = u.type ?? 'bu'
-    const [{ id }] = await db.execute<{ id: string }>(sql`
+    const [{ id }] = await tx.execute<{ id: string }>(sql`
       INSERT INTO org_unit (region_id, parent_id, path, code, display_name, unit_type, is_cost_owning_unit, source)
       VALUES (${regionId}::uuid, ${parentId}::uuid, ${path}::ltree, ${u.code}, ${u.displayName}, ${unitType}, ${costOwning}, 'seed')
-      ON CONFLICT (region_id, code) DO UPDATE
-        SET display_name = EXCLUDED.display_name, is_cost_owning_unit = EXCLUDED.is_cost_owning_unit, retired_at = NULL
       RETURNING id::text AS id
     `)
-    for (const c of u.children ?? []) await upsertUnit(regionId, id, path, c)
+    for (const c of u.children ?? []) await insertUnit(tx, regionId, id, path, c)
   }
 
-  // Scope: SEED_ONLY_REGIONS=emea,north-america,global-it seeds just those (skip regions that are
-  // already set up — e.g. APAC on Dev uses different codes/names than this scaffold, so re-seeding
-  // it would create DUPLICATE cost centres). Unset = all regions (correct for a fresh environment).
+  // Scope: SEED_ONLY_REGIONS=emea,north-america,global-it seeds just those. Unset = all regions.
   const only = (process.env.SEED_ONLY_REGIONS ?? '').split(',').map((s) => s.trim()).filter(Boolean)
   const toSeed = only.length ? ORG.filter((r) => only.includes(r.code)) : ORG
   if (only.length) console.warn(`SEED_ONLY_REGIONS: seeding ${toSeed.map((r) => r.code).join(', ') || '(none matched)'}`)
@@ -145,26 +145,52 @@ async function main(): Promise<void> {
       }
       console.warn(`SEED_ORG_STRUCTURE_IF_OUTDATED: recorded v${applied} < code v${SEED_ORG_STRUCTURE_VERSION} — applying.`)
     }
-    let regions = 0, units = 0
+    let regions = 0, units = 0, skipped = 0
     const count = (us: Unit[]): number => us.reduce((n, u) => n + 1 + count(u.children ?? []), 0)
     for (const r of toSeed) {
-      await db.insert(schema.region).values({ code: r.code, displayName: r.displayName }).onConflictDoNothing()
-      const [{ id: regionId }] = await db.execute<{ id: string }>(sql`SELECT id::text AS id FROM region WHERE code = ${r.code}`)
-      // Ensure the region's 'default' BU — the root the JIT teammate path needs and the
-      // node the tree hangs off (seed-regions plants it at path = region label for the
-      // real regions; this also covers global-it, which seed-regions doesn't). The seed's
-      // units parent UNDER it, so the tree nests like APAC's existing practices-under-default
-      // (OrgTree builds by parent_id), not as sibling roots. Idempotent by (region, code).
-      const regionLabel = label(r.code)
-      const [{ id: defaultId }] = await db.execute<{ id: string }>(sql`
-        INSERT INTO org_unit (region_id, parent_id, path, code, display_name, unit_type, is_cost_owning_unit, source)
-        VALUES (${regionId}::uuid, NULL, ${regionLabel}::ltree, 'default', ${`${r.displayName} (default)`}, 'bu', true, 'seed')
-        ON CONFLICT (region_id, code) DO UPDATE SET retired_at = NULL
-        RETURNING id::text AS id
-      `)
-      for (const u of r.units) await upsertUnit(regionId, defaultId, regionLabel, u)
-      regions++; units += count(r.units)
-      console.warn(`region ready: ${r.displayName} (${r.code}) — ${count(r.units)} units`)
+      // One transaction per region: a run that fails part-way leaves the region as it found
+      // it, so the next run still sees it as fresh instead of skipping the units it missed.
+      const outcome = await db.transaction(async (tx) => {
+        await tx.insert(schema.region).values({ code: r.code, displayName: r.displayName }).onConflictDoNothing()
+        const [{ id: regionId }] = await tx.execute<{ id: string }>(sql`SELECT id::text AS id FROM region WHERE code = ${r.code}`)
+        // Ensure the region's 'default' BU — the root the JIT teammate path needs and the
+        // node the tree hangs off. The seed's units parent UNDER it (OrgTree builds by
+        // parent_id), never as sibling roots. An existing one is never changed.
+        const regionLabel = label(r.code)
+        await tx.execute(sql`
+          INSERT INTO org_unit (region_id, parent_id, path, code, display_name, unit_type, is_cost_owning_unit, source)
+          VALUES (${regionId}::uuid, NULL, ${regionLabel}::ltree, 'default', ${`${r.displayName} (default)`}, 'bu', true, 'seed')
+          ON CONFLICT (region_id, code) DO NOTHING
+        `)
+        const [def] = await tx.execute<{ id: string; path: string; retired: boolean }>(sql`
+          SELECT id::text AS id, path::text AS path, retired_at IS NOT NULL AS retired
+          FROM org_unit WHERE region_id = ${regionId}::uuid AND code = 'default'
+        `)
+        if (def!.retired) return 'default-retired' as const
+        // Any unit, active or retired, other than `default` and the region's system nodes
+        // means set up. A system node is parentless with a code no Admin can type: the
+        // create and edit routes require a code starting with a letter or digit
+        // (ORG_UNIT_CODE_PATTERN), and the holding node's starts with '_'. The seed may not
+        // import the shared constant (boot path), so it matches that shape instead.
+        const [setUp] = await tx.execute<{ id: string }>(sql`
+          SELECT ou.id::text AS id FROM org_unit ou
+          WHERE ou.region_id = ${regionId}::uuid AND ou.id <> ${def!.id}::uuid
+            AND NOT (ou.parent_id IS NULL AND left(ou.code, 1) = '_')
+          LIMIT 1
+        `)
+        if (setUp) return 'set-up' as const
+        for (const u of r.units) await insertUnit(tx, regionId, def!.id, def!.path, u)
+        return 'seeded' as const
+      })
+      if (outcome === 'seeded') {
+        regions++; units += count(r.units)
+        console.warn(`region ready: ${r.displayName} (${r.code}) — ${count(r.units)} units`)
+      } else {
+        skipped++
+        console.warn(outcome === 'set-up'
+          ? `region already set up, left alone: ${r.displayName} (${r.code})`
+          : `region's default unit is retired, left alone: ${r.displayName} (${r.code}) — restore it on the region page first`)
+      }
     }
     // Stamp the applied version so the boot guard no-ops next time. A partial run (SEED_ONLY_REGIONS)
     // is NOT the whole structure, so it must not claim the version — only a full run stamps.
@@ -173,7 +199,7 @@ async function main(): Promise<void> {
         INSERT INTO seed_state (name, version, applied_at) VALUES ('org-structure', ${SEED_ORG_STRUCTURE_VERSION}, now())
         ON CONFLICT (name) DO UPDATE SET version = EXCLUDED.version, applied_at = now()`)
     }
-    console.warn(`Org structure seeded: ${regions} regions, ${units} units (v${SEED_ORG_STRUCTURE_VERSION}). Set region leaders + practice owners next.`)
+    console.warn(`Org structure seeded: ${regions} regions, ${units} units, ${skipped} regions already set up (v${SEED_ORG_STRUCTURE_VERSION}). Set region leaders + practice owners next.`)
   } finally {
     await client.end({ timeout: 5 })
   }

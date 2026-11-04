@@ -13,8 +13,11 @@
  *        carries its own trailing 30/90 window (D28 restored it; the assertion
  *        that it did NOT is inverted, not deleted).
  *  T23 — team share bars sum to 100±rounding; Export CSV is present for a
- *        member; PM sees the budget card and NOTHING else differs from the
- *        member render (project-transparency).
+ *        member; a viewer who may manage the project (its PM, or an admin)
+ *        sees the Manage button instead of Request more budget, and NOTHING
+ *        else differs from the member render (project-transparency).
+ *  #477 — the header actions: which button per role, the waiting count, the
+ *        member's waiting label, the `#manage` deep link and the drawers.
  *
  * Mounting idiom: my-projects-list.test.ts (stub Nuxt auto-import globals,
  * pass-through UI kit, <Suspense>). Presentational leaves (ScopeKpiTile,
@@ -23,7 +26,7 @@
  * of them; only the chart primitives are stubbed.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { defineComponent, ref } from 'vue'
+import { defineComponent, ref, type Ref } from 'vue'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { stubServerClock } from '../../helpers/server-clock'
 import ProjectPage from '../../../app/pages/projects/[code].vue'
@@ -43,7 +46,7 @@ const payload = (over: Payload = {}): Payload => ({
     end_date: null,
     ended: false,
   },
-  viewer: { role: 'member', access: 'member', budget_allocation_id: null },
+  viewer: { role: 'member', access: 'member', budget_allocation_id: null, can_manage: false },
   window: {
     from: '2026-08-01',
     to: '2026-08-31',
@@ -173,8 +176,18 @@ const STUBS = {
   UiBadge: { template: '<span><slot /></span>' },
   UiEyebrow: { template: '<div><slot /></div>' },
   UiEmptyState: true,
+  UiButton: { emits: ['click'], template: '<button @click="$emit(\'click\')"><slot /></button>' },
   NuxtLink: { props: ['to'], template: '<a><slot /></a>' },
   DateRangeControl: { template: '<div data-testid="date-range-control" />' },
+  // Their own behaviour is not this page's contract; their presence is.
+  ManagePanel: {
+    props: ['requestsState', 'tab'],
+    template: '<div data-testid="project-manage" :data-requests-state="requestsState" :data-tab="tab" />',
+  },
+  BudgetRequestCard: {
+    props: ['requestsState'],
+    template: '<div data-testid="budget-request-card" :data-requests-state="requestsState" />',
+  },
   // Chart primitives only — the shared panels mount REAL.
   ChartRankedBar: {
     props: ['rows'],
@@ -195,7 +208,15 @@ const fmtPct = (v: number) => `${Math.round(v * 100)}%`
 const fmtTokens = (v: number) => String(v)
 const fmtTimeAgo = () => 'just now'
 
-async function mountPage(data: Payload) {
+const routerReplace = vi.fn()
+/** The project payload the last mount serves, so a test can play a refresh. */
+let projectPayload: Ref<Payload> | null = null
+
+/** Per-URL fetch results; the project payload answers every URL not listed. */
+type FetchOverrides = Record<string, { data: unknown; error: unknown }>
+
+async function mountPage(data: Payload, overrides: FetchOverrides = {}, hash = '') {
+  projectPayload = null
   // Re-stubbed per mount, not once in beforeEach: one test below calls
   // `vi.unstubAllGlobals()` between its two mounts.
   stubServerClock(TODAY)
@@ -203,7 +224,8 @@ async function mountPage(data: Payload) {
   vi.stubGlobal('fmtPct', fmtPct)
   vi.stubGlobal('fmtTokens', fmtTokens)
   vi.stubGlobal('fmtTimeAgo', fmtTimeAgo)
-  vi.stubGlobal('useRoute', () => ({ params: { code: 'ACME-1' }, query: {} }))
+  vi.stubGlobal('useRoute', () => ({ params: { code: 'ACME-1' }, query: {}, hash }))
+  vi.stubGlobal('useRouter', () => ({ replace: routerReplace }))
   vi.stubGlobal('useSession', () => ({ session: ref({ teammateId: 't1' }), ensure: async () => {} }))
   vi.stubGlobal('useReportState', () => ({
     month: ref<string | null>(null),
@@ -212,7 +234,13 @@ async function mountPage(data: Payload) {
     patch: vi.fn(),
   }))
   vi.stubGlobal('usePersonalLens', () => ref<'usage' | 'chargeback'>('usage'))
-  vi.stubGlobal('useFetch', () => ({ data: ref(data), pending: ref(false), error: ref(null) }))
+  vi.stubGlobal('useFetch', (url: string | (() => string)) => {
+    const u = typeof url === 'function' ? url() : url
+    const hit = Object.entries(overrides).find(([suffix]) => u.endsWith(suffix))?.[1]
+    return hit
+      ? { data: ref(hit.data), pending: ref(false), error: ref(hit.error), refresh: vi.fn() }
+      : { data: (projectPayload ??= ref(data)), pending: ref(false), error: ref(null) }
+  })
   const Parent = defineComponent({
     components: { ProjectPage },
     template: '<Suspense><ProjectPage /></Suspense>',
@@ -460,6 +488,10 @@ describe('/projects/[code] — Top models & retired surfaces (T22, fix 3/D41)', 
 
 // ── T23: team table + project transparency ───────────────────────────────────
 
+const MANAGER = {
+  viewer: { role: 'manager' as const, access: 'member' as const, budget_allocation_id: 'a1', can_manage: true },
+}
+
 function testidSet(w: VueWrapper): Set<string> {
   return new Set(
     w.findAll('[data-testid]').map((n) => n.attributes('data-testid') as string),
@@ -491,7 +523,7 @@ describe('/projects/[code] — team table + transparency (T23)', () => {
   it('a cou-owner observer gets no named rows and no named-row export', async () => {
     const w = await mountPage(
       payload({
-        viewer: { role: 'member', access: 'cou-owner', budget_allocation_id: null },
+        viewer: { role: 'member', access: 'cou-owner', budget_allocation_id: null, can_manage: false },
         team: { members: [], member_count: 2, concentration_top2_share: null },
       }),
     )
@@ -499,25 +531,194 @@ describe('/projects/[code] — team table + transparency (T23)', () => {
     expect(w.find('[data-testid="export-csv-button"]').exists()).toBe(false)
   })
 
-  it('PM sees the member view PLUS the budget card — and NOTHING else differs', async () => {
+  it('a member gets Request more budget; a cou-owner observer does not', async () => {
+    expect((await mountPage(payload())).find('[data-testid="project-request-budget"]').exists()).toBe(true)
+    vi.unstubAllGlobals()
+    const owner = await mountPage(
+      payload({ viewer: { role: 'member', access: 'cou-owner', budget_allocation_id: null, can_manage: false } }),
+    )
+    expect(owner.find('[data-testid="project-request-budget"]').exists()).toBe(false)
+    expect(owner.find('[data-testid="project-manage-open"]').exists()).toBe(false)
+  })
+
+  it('a failed budget-request load reaches the request drawer and the Manage drawer as an error, not as an empty list', async () => {
+    const failedLoad = { '/budget-requests': { data: undefined, error: { statusCode: 500 } } }
+    const member = await mountPage(payload(), failedLoad)
+    await member.find('[data-testid="project-request-budget"]').trigger('click')
+    expect(member.find('[data-testid="budget-request-card"]').attributes('data-requests-state')).toBe('error')
+    vi.unstubAllGlobals()
+    const failed = await mountPage(payload(MANAGER), failedLoad)
+    await failed.find('[data-testid="project-manage-open"]').trigger('click')
+    expect(failed.find('[data-testid="project-manage"]').attributes('data-requests-state')).toBe('error')
+    vi.unstubAllGlobals()
+    const notYet = await mountPage(payload(MANAGER), { '/budget-requests': { data: undefined, error: null } })
+    await notYet.find('[data-testid="project-manage-open"]').trigger('click')
+    expect(notYet.find('[data-testid="project-manage"]').attributes('data-requests-state')).toBe('loading')
+    vi.unstubAllGlobals()
+    const loaded = await mountPage(payload(MANAGER), { '/budget-requests': { data: { mine: [], pending: [] }, error: null } })
+    await loaded.find('[data-testid="project-manage-open"]').trigger('click')
+    expect(loaded.find('[data-testid="project-manage"]').attributes('data-requests-state')).toBe('ready')
+  })
+
+  it('a viewer who may manage gets Manage instead of Request more budget — and NOTHING else differs', async () => {
     const member = await mountPage(payload())
     const memberSet = testidSet(member)
     vi.unstubAllGlobals()
-    const pm = await mountPage(
-      payload({ viewer: { role: 'manager', access: 'member', budget_allocation_id: 'a1' } }),
-    )
+    const pm = await mountPage(payload(MANAGER))
     const pmSet = testidSet(pm)
     const extra = [...pmSet].filter((t) => !memberSet.has(t)).sort()
     const missing = [...memberSet].filter((t) => !pmSet.has(t))
-    expect(extra).toEqual(['pm-budget-card', 'pm-manage-budget'])
-    expect(missing).toEqual([])
+    expect(extra).toEqual(['project-manage-open'])
+    expect(missing).toEqual(['project-request-budget'])
   })
 
-  it('a PM with no baseline gets the signposted hint, not silence', async () => {
+  it('Manage follows can_manage, not the assignment role alone', async () => {
     const w = await mountPage(
-      payload({ viewer: { role: 'manager', access: 'member', budget_allocation_id: null } }),
+      payload({ viewer: { role: 'manager', access: 'member', budget_allocation_id: null, can_manage: false } }),
     )
-    expect(w.find('[data-testid="pm-manage-budget"]').exists()).toBe(false)
-    expect(w.find('[data-testid="pm-no-budget-hint"]').text()).toContain('No active budget period')
+    expect(w.find('[data-testid="project-manage-open"]').exists()).toBe(false)
+    expect(w.find('[data-testid="project-request-budget"]').exists()).toBe(true)
+  })
+})
+
+// ── #477: the header actions and their drawers ───────────────────────────────
+
+const request = (id: string, status: string) => ({
+  id: `9a1e0000-0000-4000-8000-00000000${id}`,
+  project_id: 'p1',
+  requester_teammate_id: '9a1e0000-0000-4000-8000-0000000000f1',
+  requester_display_name: 'Ava',
+  requester_email: 'ava@example.com',
+  amount_usd: '250.00',
+  reason: 'Pairing sessions',
+  status,
+  approved_amount_usd: null,
+  decided_by_display_name: null,
+  decided_at: null,
+  decision_note: null,
+  created_at: '2026-08-09T10:00:00Z',
+})
+/** A drawer is open when it is mounted AND not hidden (bodies stay mounted after close). */
+function shown(w: VueWrapper, testid: string): boolean {
+  const el = w.find(`[data-testid="${testid}"]`)
+  return el.exists() && (el.element as HTMLElement).style.display !== 'none'
+}
+const twoWaiting = { '/budget-requests': { data: { mine: [], pending: [request('0a01', 'pending'), request('0a02', 'pending')], can_decide: true }, error: null } }
+
+describe('/projects/[code] — header actions (#477)', () => {
+  afterEach(() => routerReplace.mockClear())
+
+  it('Manage shows the waiting count, and opens on Budget requests when any wait', async () => {
+    const w = await mountPage(payload(MANAGER), twoWaiting)
+    expect(w.find('[data-testid="project-manage-count"]').text()).toBe('2 budget requests waiting')
+    expect(shown(w, 'project-manage-drawer')).toBe(false)
+    await w.find('[data-testid="project-manage-open"]').trigger('click')
+    const drawer = w.find('[data-testid="project-manage-drawer"]')
+    expect(drawer.find('[role="dialog"]').attributes('aria-modal')).toBe('true')
+    expect(drawer.text()).toContain('Manage this project')
+    expect(drawer.text()).toContain('Acme Platform')
+    expect(w.find('[data-testid="project-manage"]').attributes('data-tab')).toBe('requests')
+  })
+
+  it('no count at zero, while loading or after a failed load, and Manage opens on Budget', async () => {
+    const cases: FetchOverrides[] = [
+      { '/budget-requests': { data: { mine: [], pending: [], can_decide: true }, error: null } },
+      { '/budget-requests': { data: undefined, error: null } },
+      { '/budget-requests': { data: undefined, error: { statusCode: 500 } } },
+    ]
+    for (const c of cases) {
+      vi.unstubAllGlobals()
+      const w = await mountPage(payload(MANAGER), c)
+      expect(w.find('[data-testid="project-manage-count"]').exists()).toBe(false)
+      await w.find('[data-testid="project-manage-open"]').trigger('click')
+      expect(w.find('[data-testid="project-manage"]').attributes('data-tab')).toBe('budget')
+    }
+  })
+
+  it('a member with a request waiting sees it on the button, which still opens the drawer', async () => {
+    const mine = { '/budget-requests': { data: { mine: [request('0b01', 'pending'), request('0b02', 'approved')], pending: null, can_decide: false }, error: null } }
+    const w = await mountPage(payload(), mine)
+    const btn = w.find('[data-testid="project-request-budget"]')
+    expect(btn.text()).toBe('1 request waiting')
+    await btn.trigger('click')
+    expect(w.find('[data-testid="project-request-drawer"]').text()).toContain('Request more budget')
+    expect(w.find('[data-testid="budget-request-card"]').exists()).toBe(true)
+    await w.find('[data-testid="project-request-drawer-close"]').trigger('click')
+    expect(shown(w, 'project-request-drawer')).toBe(false)
+  })
+
+  it('without a waiting request the member button reads Request more budget', async () => {
+    const w = await mountPage(payload(), { '/budget-requests': { data: { mine: [request('0c01', 'rejected')], pending: null, can_decide: false }, error: null } })
+    expect(w.find('[data-testid="project-request-budget"]').text()).toBe('Request more budget')
+  })
+
+  it('#manage opens the Manage drawer on Budget requests, and closing drops the hash', async () => {
+    const w = await mountPage(payload(MANAGER), twoWaiting, '#manage')
+    expect(shown(w, 'project-manage-drawer')).toBe(true)
+    expect(w.find('[data-testid="project-manage"]').attributes('data-tab')).toBe('requests')
+    await w.find('[data-testid="project-manage-drawer-close"]').trigger('click')
+    expect(shown(w, 'project-manage-drawer')).toBe(false)
+    expect(routerReplace).toHaveBeenCalledWith({ query: {}, hash: '' })
+  })
+
+  it('#manage opens on Budget requests even with none waiting (the inbox link names that tab)', async () => {
+    const w = await mountPage(payload(MANAGER), { '/budget-requests': { data: { mine: [], pending: [], can_decide: true }, error: null } }, '#manage')
+    expect(w.find('[data-testid="project-manage"]').attributes('data-tab')).toBe('requests')
+  })
+
+  it('#manage only in the browser location (a full page load) still opens Manage on Budget requests (#514)', async () => {
+    window.history.replaceState(null, '', '/projects/ACME-1#manage')
+    try {
+      for (const pending of [[], [request('0d01', 'pending')]]) {
+        vi.unstubAllGlobals()
+        const w = await mountPage(payload(MANAGER), { '/budget-requests': { data: { mine: [], pending, can_decide: true }, error: null } })
+        expect(shown(w, 'project-manage-drawer'), `${pending.length} pending`).toBe(true)
+        expect(w.find('[data-testid="project-manage"]').attributes('data-tab')).toBe('requests')
+        w.unmount()
+      }
+    } finally {
+      window.history.replaceState(null, '', '/')
+    }
+  })
+
+  it('#manage for a viewer who cannot manage opens the page with no drawer', async () => {
+    const w = await mountPage(payload(), {}, '#manage')
+    expect(w.find('[data-testid="project-dashboard"]').exists()).toBe(true)
+    expect(shown(w, 'project-manage-drawer')).toBe(false)
+    expect(shown(w, 'project-request-drawer')).toBe(false)
+  })
+
+  it('a PM who stops managing (a refresh after a role change) loses the open drawer, which does not come back', async () => {
+    const w = await mountPage(payload(MANAGER), twoWaiting)
+    await w.find('[data-testid="project-manage-open"]').trigger('click')
+    expect(shown(w, 'project-manage-drawer')).toBe(true)
+    projectPayload!.value = payload()
+    await flushPromises()
+    expect(shown(w, 'project-manage-drawer')).toBe(false)
+    expect(w.find('[data-testid="project-request-budget"]').exists()).toBe(true)
+    projectPayload!.value = payload(MANAGER)
+    await flushPromises()
+    expect(shown(w, 'project-manage-drawer')).toBe(false)
+  })
+
+  it('a closed drawer keeps its body mounted, so a save still in flight refreshes the page', async () => {
+    const w = await mountPage(payload(MANAGER), twoWaiting)
+    await w.find('[data-testid="project-manage-open"]').trigger('click')
+    await w.find('[data-testid="project-manage-drawer-close"]').trigger('click')
+    expect(shown(w, 'project-manage-drawer')).toBe(false)
+    expect(w.find('[data-testid="project-manage"]').exists()).toBe(true)
+  })
+
+  it('an ended project keeps both buttons', async () => {
+    const ended = { project: { id: 'p1', code: 'ACME-1', display_name: 'Acme Platform', type: 'billable', wbs_code: null, end_date: '2026-08-05T00:00:00Z', ended: true } }
+    expect((await mountPage(payload({ ...ended, ...MANAGER }))).find('[data-testid="project-manage-open"]').exists()).toBe(true)
+    vi.unstubAllGlobals()
+    expect((await mountPage(payload(ended))).find('[data-testid="project-request-budget"]').exists()).toBe(true)
+  })
+
+  it('the bottom cards are gone: nothing renders the drawer bodies until a button is pressed', async () => {
+    const w = await mountPage(payload(MANAGER), twoWaiting)
+    expect(w.find('[data-testid="project-manage"]').exists()).toBe(false)
+    expect(w.find('[data-testid="budget-request-card"]').exists()).toBe(false)
   })
 })

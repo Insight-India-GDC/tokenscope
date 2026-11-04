@@ -5,7 +5,9 @@
  * caller's region, the running build, and feature flags. No secrets are ever
  * surfaced. Editable policy surfaces moved to /admin/policies/*.
  */
+import { computed } from 'vue'
 import { useAdminAccess } from '../../composables/useAdminAccess'
+import { policyNavItemsFor } from '#shared/nav/admin-nav'
 
 definePageMeta({ layout: 'admin', middleware: 'admin' })
 
@@ -36,7 +38,10 @@ interface SettingsResp {
   nodeEnv: string
 }
 
-const { isAdmin } = useAdminAccess()
+const { isAdmin, role } = useAdminAccess()
+// The sidebar's Policies group, filtered to what this role can open, so the
+// two lists cannot drift apart again.
+const policyLinks = computed(() => policyNavItemsFor(role.value))
 
 // Lazy, client-only, null default: docs/design/admin-nav-responsiveness.md D1/D2.
 const { data, error, refresh } = useLazyFetch<SettingsResp | null>('/api/v1/admin/settings', {
@@ -62,11 +67,13 @@ const flagBadge = (v: boolean) =>
     <div class="mb-6 p-4 rounded-lg border border-calm-2 bg-calm-1/40" data-testid="system-policies-links">
       <p class="text-xs font-semibold text-carbon-2 mb-2">Editable settings live under <span class="text-carbon">Policies</span>:</p>
       <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm">
-        <NuxtLink to="/admin/policies/report-access" class="text-brand-harmony hover:underline">Report access</NuxtLink>
-        <NuxtLink to="/admin/policies/detection-thresholds" class="text-brand-harmony hover:underline">Detection thresholds</NuxtLink>
-        <NuxtLink to="/admin/policies/project-lifecycle" class="text-brand-harmony hover:underline">Project lifecycle</NuxtLink>
-        <NuxtLink to="/admin/policies/directory-exclusions" class="text-brand-harmony hover:underline">Directory exclusions</NuxtLink>
-        <NuxtLink to="/admin/rate-cards" class="text-brand-harmony hover:underline">Rate cards</NuxtLink>
+        <NuxtLink
+          v-for="l in policyLinks"
+          :key="l.to"
+          :to="l.to"
+          class="text-brand-harmony hover:underline"
+          :data-testid="`system-policy-link-${l.testid}`"
+        >{{ l.label }}</NuxtLink>
       </div>
     </div>
 

@@ -221,6 +221,7 @@ describe('registry azure-monitor-read — selection cap-hit + recovery threading
       rejectedClaudeSessionId: 0,
       rejectedModel: 0,
       rejectedProjectCodeHash: 0,
+      rejectedActivity: 0,
       rejectedSourceRunId: 0,
       rejectedEmittingEmail: 0,
       rejectedOrganizationId: 0,

@@ -66,70 +66,28 @@ import { randomUUID } from 'node:crypto'
 import { requireRole, requireRegionScope } from '../../../../auth/rbac'
 import { assertSameOrigin } from '../../../../auth/csrf'
 import { withRequestRls } from '../../../../db/request-rls'
-import { placeTeammate, assertCostOwningTarget } from '../../../../db/place-teammate'
-import { isRealUtcDay } from '#shared/schemas/activity'
+import { placeTeammate, assertCostOwningTarget, REHOME_REMOVED_DETAIL } from '../../../../db/place-teammate'
 
 /** Max ids per call — matches the teammates list's max page size. */
 export const BULK_PLACE_MAX = 200
 
-/**
- * The cap when `rehome` is asked for, which is a DIFFERENT operation.
- *
- * A placement-only batch writes one row per teammate. A batch WITH history
- * rewrites six tables for each of them, and the whole batch is one transaction
- * — so 200 people is an unbounded multi-minute write holding locks the entire
- * time. Nothing on the server aborts it (there is no `statement_timeout`
- * anywhere), so the browser gives up while the transaction commits behind it:
- * exactly the Migrate confusion this release exists to end, reproduced on a
- * control that can trigger it far more easily.
- *
- * 50 is a working batch — a team at a time — that stays inside the proxy
- * deadline, and the refusal says what to do instead rather than just saying no.
- */
-export const BULK_REHOME_MAX = 50
-
-const Body = z.object({
-  teammate_ids: z.array(z.string().uuid()).min(1).max(BULK_PLACE_MAX),
-  org_unit_id: z.string().uuid(),
-  /*
-   * Move what these people ALREADY SPENT with them — the whole point of the
-   * bulk door for a mis-placement. Hundreds of people corrected in one call
-   * used to leave every dollar they had spent reporting under the wrong
-   * Business Unit, permanently.
-   *
-   * Absent = placement changes going forward only (the previous behaviour, kept
-   * for any existing caller). Applied per id, inside the same per-id savepoint,
-   * so one teammate's re-home cannot discard the batch.
-   */
-  rehome: z
-    .union([
-      z.object({ from: z.literal('all') }),
-      z.object({ from: z.string().refine(isRealUtcDay, 'not a real calendar day') }),
-    ])
-    .optional(),
-})
-  /*
-   * A batch WITH history is a different animal from a batch without one — see
-   * BULK_REHOME_MAX. Refused at the boundary, before any row is touched, so an
-   * admin gets a sentence they can act on instead of a browser timeout over a
-   * transaction that is still running.
-   */
-  .refine((d) => d.rehome === undefined || d.teammate_ids.length <= BULK_REHOME_MAX, {
-    message: `Moving recorded usage is limited to ${BULK_REHOME_MAX} teammates at a time — rewriting six tables for each of them is a much bigger write than placing them. Place them in smaller batches, or place them all now and bring the history across in batches afterwards.`,
-    path: ['teammate_ids'],
+const Body = z
+  .object({
+    teammate_ids: z.array(z.string().uuid()).min(1).max(BULK_PLACE_MAX),
+    org_unit_id: z.string().uuid(),
+    // Accepted only to be refused: see REHOME_REMOVED_DETAIL.
+    rehome: z.unknown().optional(),
   })
+  .refine((d) => d.rehome === undefined, { message: REHOME_REMOVED_DETAIL })
 
 export interface BulkPlaceOutcome {
   teammate_id: string
   /**
-   * 'history-repaired' — already in the target unit AND `rehome` was asked for,
-   * so the placement did not change but their stranded history moved.
-   *
    * 'noop' — already in the target unit, so nothing was written and nothing was
    * stripped (server/db/place-teammate.ts). Not counted as placed: reporting a
    * write that did not happen is how a re-place looks like progress.
    */
-  status: 'placed' | 'noop' | 'history-repaired' | 'failed'
+  status: 'placed' | 'noop' | 'failed'
   /** Where they were before — lets the caller see a no-op re-place for what it is. */
   previous_org_unit_id?: string
   /** The refusal, verbatim from the shared placement rule. */
@@ -207,7 +165,6 @@ export default defineEventHandler(async (event) => {
             targetPolicy: 'cost-owning-only',
             caller: { teammateId: caller.teammateId },
             batchId,
-            rehome: body.rehome,
             ipAddress: ip,
             userAgent: ua,
           }),
@@ -234,14 +191,6 @@ export default defineEventHandler(async (event) => {
       batch_id: batchId,
       org_unit_id: body.org_unit_id,
       placed: results.filter((r) => r.status === 'placed').length,
-      /*
-       * Counted SEPARATELY from `placed`. These people did not move — they were
-       * already on the target and only their stranded history was repaired, so
-       * folding them into `placed` would report a placement that did not happen
-       * (and, on the estate this exists to fix, would report most of the batch
-       * as moved when nobody did).
-       */
-      historyRepaired: results.filter((r) => r.status === 'history-repaired').length,
       /** Already in the target unit — nothing written, nothing stripped. */
       noop: results.filter((r) => r.status === 'noop').length,
       failed: results.filter((r) => r.status === 'failed').length,

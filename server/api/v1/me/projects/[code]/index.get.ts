@@ -4,8 +4,12 @@
  * alike (PO decision: full project transparency for current members; no role
  * asymmetry).
  *
- * Gate: current project_assignment membership — a non-member is
- * indistinguishable from a missing project (404, the [sid] posture).
+ * Gate: current project_assignment membership (or a cou_owner row), or an admin
+ * in scope of the project's region (platform-admin, or that region's admin):
+ * budget requests on a project with no PM go to those admins, and the queue
+ * they decide from is this page's Manage section. An admin who is not a member
+ * sees aggregates only, like a cou-owner. Anyone else is indistinguishable from
+ * a missing project (404, the [sid] posture).
  *
  * ── ONE WINDOW FOR EVERY FIGURE (W3 D16/D27, r1-H9) ──────────────────────────
  * The endpoint windows on the REPORT vocabulary — `?month=YYYY-MM` XOR
@@ -62,11 +66,13 @@ import { createError, defineEventHandler, getRouterParam, getValidatedQuery } fr
 import { sql as sqlRaw } from 'drizzle-orm'
 import { z } from 'zod'
 import { requireAuth } from '../../../../../auth/rbac'
+import { isProjectAdmin } from '../../../../../auth/project-authority'
 import { withRequestRls } from '../../../../../db/request-rls'
 import {
   fetchAdvisorySpend,
   fetchProjectAllocation,
   fetchProjectVelocity,
+  findProjectForAdmin,
   requireProjectMembership,
 } from '../../../../../usage/consumption'
 import { fetchUntaggedPressure } from '../../../../../usage/project-detail'
@@ -189,7 +195,11 @@ export default defineEventHandler(async (event) => {
   )
 
   return await withRequestRls(event, async (tx) => {
-    const project = await requireProjectMembership(tx, session.teammateId, codeParsed.data)
+    let project = await requireProjectMembership(tx, session.teammateId, codeParsed.data)
+    if (!project) {
+      const asAdmin = await findProjectForAdmin(tx, codeParsed.data)
+      if (asAdmin && isProjectAdmin(session, asAdmin.region_id)) project = asAdmin
+    }
     if (!project) {
       throw createError({
         statusCode: 404,
@@ -203,8 +213,14 @@ export default defineEventHandler(async (event) => {
       })
     }
 
-    // J5: the PM's budget entry point — role from the caller's own assignment;
-    // budget_allocation_id is the currently-effective baseline.
+    // J5: the PM's budget entry point — role from the caller's own assignment.
+    // budget_allocation_id is the pool baseline in effect now: the row the
+    // allocation editor changes and splits. A project can also be budgeted by
+    // top-ups alone (the rows fetchProjectAllocation sums for
+    // `budget.allocation_usd` are baseline AND top-up), so when there is no
+    // baseline budget_topup_allocation_id names its latest top-up, which a
+    // top-up can be added from, and Manage says the budget exists instead of
+    // offering to create one (#513). Neither is set: no budget in effect.
     const viewerRows = await tx.execute<{ role: string }>(sqlRaw`
       SELECT role FROM project_assignment
       WHERE project_id = ${project.id}::uuid
@@ -213,17 +229,23 @@ export default defineEventHandler(async (event) => {
       LIMIT 1
     `)
     const viewerRole = [...viewerRows][0]?.role ?? 'member'
-    const baselineRows = await tx.execute<{ id: string }>(sqlRaw`
-      SELECT id::text AS id FROM allocation
+    const poolRows = await tx.execute<{ id: string; kind: string }>(sqlRaw`
+      SELECT id::text AS id, allocation_kind AS kind FROM allocation
       WHERE scope_type = 'project' AND scope_id = ${project.id}::uuid
-        AND teammate_id IS NULL AND allocation_kind = 'baseline'
+        AND teammate_id IS NULL AND allocation_kind IN ('baseline', 'top-up')
         AND effective @> now()
+      ORDER BY (allocation_kind = 'baseline') DESC, lower(effective) DESC, id
       LIMIT 1
     `)
+    const pool = [...poolRows][0]
     const viewer = {
       role: viewerRole,
       access: project.access,
-      budget_allocation_id: [...baselineRows][0]?.id ?? null,
+      budget_allocation_id: pool?.kind === 'baseline' ? pool.id : null,
+      budget_topup_allocation_id: pool?.kind === 'top-up' ? pool.id : null,
+      // The Manage section (spec §4): the project's current PM, or an admin in
+      // scope. The same two answers the PM routes gate on.
+      can_manage: viewerRole === 'manager' || isProjectAdmin(session, project.region_id),
     }
     const projectBlock = {
       id: project.id,

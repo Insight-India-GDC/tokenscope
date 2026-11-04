@@ -32,7 +32,7 @@ twice.
 | `copilot_overage_allocation` | enterprise · month · cost centre | two partial uniques (allocated + unallocated) | **the distribution** of pooled overage | its magnitude — that comes from the bill |
 | `raw_provider_batch` / `_page` | batch · page | batch owns completion; page has an XOR check on body/duplicate | **the untransformed provider response** | anything read by reporting — nothing reads it yet |
 | `attribution_aggregate` | scope · day · tool · model · token type · query source | — | dashboard rollups | finance — it is derived, not a ledger |
-| `spend_rollup_daily` | full contributor grain incl. point-in-time org context | — | **the durable ledger** surviving raw retention | live figures — it is a rollup |
+| `spend_rollup_daily` | full contributor grain incl. recorded org context | — | **the durable ledger** surviving raw retention | live figures — it is a rollup |
 | `usage_rollup_daily` | day · teammate · region/BU/cost-owning/project · tool · model · provenance · gap reason · activity | COALESCE-sentinel expression uidx — mig 0136:49-61 | **the region-report read path** — a day-grain aggregate of the §A lane: `v_complete_usage` → `usage-rollup` worker (15 min; `usage_rollup_refresh` covers retro mutations) → the region reports, and the SETTLED days of `/api/v1/me/usage` (today always live; a coverage+currency gate falls the whole window back to the view when the rollup cannot be proven current) | any §B figure — the bill lane is never rollup-fed; nor a second §A definition — the view defines the lane, this lags it by ≤ the cadence |
 | `reporting_snapshot` | month | `period_month` (first-of-month CHECK) | **what a month read when it was reported**, and by whom | any live figure — it is a record, not the source |
 
@@ -86,16 +86,14 @@ never enters them.
 | 5 | `placement-store.ts` owed-bill replay | INSERT … ON CONFLICT DO UPDATE | `:377` |
 | 6 | `governance-key-backfill.ts` | 3 × UPDATE | `:75`, `:92`, `:188` |
 | 7 | `governance/recompute.ts` | UPDATE (verdict) | `:190` |
-| 8 | `governance/rehome-placement.ts` | UPDATE (admin placement correction; `dimension_source = 'admin-correction'`) | `:238` |
 
-### `attribution_record` — six writers
+### `attribution_record` — five writers
 
 | writer | op | cite |
 |---|---|---|
 | `azure-monitor-reader.ts` (the joiner) | INSERT … ON CONFLICT DO NOTHING | `:1554`, `:1561` |
 | `azure-monitor-reader.ts` (the joiner, replay) | UPDATE `emitting_email`/`emitting_org_id`/`billing_lane` when still unset — bumps `ts_recorded` | `:682-687` |
-| `governance/rehome-placement.ts` | UPDATE `org_unit_id` (admin placement correction) — bumps `ts_recorded` | `:191-196` |
-| `governance/rehome-spend.ts` | UPDATE `cost_owning_unit_id` (admin spend re-home) — bumps `ts_recorded` | `:325-328` |
+| `governance/rehome-spend.ts` | UPDATE the project's `cost_owning_unit_id` (Migrate) — bumps `ts_recorded` | `:325-328` |
 | `tag-session.ts` | UPDATE `project_id`/`cost_owning_unit_id`, `activity` — bumps `ts_recorded` | `:188`, `:200` |
 | `confirm-instance.ts` | UPDATE identity + dimensions — bumps `ts_recorded` | `:289-303` |
 
@@ -456,7 +454,7 @@ keep the guarded prune for revised-away rows (0118:104-131; rationale in
 `target-state-data-architecture.md` §6 — delete-and-replace would re-home every
 row to current placement).
 Delete-and-insert remains correct only where the set is owned wholesale under
-one lock and point-in-time homing is not carried on the row —
+one lock and recorded placement is not carried on the row —
 `copilot_pool_bill`, and the `unaccounted_usage_model` children above (whose
 dimensions all come from the parent).
 
@@ -495,14 +493,21 @@ first gap so archival stays contiguous from the oldest month.
 
 ## 8. Where the same fact lives more than once
 
-Denormalisation on this path is deliberate — point-in-time org context must
-survive a reorg — but it means several tables hold the same fact and **only one
-copy wins** for any given question. This table says which.
+Several tables hold the same fact, and **only one copy wins** for any given
+question. This section says which.
 
 ### Org placement — the most duplicated fact in the system
 
 `region_id`, `org_unit_id` and `cost_owning_unit_id` are stored on **seven**
-tables plus the live `teammate` row.
+tables plus the live `teammate` row. **For every report, the live `teammate` row
+wins**: reports group and scope by where the person sits now, through the
+current-placement views (mig 0162; see
+[Reporting](Reporting.md#placement-reports-follow-where-people-sit-now)). The
+copies on usage rows are each row's *recorded placement*: written once, edited by
+nothing, read by no report. The exceptions are the project's Business Unit (arm 1
+below, and `spend_rollup_daily.cost_owning_unit_id`), which is the project's axis
+and is what Business Unit pages use for tagged usage, and `copilot_pool_bill`,
+whose unit is the GitHub org's.
 
 | holder | stamped from | refreshed on rewrite? |
 |---|---|---|
@@ -512,10 +517,10 @@ tables plus the live `teammate` row.
 | `reconciliation_record` | teammate at insert | no |
 | `unaccounted_usage` | teammate at first write | **no** — placement omitted from the `ON CONFLICT SET` list |
 | `over_emission` | teammate at first write | **no** — placement is not in its `SET` list |
-| `spend_rollup_daily` | copied from `attribution_record` | no — the durable point-in-time record |
+| `spend_rollup_daily` | copied from `attribution_record` | no — the durable recorded placement |
 | `copilot_pool_bill` | `provider_org.cost_owning_unit_id` | rewritten with the month |
 
-> ### Placement is frozen at first write
+> ### Recorded placement is written once
 >
 > `actual_spend`, `unaccounted_usage` and `over_emission` stamp placement on
 > first write and leave it alone. Money still refreshes; only the dimensions
@@ -523,8 +528,8 @@ tables plus the live `teammate` row.
 > mutation-proven.
 >
 > **Older `unaccounted_usage` and `over_emission` rows can carry the placement
-> of their last recompute instead.** Nothing repairs them automatically; an
-> admin placement correction moves them deliberately.
+> of their last recompute instead.** Nothing repairs them, and nothing needs to:
+> no report reads them.
 
 **Which copy wins.** `v_teammate_usage_daily` resolves a (teammate, day, tool)
 that spans more than one source by taking
@@ -532,8 +537,9 @@ that spans more than one source by taking
 already-frozen snapshot** (`0101:148-151`). So the winner is decided by write
 recency, not by which placement is more correct.
 
-Rows predating mig 0101 carry `dimension_source='legacy-current-placement'`: no
-point-in-time evidence exists for them and none can be reconstructed.
+Rows predating mig 0101 carry `dimension_source='legacy-current-placement'`: their
+recorded placement is the placement at migration time, not where the person sat.
+Rows an admin corrected before the current-org lens carry `admin-correction`.
 
 > **The three arms carry three DIFFERENT cost-owning units — check which you
 > are reading.**
@@ -542,7 +548,7 @@ point-in-time evidence exists for them and none can be reconstructed.
 > |---|---|---|
 > | 1 `otel-emitted` | the **project's** CoU (`ar.cost_owning_unit_id`, `0113:32`) | resolved per event from the membership-gated project; NULL when unallocated or spilled |
 > | 2 `api-reconciled` | **always `NULL::uuid`** (`0113:52-61`) | `unaccounted_usage` has no such column |
-> | 3 `provider-usage` | the **provider snapshot's** CoU (`0113:71-80`) | via `v_teammate_usage_daily` — and that view has **two branches**, see below |
+> | 3 `provider-usage` | the **provider snapshot's** CoU (`0113:71-80`) — the current-placement views replace it with the person's current Business Unit | via `v_teammate_usage_daily` — and that view has **two branches**, see below |
 >
 > Arm 3's provenance splits by tool, because `v_teammate_usage_daily` unions two
 > sources and the ingest-only set spans both:
@@ -551,8 +557,10 @@ point-in-time evidence exists for them and none can be reconstructed.
 > - **`copilot-agent`** takes `reconciliation_record.cost_owning_unit_id`, picked
 >   by `(array_agg(… ORDER BY computed_at DESC))[1]` (`0101:172-175`)
 >
-> Both are point-in-time by design — the view's own comment states the snapshot
-> exists "so `v_complete_usage`'s ingest-only arm homes AS AT THE USAGE DATE".
+> Both are the recorded placement. `v_complete_usage` keeps them;
+> `v_complete_usage_current`, which every report reads, swaps arm 3's for the
+> person's current Business Unit and leaves arm 1's project unit and arm 2's NULL
+> as they are.
 >
 > Arm 2's NULL holds **even after a developer tags the record to a project**. A
 > consumer of the cost-owning unit must not fill that gap by joining back to `actual_spend`:

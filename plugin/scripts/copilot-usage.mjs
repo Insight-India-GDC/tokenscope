@@ -26,6 +26,8 @@ import {
   resolveGithubOrg,
   resolveProjectCodeHash,
 } from './copilot-emit.mjs'
+import { findFolderActivity } from './tokenscope-project.mjs'
+import { recordLastSession } from './copilot-session.mjs'
 
 export const EMITTER = 'extension'
 export const SPOOL_DIRNAME = 'copilot-usage-spool'
@@ -260,7 +262,7 @@ export function readUsageDrift(stateDir = TOKENSCOPE_DIR, now = Date.now()) {
  * Durable spool: every record is appended (0600) BEFORE any send, so a crash, an
  * offline laptop or a killed process loses nothing; the next session adopts files
  * whose writer's heartbeat is stale. One entry = { r: record, h: codeHash|null,
- * o: org|null, s: surface }.
+ * o: org|null, a: folder activity|null, s: surface }.
  */
 export function createSpool({ stateDir = TOKENSCOPE_DIR, sessionId, writerId = WRITER_ID, now = Date.now } = {}) {
   const dir = join(stateDir, SPOOL_DIRNAME)
@@ -345,7 +347,10 @@ export function createSpool({ stateDir = TOKENSCOPE_DIR, sessionId, writerId = W
   }
 }
 
-const groupKey = (e, surface) => `${e.h ?? ''}\u0000${e.o ?? ''}\u0000${e.s ?? surface}`
+/** The `session.id` attribute of a spooled log record, or null. */
+const recordSession = (r) => (r?.attributes ?? []).find((a) => a?.key === 'session.id')?.value?.stringValue ?? null
+
+const groupKey = (e, surface) => `${e.h ?? ''}\u0000${e.o ?? ''}\u0000${e.s ?? surface}\u0000${e.a ?? ''}`
 
 /**
  * Build one encoded OTLP request per (codeHash, org, surface) group. The surface is
@@ -369,7 +374,8 @@ export function buildBatches(entries, instanceId, { surface = 'cli' } = {}) {
         slice.map((e) => e.r),
         instanceId,
         slice[0].h,
-        { githubOrg: slice[0].o },
+        // #475: the folder's default activity, spooled with the record (`a`).
+        { githubOrg: slice[0].o, activity: slice[0].a ?? null },
       )
       payload.resourceLogs[0].resource.attributes.push(
         KV('tokenscope.emitter', EMITTER),
@@ -398,6 +404,8 @@ export function createUsageEmitter(opts = {}) {
   const mint = opts.mint ?? mintBearer
   const resolveHash = opts.resolveProjectCodeHash ?? ((cwd) => resolveProjectCodeHash(null, { cwd }))
   const resolveOrg = opts.resolveGithubOrg ?? ((cwd) => resolveGithubOrg({ cwd }))
+  const resolveActivity = opts.resolveFolderActivity ?? ((cwd) => findFolderActivity(cwd))
+  const noteSession = opts.recordLastSession ?? ((id, dir) => recordLastSession(id, dir, stateDir))
   const debounceMs = opts.debounceMs ?? 5_000
   const retryMaxMs = opts.retryMaxMs ?? 5 * 60_000
   const heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_MS
@@ -422,13 +430,13 @@ export function createUsageEmitter(opts = {}) {
   let lastCheckpointNano = null
   let recordedNanoSinceCheckpoint = 0
 
-  const stamps = () => (stamp ??= { h: resolveHash(cwd) ?? null, o: resolveOrg(cwd) ?? null })
+  const stamps = () => (stamp ??= { h: resolveHash(cwd) ?? null, o: resolveOrg(cwd) ?? null, a: resolveActivity(cwd) ?? null })
 
   // Not enrolled → nothing is captured, same as the forwarder (and nothing accrues unbounded).
   function persist(records) {
     if (!records.length || !sessionId || !provisioned()) return
-    const { h, o } = stamps()
-    const entries = records.map((r) => ({ r, h, o, s: surface }))
+    const { h, o, a } = stamps()
+    const entries = records.map((r) => ({ r, h, o, a, s: surface }))
     if (mode === 'shadow') {
       const dir = join(stateDir, SHADOW_DIRNAME)
       ensureDir(dir)
@@ -565,6 +573,7 @@ export function createUsageEmitter(opts = {}) {
     startHeartbeat()
     const cfg = load()
     let sent = 0
+    let ownSent = false
     let kept = 0
     for (const path of spool.claim()) {
       let read
@@ -592,8 +601,12 @@ export function createUsageEmitter(opts = {}) {
             mint,
             post,
           )
-          if (res.status >= 200 && res.status < 300) sent += batch.entries.length
-          else {
+          if (res.status >= 200 && res.status < 300) {
+            sent += batch.entries.length
+            // Adopted leftovers belong to other sessions: only a batch that
+            // carries THIS session's own records proves TokenScope has it.
+            if (!ownSent && batch.entries.some((e) => recordSession(e.r) === sessionId)) ownSent = true
+          } else {
             log(`post rejected: HTTP ${res.status}`)
             failed.push(...batch.entries)
           }
@@ -605,6 +618,8 @@ export function createUsageEmitter(opts = {}) {
       kept += failed.length
       spool.retain(path, failed)
     }
+    // #475: this session just sent its own usage from this folder (copilot-session.mjs).
+    if (ownSent && sessionId) noteSession(sessionId, cwd)
     return { sent, kept }
   }
 

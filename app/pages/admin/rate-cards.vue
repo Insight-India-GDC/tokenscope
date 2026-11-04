@@ -293,7 +293,7 @@ async function createCard() {
     <UiPageHead
       eyebrow="Administration"
       title="Rate cards"
-      sub="Provider pricing the joiner costs spend from — per scope, region tier, and effective period. Cards are never edited or deleted: create a new card, retire a wrong one."
+      sub="Provider pricing that usage is costed from — per scope, region tier, and effective period. Cards are never edited or deleted: create a new card, retire a wrong one."
     >
       <template #actions>
         <UiButton kind="primary" size="sm" data-testid="rate-card-new" @click="showCreate = true">
@@ -308,7 +308,7 @@ async function createCard() {
       class="mb-4 p-3 rounded-md text-sm font-medium"
       :class="toast.kind === 'ok'
         ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30'
-        : 'bg-brand-hunger/10 text-brand-hunger border border-brand-hunger/30'"
+        : 'bg-brand-hunger/10 text-brand-heart border border-brand-hunger/30'"
     >
       {{ toast.message }}
     </div>
@@ -375,7 +375,7 @@ async function createCard() {
               <span
                 v-else-if="!asCard(row).retired_at"
                 class="text-[11px] text-carbon-3 italic cursor-help"
-                title="Global rate cards can only be retired by a platform-admin."
+                title="Global rate cards can only be retired by an Admin."
                 :data-testid="`rate-card-readonly-${asCard(row).id}`"
               >
                 read-only
@@ -421,7 +421,7 @@ async function createCard() {
                 type="text"
                 list="rc-scope-key-options"
                 placeholder="anthropic:claude-code"
-                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
                 data-testid="rc-scope-key"
               >
               <datalist id="rc-scope-key-options">
@@ -434,7 +434,7 @@ async function createCard() {
                 id="rc-region"
                 v-model="newRegionId"
                 :disabled="!isOrgWide || !regionsData"
-                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none disabled:bg-calm/30"
+                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony disabled:bg-calm/30"
                 data-testid="rc-region"
               >
                 <option v-if="isOrgWide" value="">Global (all regions)</option>
@@ -447,7 +447,7 @@ async function createCard() {
                 @retry="refreshRegions"
               />
               <p v-if="!isOrgWide" class="text-[11px] text-carbon-3 mt-1">
-                Region admins create cards for their own region. Global cards need platform-admin.
+                Region admins create cards for their own region. Global cards need an Admin.
               </p>
             </div>
             <div>
@@ -456,7 +456,7 @@ async function createCard() {
                 id="rc-from"
                 v-model="newFrom"
                 type="date"
-                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
                 data-testid="rc-from"
               >
             </div>
@@ -466,7 +466,7 @@ async function createCard() {
                 id="rc-to"
                 v-model="newTo"
                 type="date"
-                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
                 data-testid="rc-to"
               >
             </div>
@@ -475,7 +475,7 @@ async function createCard() {
               <select
                 id="rc-basis"
                 v-model="newBasis"
-                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
                 data-testid="rc-basis"
               >
                 <option value="list">list</option>
@@ -491,7 +491,7 @@ async function createCard() {
                 type="text"
                 maxlength="200"
                 placeholder="e.g. FY27 negotiated pricing"
-                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+                class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
                 data-testid="rc-note"
               >
             </div>
@@ -525,7 +525,7 @@ async function createCard() {
                 v-model="line.unit"
                 type="text"
                 placeholder="input"
-                class="px-2 py-1.5 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+                class="px-2 py-1.5 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
                 :data-testid="`rc-line-unit-${i}`"
                 @input="linesTouched = true"
               >
@@ -534,7 +534,7 @@ async function createCard() {
                 type="text"
                 inputmode="numeric"
                 placeholder="1000000"
-                class="px-2 py-1.5 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+                class="px-2 py-1.5 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
                 :data-testid="`rc-line-qty-${i}`"
                 @input="linesTouched = true"
               >
@@ -543,7 +543,7 @@ async function createCard() {
                 type="text"
                 inputmode="decimal"
                 placeholder="3.00"
-                class="px-2 py-1.5 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+                class="px-2 py-1.5 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
                 :data-testid="`rc-line-cost-${i}`"
                 @input="linesTouched = true"
               >
@@ -551,7 +551,7 @@ async function createCard() {
                 v-model="line.model"
                 type="text"
                 placeholder="any model"
-                class="px-2 py-1.5 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+                class="px-2 py-1.5 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
                 :data-testid="`rc-line-model-${i}`"
                 @input="linesTouched = true"
               >

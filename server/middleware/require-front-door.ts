@@ -1,37 +1,38 @@
 /*
  * require-front-door — Azure Front Door header enforcement.
  *
- * Why this exists: TokenScope sits behind Azure Front Door Standard.
- * Standard SKU CANNOT VNet-integrate with Container Apps, so the
- * container-app ingress STAYS public (external: true). Protection is
- * via header check — AFD injects an `X-Azure-FDID` header containing
- * the AFD instance ID, and this middleware rejects any request that
- * either lacks the header or carries the wrong value.
+ * AFD injects an `X-Azure-FDID` header carrying its instance ID, and this
+ * middleware rejects any request that lacks it or carries another value.
  *
- * Without this middleware, an attacker who learns the
- * *.azurecontainerapps.io FQDN can bypass the AFD WAF entirely. AFD
- * advertises the CA FQDN in the Origin host-header, so the FQDN is not
- * a secret — header enforcement is the actual control.
+ * WHAT IT IS WORTH DEPENDS ON THE POSTURE:
+ *   - VNet + Front Door Premium over Private Link: the environment is
+ *     internal, so only Front Door's private endpoint reaches the app. The
+ *     network is the boundary; this check is defence in depth.
+ *   - Public ingress + Front Door Standard (the sandbox example): the app's
+ *     own address stays public and this check is the ONLY thing keeping
+ *     callers on Front Door. It is not a network boundary. The FDID is not a
+ *     secret (it is in deployment outputs, workflow inputs and parameter
+ *     files), so a direct caller who has it skips the WAF, and also chooses
+ *     the X-Azure-SocketIP the rate limiter and the OAuth registration ceiling
+ *     key on. App authentication still applies to every route. Accepted for an
+ *     example deployment; production uses the VNet posture.
  *
- * Three-phase deploy (see docs/development/sandbox-setup.md):
- *   Phase 1: AZURE_FRONT_DOOR_ID unset/empty. Middleware is a no-op;
- *            container app reachable directly. Initial provisioning.
- *   Phase 2: AFD provisioned but env var still empty (deploy hasn't
- *            rolled the new revision yet). Middleware still no-op.
- *   Phase 3: AZURE_FRONT_DOOR_ID populated. Middleware enforces;
- *            direct-to-CA hits return 403; AFD-fronted hits succeed.
+ * Three-apply rollout (docs/DEPLOY-AZURE.md §Front Door):
+ *   Apply 1: no Front Door. AZURE_FRONT_DOOR_ID empty; no-op.
+ *   Apply 2: Front Door created, AZURE_FRONT_DOOR_ID still empty; still a
+ *            no-op, so on public ingress the app is reachable directly and
+ *            the WAF can be walked around until apply 3.
+ *   Apply 3: frontDoorId set. Middleware enforces; direct hits get 403.
  *
  * The env var rather than a hard-coded value lets the same image deploy
  * to sandbox / staging / production with each env's own AFD instance.
  *
- * AZURE_FRONT_DOOR_REQUIRED (code half only — inert until an operator/UF-4
- * wires it): when `'true'` AND `AZURE_FRONT_DOOR_ID` is still empty, the
- * middleware REFUSES every request except EXCLUDED_PATHS instead of
- * no-op'ing. This exists so an operator can close the phase-1/2 window
- * explicitly (no AFD id yet, but direct access must not be allowed) without
- * this middleware ever trying to INFER "this looks like production" on its
- * own. Unset REQUIRED preserves the exact three-phase no-op above — do not
- * remove that no-op, `UF-4` depends on it during initial provisioning.
+ * AZURE_FRONT_DOOR_REQUIRED: when `'true'` AND `AZURE_FRONT_DOOR_ID` is
+ * still empty, the middleware REFUSES every request except EXCLUDED_PATHS
+ * instead of no-op'ing. No template sets it: an operator would have to set it
+ * on the revision by hand, and the next apply's env list drops it. It would
+ * also 403 Front Door itself until apply 3. Unset, the no-op above holds — do
+ * not remove that no-op, initial provisioning depends on it.
  *
  * Excluded paths (allowed to bypass the check):
  *   - /api/health — Container Apps' internal LB calls this directly
@@ -40,11 +41,8 @@
  *     the bypass.
  *
  * Note on logging: we log the request path and a coarse signal of
- * whether the header was present, but NOT the expected/received ID.
- * The AFD instance ID isn't a high-value secret — it's discoverable
- * via DNS reconnaissance of the *.azurefd.net hostname — but the
- * convention across this codebase is "don't log known-good values"
- * (mirrors the HMAC-key handling).
+ * whether the header was present, but NOT the expected/received ID,
+ * following the codebase convention "don't log known-good values".
  *
  * RFC-9457 error shape: matches validate-session.ts + the rest of the
  * codebase. type/title/status/detail under `data`.
@@ -100,13 +98,8 @@ export default defineEventHandler((event) => {
   const expected = process.env.AZURE_FRONT_DOOR_ID
   const required = process.env.AZURE_FRONT_DOOR_REQUIRED === 'true'
 
-  // Empty env var = pre-AFD deploy phase (1 + 2 of the three-phase
-  // rollout). The container app is reachable directly and the
-  // middleware is a deliberate no-op until the operator wires the
-  // instance ID via the workflow's `frontDoorId` input — UNLESS
-  // AZURE_FRONT_DOOR_REQUIRED='true' has been explicitly set, in which
-  // case the operator has said "no direct access, ever" even before the
-  // ID is wired.
+  // Empty env var = applies 1 and 2 of the rollout, or no Front Door at
+  // all. A deliberate no-op unless AZURE_FRONT_DOOR_REQUIRED='true'.
   if (!expected || expected.length === 0) {
     if (!required) return
     const path = routedPath(event)
@@ -119,10 +112,8 @@ export default defineEventHandler((event) => {
 
   const received = getHeader(event, FRONT_DOOR_HEADER)
 
-  // Header present AND matches → allow. Constant-time comparison isn't
-  // needed here: the AFD instance ID isn't a secret (it's discoverable),
-  // and there is no timing-attack surface — the attacker either knows
-  // the ID (allowed) or doesn't (denied).
+  // Header present AND matches → allow. Plain equality: the AFD instance ID
+  // is not a secret, so there is nothing for a timing attack to recover.
   if (typeof received === 'string' && received === expected) return
 
   reject(path, typeof received === 'string')

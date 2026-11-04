@@ -10,8 +10,8 @@
  * the two regions differ from each other and from the company in ALL FIVE figures.
  * A wrong denominator is then a wrong NUMBER rather than a wrong shape: a dropped
  * clamp, a swallowed arm, a budget predicate that ignores the window or the scope
- * axis, a $0 allocation admitted as a budget, a per-developer cap dismissed as not
- * a budget, or a fanned-out allocation join each land on a value no other bucket
+ * axis, a $0 allocation admitted as a budget, a per-developer cap counted as a
+ * budget of its own, or a fanned-out allocation join each land on a value no other bucket
  * carries.
  *
  * The identity under test is that the four parts PARTITION the surface's own
@@ -101,9 +101,10 @@ interface CoverageResp {
  *                       37.00  arm 2, tagged to A-FUNDED (the reconciled money that
  *                              dominates at today's adoption)
  *                       50.00  arm 1, tagged to A-TOPUP (a TOP-UP is budget too)
- *                       31.00  arm 1, tagged to A-PERDEV (its ONLY project allocation
- *                              is a per-developer cap — a per-dev cap IS budget)
- *   taggedNoBudget      64.00  arm 1, tagged to A-BARE (no PROJECT allocation ever — it
+ *   taggedNoBudget      31.00  arm 1, tagged to A-PERDEV (its ONLY project allocation
+ *                              is a per-developer cap with no pool — a cap divides a
+ *                              pool, it is not a budget of its own)
+ *                       64.00  arm 1, tagged to A-BARE (no PROJECT allocation ever — it
  *                              carries a REGION-scoped row whose scope_id is A-BARE's
  *                              own uuid, which must not fund it)
  *                       23.00  arm 1, tagged to A-LAPSED (allocation ended before March)
@@ -113,7 +114,7 @@ interface CoverageResp {
  *                        6.00  arm 2, no project claim
  *   untaggable           9.00  arm 3 (claude-ai) — no project axis by construction
  *   ─────────────────────────
- *   total              364.00 = 238 budgeted + 100 taggedNoBudget + 17 untagged + 9 untaggable
+ *   total              364.00 = 207 budgeted + 131 taggedNoBudget + 17 untagged + 9 untaggable
  *
  *   Plus two rows JUST OUTSIDE the window — 999.00 on the last day of February and
  *   777.00 on the first day of April — so a window that slips by a day at either
@@ -143,7 +144,7 @@ interface CoverageResp {
  *
  * Whole company       1014.00 = 808 budgeted + 170 taggedNoBudget + 25 untagged + 11 untaggable
  */
-const A = { totalUsd: 364, budgetedUsd: 238, taggedNoBudgetUsd: 100, untaggedUsd: 17, untaggableUsd: 9 }
+const A = { totalUsd: 364, budgetedUsd: 207, taggedNoBudgetUsd: 131, untaggedUsd: 17, untaggableUsd: 9 }
 const B = { totalUsd: 545, budgetedUsd: 500, taggedNoBudgetUsd: 40, untaggedUsd: 3, untaggableUsd: 2 }
 const C = { totalUsd: 105, budgetedUsd: 70, taggedNoBudgetUsd: 30, untaggedUsd: 5, untaggableUsd: 0 }
 const C_PLAT = { totalUsd: 75, budgetedUsd: 70, taggedNoBudgetUsd: 0, untaggedUsd: 5, untaggableUsd: 0 }
@@ -151,8 +152,8 @@ const C_SALES = { totalUsd: 30, budgetedUsd: 0, taggedNoBudgetUsd: 30, untaggedU
 const NOTHING = { totalUsd: 0, budgetedUsd: 0, taggedNoBudgetUsd: 0, untaggedUsd: 0, untaggableUsd: 0 }
 const COMPANY = {
   totalUsd: 1014,
-  budgetedUsd: 808,
-  taggedNoBudgetUsd: 170,
+  budgetedUsd: 777,
+  taggedNoBudgetUsd: 201,
   untaggedUsd: 25,
   untaggableUsd: 11,
 }
@@ -303,17 +304,16 @@ beforeAll(async () => {
   // A-BARE / B-BARE deliberately have no PROJECT allocation row at all.
 
   // ── per-developer caps (mig 0008) ──────────────────────────────────────────
-  // A project-scoped allocation row carrying a teammate_id. Under
-  // allocation_mode='per_dev_fixed' this IS the project's budget; the pool baseline
-  // is the same row shape with teammate_id NULL.
+  // A project-scoped allocation row carrying a teammate_id: one member's share of
+  // the pool (teammate_id NULL) whose period it shares. The pool is the budget.
   const capPerDev = async (project: string, teammate: string, usd: number, lo: string, hi: string) => {
     await t.client`INSERT INTO allocation (scope_type, scope_id, teammate_id, budget_usd, effective, allocation_kind, audit_event_id)
       VALUES ('project', ${project}::uuid, ${teammate}::uuid, ${usd},
               tstzrange(${lo}::timestamptz, ${hi}::timestamptz, '[)'), 'baseline', ${auditId}::uuid)`
   }
-  // A-PERDEV's ONLY project allocation is a per-dev cap — no pool row at all. It is
-  // the sole reason its $31 is covered, so `teammate_id IS NULL` in the CTE moves
-  // that $31 and nothing else.
+  // A-PERDEV's ONLY project allocation is a per-dev cap — no pool row at all (a
+  // stranded cap). Counting caps would make it the sole reason its $31 is covered,
+  // so dropping `teammate_id IS NULL` from the CTE moves that $31 and nothing else.
   await capPerDev(aPerdev, alice, 300, '2026-03-01', '2026-04-01')
   // A THIRD row on A-FUNDED, on top of its baseline + top-up: the shape split.post.ts
   // actually writes (a cap sharing the pool's exact effective range). It must be
@@ -503,22 +503,20 @@ describe('what counts as inside the budget lens', () => {
     expect(cents(c.budgetedUsd)).not.toBe(cents(A.budgetedUsd + 23))
   })
 
-  it('a PER-DEVELOPER cap is budget: a project funded only by caps is inside it ($31)', async () => {
+  it('a PER-DEVELOPER cap is not budget on its own: a cap with no pool is outside it ($31)', async () => {
     /*
-     * DECIDED (usage-coverage.ts): `teammate_id` is deliberately unfiltered in the
-     * budgeted_project CTE. Under allocation_mode='per_dev_fixed' the per-dev caps
-     * ARE the project's budget (mig 0008 models them as project-scoped rows carrying
-     * a teammate_id, the pool baseline being the same shape with teammate_id NULL).
-     * Adding `AND al.teammate_id IS NULL` would report a per-dev-funded project as
-     * unbudgeted — the same error a baseline-only predicate makes about a top-up.
+     * DECIDED (usage-coverage.ts): the budgeted_project CTE reads pool rows only
+     * (`teammate_id IS NULL`). A per-dev cap is one member's share of a pool and
+     * shares its period, so a project with caps already has the pool that covers
+     * it; a cap with no pool behind it is a stranded row, not a budget.
      *
-     * A-PERDEV has NO pool row, so this $31 is the whole of what that filter would
-     * move, and `-31` / `+31` are figures no other reading of this fixture produces.
+     * A-PERDEV has ONLY a cap, so this $31 is the whole of what the filter moves,
+     * and `+31` / `-31` are figures no other reading of this fixture produces.
      */
     const c = await coverageA()
     expect(cents(c.budgetedUsd)).toBe(cents(A.budgetedUsd))
-    expect(cents(c.budgetedUsd)).not.toBe(cents(A.budgetedUsd - 31)) // per-dev rows filtered out
-    expect(cents(c.taggedNoBudgetUsd)).not.toBe(cents(A.taggedNoBudgetUsd + 31))
+    expect(cents(c.budgetedUsd)).not.toBe(cents(A.budgetedUsd + 31)) // per-dev rows counted
+    expect(cents(c.taggedNoBudgetUsd)).not.toBe(cents(A.taggedNoBudgetUsd - 31))
   })
 
   it('a project with a baseline AND a top-up AND a per-dev cap is counted ONCE', async () => {

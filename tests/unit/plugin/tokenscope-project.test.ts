@@ -7,9 +7,9 @@
  *   - computeCodeHash                         (sha256 hex == server)
  *   - resolveRepoProjectCode                  (arg or committed file → code)
  *
- * Also guards the LATENT FORMAT-DRIFT bug (P0-1 precondition): a BARE one-line
- * `.tokenscope` parses to NO project.code, so resolveRepoProjectCode throws — the
- * exact behaviour the project skill's YAML rewrite is required to avoid.
+ * A BARE one-line `.tokenscope` (what the MCP `project` prompt used to write) is read as
+ * the code since #485: repos tagged that way had been silently untagged. It gets
+ * the same SAFE_PROJECT_CODE check as the YAML form.
  *
  * Cross-module identity: re-exports through tokenscope-reader.mjs and tag-repo.mjs
  * MUST resolve to the SAME functions (no accidental duplication after extraction).
@@ -30,6 +30,7 @@ import * as reader from '../../../plugin/scripts/tokenscope-reader.mjs'
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
 import * as tagRepo from '../../../plugin/scripts/tag-repo.mjs'
+import { SKILL_PROJECT } from '../../../server/utils/skill-prompts.gen'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'ts-project-')) })
@@ -49,11 +50,42 @@ describe('parseTokenscope — YAML project block (matches the skill-written form
     expect(parseTokenscope(p).project.code).toBe('TokenScope-MVP')
   })
 
-  it('LATENT DRIFT: a bare one-liner yields NO project.code (P0-1 precondition)', () => {
+  it('#485: a bare one-liner (what the MCP project prompt used to write) is still the code', () => {
     const p = join(dir, '.tokenscope')
-    writeFileSync(p, 'TokenScope-MVP\n') // the OLD, wrong skill output
-    const parsed = parseTokenscope(p)
-    expect(parsed.project.code).toBeUndefined()
+    writeFileSync(p, 'TokenScope-MVP\n')
+    expect(parseTokenscope(p).project.code).toBe('TokenScope-MVP')
+    writeFileSync(p, '# tagged by TokenScope\r\n1000012345/450000001\r\n')
+    expect(parseTokenscope(p).project.code).toBe('1000012345/450000001')
+  })
+
+  it('a one-liner that is not a safe code, or not alone, is no code', () => {
+    const p = join(dir, '.tokenscope')
+    for (const text of ['https://attacker.example.com/bearer\n', 'two words\n', 'A-1\nB-2\n', 'client: Acme\n']) {
+      writeFileSync(p, text)
+      expect(parseTokenscope(p).project.code, text).toBeUndefined()
+    }
+  })
+})
+
+describe('#485: the MCP `project` prompt writes a file this parser reads', () => {
+  // The prompt as SERVED (the generated twin of docs/skills/tokenscope/project.md,
+  // which ships publicly where the markdown does not). Every fenced block that
+  // carries a concrete `code:` line is a worked example the agent copies verbatim.
+  const examples = [...SKILL_PROJECT.matchAll(/```[^\n]*\n([\s\S]*?)```/g)]
+    .map((m) => m[1])
+    .filter((block) => /^\s+code:\s*[A-Za-z0-9]/m.test(block))
+
+  it('has at least one worked example, in the YAML project: form', () => {
+    expect(examples.length).toBeGreaterThan(0)
+    for (const block of examples) expect(block).toMatch(/^project:\s*$/m)
+  })
+
+  it.each(examples.map((b, i) => [i, b]))('example %i parses to its project code', (_i, block) => {
+    const expected = /^\s+code:\s*(\S+)\s*$/m.exec(block as string)![1]
+    const p = join(dir, '.tokenscope')
+    writeFileSync(p, block as string)
+    expect(parseTokenscope(p).project.code).toBe(expected)
+    expect(resolveRepoProjectCode({ cwd: dir })).toMatchObject({ code: expected, source: 'tokenscope' })
   })
 })
 
@@ -74,9 +106,9 @@ describe('resolveRepoProjectCode', () => {
     expect(r.tokenscopePath).toBe(join(dir, '.tokenscope'))
   })
 
-  it('throws on a bare one-liner .tokenscope (no project.code) — drift surfaced', () => {
+  it('resolves a bare one-liner .tokenscope (#485)', () => {
     writeFileSync(join(dir, '.tokenscope'), 'TokenScope-MVP\n')
-    expect(() => resolveRepoProjectCode({ arg: '', cwd: dir })).toThrow(/no project\.code/)
+    expect(resolveRepoProjectCode({ arg: '', cwd: dir })).toMatchObject({ code: 'TokenScope-MVP', source: 'tokenscope' })
   })
 
   it('throws when no .tokenscope exists above cwd', () => {

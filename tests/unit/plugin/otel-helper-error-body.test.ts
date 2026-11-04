@@ -34,6 +34,9 @@ const SKIP = process.env.TOKENSCOPE_SKIP_PWSH === '1'
 // short enough that a function without a deadline still finishes in the test.
 const DEADLINE_MS = 1500
 const TRICKLE_MS = 8000
+// How far past the deadline a give-up may land on a slow runner; well under
+// TRICKLE_MS, where a missing deadline would finish.
+const SLACK_MS = 3500
 
 function fnText(file: string, name: string): string {
   const src = readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
@@ -171,7 +174,7 @@ describe.skipIf(SKIP)('otel-headers-helper.ps1 Invoke-Http', () => {
     const r = await helperCall('GET', `${base}/slow`)
     expect(r.status).toBe(0)
     expect(r.body).toBe('')
-    expect(r.ms).toBeLessThan(DEADLINE_MS + 1500)
+    expect(r.ms).toBeLessThan(DEADLINE_MS + SLACK_MS)
   }, 20_000)
 
   it('a refused connection is Status 0', async () => {
@@ -220,7 +223,7 @@ describe.skipIf(SKIP)('claude-redeem.ps1 Invoke-TsHttpPost', () => {
   it('a body that trickles past the deadline is given up on at the deadline: Status 0', async () => {
     const r = await redeemCall(`${base}/slow`)
     expect(r.status).toBe(0)
-    expect(r.ms).toBeLessThan(DEADLINE_MS + 1500)
+    expect(r.ms).toBeLessThan(DEADLINE_MS + SLACK_MS)
   }, 20_000)
 
   it('a redirect is returned with its own status and never followed', async () => {

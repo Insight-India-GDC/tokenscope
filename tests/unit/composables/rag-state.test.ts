@@ -1,8 +1,8 @@
 /*
  * useRagState.ragOf — RAG threshold pure function unit test.
  *
- * Pins the green / amber / red thresholds shared across UiPbar,
- * UiRagChip, UiKpi. Edge cases on the boundaries matter — design-notes
+ * Pins the green / amber / red thresholds shared across UiPbar and
+ * UiKpi. Edge cases on the boundaries matter — design-notes
  * §Screen 2 says amber at "≥ 75%" and red at "≥ 90%".
  */
 import { describe, it, expect } from 'vitest'

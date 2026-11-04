@@ -264,13 +264,23 @@ export interface CostCentreLaneResidual {
 const LANE = sql`v_complete_usage`
 
 /**
+ * The §A lane with each person's CURRENT placement (mig 0162,
+ * docs/design/current-org-lens/00-design.md): for readers that clamp or group by
+ * a Business Unit. Its cost_owning_unit_id is still the project's on tagged OTel
+ * rows; only the person-placed rows move.
+ */
+const LANE_CURRENT = sql`v_complete_usage_current`
+
+/**
  * The day-grain rollup of the lane (migs 0136/0138) — the PROJECT AXIS's
  * second source and nothing else's (usage-rollup-lane.md R5b.2). Content is
  * DEFINED as an aggregate of `v_complete_usage`, so the axis's grouping,
  * ranking, cap, tail-fold and provisional filter read identically off it;
  * what differs is freshness (≤ one worker cadence behind the live view).
+ * Read through the current-lens view: both callers are report-scoped and clamp
+ * by placement or Business Unit (docs/design/current-org-lens/00-design.md).
  */
-const ROLLUP = sql`usage_rollup_daily`
+const ROLLUP = sql`v_usage_rollup_current`
 
 /**
  * Which table the project axis scans (usage-rollup-lane.md R5b).
@@ -363,8 +373,8 @@ const num = (v: unknown): number => Number(v ?? 0)
  * Σ complete §A spend per project over a window, across ALL teammates.
  *
  * THE definition of "project spend" — the project header, the /projects cards,
- * the cost-centre owner's project list, the budget editor, the manager rollup
- * and the budget alert all read this and nothing else. Rows with a NULL
+ * the cost-centre owner's project list, the budget editor and the budget alert
+ * all read this and nothing else. Rows with a NULL
  * `project_id` are excluded: untagged, pooled and arm-3 spend belong to no
  * project budget (see {@link completeProjectMemberLaneExclusions} for how the
  * last of those is surfaced instead of dropped).
@@ -677,88 +687,6 @@ async function projectAxisRows(
     code: r.code,
     costUsd: num(r.cost_usd),
     remainderProjects: Number(r.remainder_projects ?? 0),
-  }))
-}
-
-/** One row of {@link completeProjectSpendRanked} — the project, plus its totals. */
-export interface RankedProjectSpend extends ProjectSpendTotals {
-  projectId: string
-  code: string
-  displayName: string
-}
-
-/**
- * The top `limit` projects by complete §A spend within an arbitrary project
- * SCOPE, ranked and truncated IN THE DATABASE.
- *
- * The sibling of {@link completeProjectSpend} for the one caller that cannot
- * enumerate its projects first: the manager rollup, whose scope is an org
- * subtree. Passing ids would mean SELECTing every scoped project, shipping the
- * ids back into a second statement, scanning the lane for all of them and
- * throwing away everything past the hundredth in JS — the work of the whole
- * subtree to render one page of it.
- *
- * `projectScope` is an SQL predicate over the alias `p` (`project`). It is a
- * code-constructed fragment, never user input — the manager rollup builds it
- * from `managerScopePredicate`.
- *
- * Projects with NO spend in the window are INCLUDED at 0 and sort last: a
- * manager's list must still show a funded project that has not spent, which an
- * inner join to the lane would silently delete.
- */
-export async function completeProjectSpendRanked(
-  db: AnyDb,
-  window: SpendWindow,
-  opts: { projectScope: SQL; limit: number; excludeProvisional?: boolean },
-): Promise<RankedProjectSpend[]> {
-  const keep = includePredicate(opts.excludeProvisional)
-  const rows = await db.execute<{
-    project_id: string
-    code: string
-    display_name: string
-    cost_usd: string
-    tokens: string
-    otel_usd: string
-    reconciled_usd: string
-    provisional_usd: string
-  }>(sql`
-    WITH scoped AS (
-      SELECT p.id, p.code, p.display_name
-        FROM project p
-       WHERE ${opts.projectScope}
-    ),
-    spend AS (
-      SELECT u.project_id,
-             COALESCE(SUM(u.cost_usd) FILTER (WHERE ${keep}), 0) AS cost_usd,
-             COALESCE(SUM(u.tokens)   FILTER (WHERE ${keep}), 0) AS tokens,
-             COALESCE(SUM(u.cost_usd) FILTER (WHERE ${keep} AND u.usage_provenance = 'otel-emitted'), 0) AS otel_usd,
-             COALESCE(SUM(u.cost_usd) FILTER (WHERE ${keep} AND u.usage_provenance = 'api-reconciled'), 0) AS reconciled_usd,
-             COALESCE(SUM(u.cost_usd) FILTER (WHERE u.identity_state = 'provisional'), 0) AS provisional_usd
-        FROM ${LANE} u
-        JOIN scoped s ON s.id = u.project_id
-       WHERE ${windowPredicate(window)}
-       GROUP BY u.project_id
-    )
-    SELECT s.id::text AS project_id, s.code, s.display_name,
-           COALESCE(sp.cost_usd, 0)::text        AS cost_usd,
-           COALESCE(sp.tokens, 0)::text          AS tokens,
-           COALESCE(sp.otel_usd, 0)::text        AS otel_usd,
-           COALESCE(sp.reconciled_usd, 0)::text  AS reconciled_usd,
-           COALESCE(sp.provisional_usd, 0)::text AS provisional_usd
-      FROM scoped s
-      LEFT JOIN spend sp ON sp.project_id = s.id
-     ORDER BY COALESCE(sp.cost_usd, 0) DESC, s.code
-     LIMIT ${opts.limit}
-  `)
-  return [...rows].map((r) => ({
-    projectId: r.project_id,
-    code: r.code,
-    displayName: r.display_name,
-    costUsd: num(r.cost_usd),
-    tokens: num(r.tokens),
-    otelUsd: num(r.otel_usd),
-    reconciledUsd: num(r.reconciled_usd),
-    provisionalUsd: num(r.provisional_usd),
   }))
 }
 
@@ -1283,7 +1211,7 @@ export async function completeCostCentreProjectResiduals(
              u.project_id,
              u.cost_owning_unit_id AS home_cou,
              p.cost_owning_unit_id AS proj_cou
-        FROM ${LANE} u
+        FROM ${LANE_CURRENT} u
         LEFT JOIN project p ON p.id = u.project_id
        WHERE ${windowPredicate(window)}
          AND ${keep}

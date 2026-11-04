@@ -15,21 +15,14 @@
  * REPORT_ACCESS_PERMISSIONS.
  */
 import type { TestDb } from './db'
-import {
-  REPORT_ACCESS_PERMISSIONS,
-  type ReportAccessPermission,
-  type ReportAccessRevoke,
-} from '../../../shared/auth/report-visibility'
+import { REPORT_ACCESS_PERMISSIONS, type ReportAccessPermission } from '../../../shared/auth/report-visibility'
 
 export async function grantReportAccess(
   client: TestDb['client'],
   teammateId: string,
-  // Accepts the positive grants AND the 'revoke-all' DENY (mig 0130), so a suite
-  // can seed a revoke the same one-liner way it seeds a grant.
-  ...permissions: (ReportAccessPermission | ReportAccessRevoke)[]
+  ...permissions: ReportAccessPermission[]
 ): Promise<void> {
-  const perms: (ReportAccessPermission | ReportAccessRevoke)[] =
-    permissions.length > 0 ? permissions : [...REPORT_ACCESS_PERMISSIONS]
+  const perms: ReportAccessPermission[] = permissions.length > 0 ? permissions : [...REPORT_ACCESS_PERMISSIONS]
   for (const permission of perms) {
     await client`INSERT INTO report_access_grant (teammate_id, permission, granted_by)
       VALUES (${teammateId}::uuid, ${permission}, NULL)`

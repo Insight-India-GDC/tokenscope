@@ -323,7 +323,7 @@ const chargeableSub = computed(() =>
             kind="rag-amber"
             dot="amber"
             data-testid="scope-copilot-pending"
-            :title="'Copilot pooled chargeback is not yet validated on Dev (Σ=bill) — the chargeable total is Anthropic only until then.'"
+            :title="'Copilot pooled chargeback is not yet validated against the bill, so the chargeable total is Anthropic only until then.'"
           >Copilot pending</UiBadge>
         </template>
       </ScopeKpiTile>
@@ -384,7 +384,7 @@ const chargeableSub = computed(() =>
       class="text-[11px] leading-snug text-carbon-3"
       data-testid="scope-chargeback-caveat"
     >
-      Active people and Median per person are attributed usage (§A) in both lenses.
+      Active people and Median per person are attributed usage in both lenses.
     </p>
   </section>
 </template>

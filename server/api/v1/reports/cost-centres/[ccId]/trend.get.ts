@@ -66,7 +66,7 @@ export default defineEventHandler(async (event) => {
    * `getValidated` returns an RFC-9457 400 where a bare `Query.parse` throws a
    * ZodError that is not an H3Error, i.e. another 500.
    */
-  const ccId = requireUuidParam(event, 'ccId', 'cost centre id')
+  const ccId = requireUuidParam(event, 'ccId', 'Business Unit id')
   const query = await getValidated(event, Query)
   // ONE clock for this request — the window resolver and the day series read the
   // same instant (Reporting.md §3a).

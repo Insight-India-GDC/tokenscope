@@ -54,13 +54,13 @@ export function assertHoldingNodeNotCostOwning(opts: {
   if (opts.unitType !== HOLDING_UNIT_TYPE || !opts.isCostOwningUnit) return
   throw createError({
     statusCode: 422,
-    statusMessage: 'holding nodes cannot be cost-owning',
+    statusMessage: 'holding nodes cannot be Business Units',
     data: {
       type: 'https://tokenscope.example.com/errors/unprocessable',
       title: 'Unprocessable',
       status: 422,
       detail:
-        'The Unplaced holding node cannot be a cost-owning unit. Marking it one would home every unplaced teammate\'s spend to a Business Unit nobody owns — the unhomed figure would drop to zero without a single person being placed. Place the teammates into real Business Units instead.',
+        'The Unplaced holding node cannot be a Business Unit. Marking it one would home every unplaced teammate\'s spend to a Business Unit nobody owns — the unhomed figure would drop to zero without a single person being placed. Place the teammates into real Business Units instead.',
     },
   })
 }

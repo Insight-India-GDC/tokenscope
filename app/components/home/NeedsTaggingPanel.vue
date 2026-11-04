@@ -290,7 +290,7 @@ const showDismissed = ref(false)
       -->
       <span
         v-if="listedCount"
-        class="text-2xl font-bold text-brand-zeal"
+        class="text-2xl font-bold text-brand-zeal-ink"
         style="font-variant-numeric: tabular-nums"
         data-testid="undecided-total"
       >{{ fmtUsd(listedCost) }}</span>
@@ -443,7 +443,7 @@ class="flex flex-wrap gap-x-6 gap-y-1 mt-1.5 text-[12px]"
             kind="ghost"
             size="sm"
             :disabled="busy !== null"
-            :title="`Dismiss — leave ${fmtUsd(s.cost_usd)} unallocated on your cost centre`"
+            :title="`Dismiss — leave ${fmtUsd(s.cost_usd)} unallocated on your Business Unit`"
             :data-testid="`dismiss-${s.session_id}`"
             @click="dismissSession(s)"
           >
@@ -458,7 +458,7 @@ class="flex flex-wrap gap-x-6 gap-y-1 mt-1.5 text-[12px]"
       class="text-xs text-carbon-2 mt-3"
       data-testid="worklist-empty"
     >
-      Nothing needs tagging — all your spend is on a project, categorised, or dismissed. 🎉
+      Nothing needs tagging — all your spend is on a project, categorised, or dismissed.
     </p>
     <p
       v-else-if="!unaccounted.length && loadUnknown"
@@ -548,7 +548,7 @@ class="flex flex-wrap gap-x-6 gap-y-1 mt-1.5 text-[12px]"
             kind="ghost"
             size="sm"
             :disabled="busy !== null"
-            :title="`Dismiss — leave ${fmtUsd(u.cost_usd)} unallocated on your cost centre`"
+            :title="`Dismiss — leave ${fmtUsd(u.cost_usd)} unallocated on your Business Unit`"
             :data-testid="`dismiss-day-${u.id}`"
             @click="dismissDay(u)"
           >
@@ -568,7 +568,7 @@ class="flex flex-wrap gap-x-6 gap-y-1 mt-1.5 text-[12px]"
       <div class="flex items-baseline gap-2 mb-2">
         <span class="text-[11px] font-bold uppercase tracking-[1px] text-carbon-2">Dismissed</span>
         <span class="text-[11px] text-carbon-3">
-          still unallocated · charged to your cost centre<template v-if="dismissedAtCap"> · showing the most recent {{ WORKLIST_LIST_LIMIT }} per kind</template>
+          still unallocated · charged to your Business Unit<template v-if="dismissedAtCap"> · showing the most recent {{ WORKLIST_LIST_LIMIT }} per kind</template>
         </span>
         <UiButton
           kind="ghost"

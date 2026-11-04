@@ -41,8 +41,9 @@ keystroke to a finance-grade ledger row. Read it as a pipeline:
 
 3. **Attribution.** Telemetry is reconciled into the `attribution_record`
    ledger — one row per cost event. A row's cost is set on write; tagging and
-   admin placement corrections update its project, activity and Business Unit
-   columns. A row priced by a rate card pins that card; a provider-priced row
+   Migrate update its project, activity and project Business Unit columns. Its
+   region and unit record where the person sat when it was written; reports read
+   where the person sits now instead. A row priced by a rate card pins that card; a provider-priced row
    carries no card pin. A `provider_org` registry decides *how* each upstream
    org's spend is treated (authoritatively reconciled vs indicatively
    tracked). `actual_spend` holds a parallel truth source pulled from the
@@ -121,6 +122,13 @@ single GIST-indexed operator. Any level can be flagged a cost-owning unit
 live cost-owning ancestor **in the same region** (`v_org_unit_cost_owner`, mig
 0147); both §B bill views read that one map.
 
+A region's only parentless units are its `default` unit and its Unplaced
+holding node; every other unit sits under `default`'s tree, and nothing sits
+under the holding node. A unit's `code` can be changed, which rewrites its own
+and its subtree's `path`; everything else refers to a unit by `id`. The create,
+Move and code-change writes lock the region row so two of them cannot commit the
+same `path`.
+
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID PK | |
@@ -174,7 +182,7 @@ the constraints.
 
 ### teammate_identity_map
 
-Cross-system identity aliases — Entra ↔ GitHub ↔ Workday ↔ Polaris/PSR, and a
+Cross-system identity aliases — Entra ↔ GitHub ↔ Workday ↔ Polaris/Pathway, and a
 developer's secondary Claude/client emails. This is what lets telemetry that
 arrives under any known identifier resolve to a single teammate.
 
@@ -212,10 +220,19 @@ Ownership is an explicit assignment, never derived from `LTREE` adjacency.
 `POST /admin/org-units/{id}/owners`, which returns **409** naming the BU the
 teammate already owns, and serialises on the teammate so two concurrent grants
 cannot both succeed. There is no database constraint yet: existing data holds
-violations, and `GET /admin/diagnostics/multi-bu-owners` must report `clean`
-before a partial-unique index can be added. The rule matters beyond tidiness —
+violations, and none may remain before a partial-unique index can be added.
+To check, run `SELECT co.teammate_id, count(*) FROM cou_owner co JOIN org_unit ou
+ON ou.id = co.org_unit_id WHERE co.revoked_at IS NULL AND ou.retired_at IS NULL
+GROUP BY co.teammate_id HAVING count(*) > 1` against the database (no rows means
+clean). The rule matters beyond tidiness —
 the manager-chain placement walk treats an owner of more than one active
 cost-owning unit as ambiguous and places nobody through them.
+
+**A new person is a platform-admin pick.** A region admin may name as owner
+only someone already a teammate in the region. A directory pick that would
+provision someone new returns **403**, because the placement walk is
+estate-wide: an owner's unplaced reports in every region are placed into the
+unit.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -242,9 +259,13 @@ directory — not just `department`.
 | `match_value` | TEXT NOT NULL | normalised `trim().lower()` value compared against the user's attribute |
 | `match_value_raw` | TEXT NOT NULL | original casing, for display |
 | `region_id` | UUID NOT NULL → region | |
+| `org_unit_id` | UUID → org_unit | set for a unit rule (mig 0112); the region is the unit's |
 | `created_by` | UUID → teammate | |
 | `created_at` | TIMESTAMPTZ NOT NULL = now() | |
 | `updated_at` | TIMESTAMPTZ | |
+
+Precedence: a unit rule outranks the manager chain; a region rule applies only
+when the chain reaches no unit owner and no region leader.
 
 Constraint: `UNIQUE (attribute, match_value)`
 (`directory_region_rule_attr_value_unique`) — one region per (attribute, value),
@@ -252,9 +273,10 @@ the upsert key.
 
 ### region_leader
 
-The manager-walk fallback target for region derivation (mig 0068): when no
-`directory_region_rule` matches, the placement engine walks a user's manager chain
-looking for one of these leaders, keyed on the leader's stable Entra oid.
+The manager-chain target for region derivation (mig 0068): the placement engine
+walks a user's manager chain (the person plus up to 12 managers) and the first
+leader it meets sets their region, ahead of any region rule. Keyed on the leader's
+stable Entra oid.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -267,6 +289,79 @@ looking for one of these leaders, keyed on the leader's stable Entra oid.
 | `added_by` | UUID → teammate | |
 | `added_at` | TIMESTAMPTZ NOT NULL = now() | |
 | `revoked_at` / `revoked_by` | TIMESTAMPTZ / UUID → teammate | soft-revoke keeps history |
+
+### placement_check_cycle
+
+One row per check cycle (mig 0160): **Start check** on the Placement check page, a
+new top person saved in Org setup, or the hourly `placement-check` run when Org
+setup's monthly or weekly re-read is due. Platform-admin only.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `started_at` | TIMESTAMPTZ NOT NULL = now() | evidence older than the latest cycle is gathered again |
+| `started_by` | UUID → teammate | null for the hourly run, and once that teammate is deleted |
+
+### placement_evidence
+
+What the directory said about each teammate when the placement check last
+gathered them (mig 0160), one row per teammate. No verdicts are stored: the page
+computes them from this evidence and the current rules, owners and leaders.
+Platform-admin only.
+
+| Column | Type | Notes |
+|---|---|---|
+| `teammate_id` | UUID PK → teammate | deleted with the teammate |
+| `gathered_at` | TIMESTAMPTZ NOT NULL | |
+| `cycle_id` | UUID NOT NULL → placement_check_cycle | |
+| `lookup` | TEXT NOT NULL | `oid` / `email` (a `bill:` placeholder) |
+| `attributes` | JSONB object | the directory attributes placement rules match on |
+| `chain` | JSONB array | `{oid, name, email}`, the teammate first, then each manager upward |
+| `walk_end` | TEXT NOT NULL | `top-of-chart` / `hop-cap` / `cycle` / `graph-error` / `not-in-directory` |
+
+### org_setup_setting
+
+Org setup's single settings row (mig 0161): the top of the organisation and how
+often the directory is re-read. The hourly `placement-check` run reads it. Platform-admin
+only.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | BOOLEAN PK = true | one row |
+| `top_oid` / `top_name` / `top_email` | TEXT | null until an Admin picks the top person |
+| `read_cadence` | TEXT NOT NULL = `month` | `month` / `week`: a new check cycle starts in each UTC calendar month or ISO week |
+| `updated_by` | UUID → teammate | null once that teammate is deleted |
+| `updated_at` | TIMESTAMPTZ NOT NULL = now() | |
+
+### org_setup_dismissal
+
+Org setup decisions an Admin set aside (mig 0161). A dismissal holds for its check
+cycle only; the next cycle shows the decision again. Platform-admin only.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `kind` | TEXT NOT NULL | `new-team` / `unit-under-other-region` |
+| `subject_key` | TEXT NOT NULL | the decision's subject, stable within a cycle |
+| `cycle_id` | UUID NOT NULL → placement_check_cycle | deleted with the cycle |
+| `dismissed_by` | UUID → teammate | |
+| `dismissed_at` | TIMESTAMPTZ NOT NULL = now() | |
+
+Unique on (`kind`, `subject_key`, `cycle_id`).
+
+### placement_principal_check
+
+Whether each active unit owner and region leader was found in the directory, one
+row per oid (mig 0161). The hourly `placement-check` run writes it once per cycle,
+after everyone in the cycle is read; a lookup that failed writes no row. Org setup's
+"Owner left" and "Leader left" decisions read it. Platform-admin only.
+
+| Column | Type | Notes |
+|---|---|---|
+| `oid` | TEXT PK | the owner's or leader's directory object id |
+| `cycle_id` | UUID NOT NULL → placement_check_cycle | the cycle it was checked in |
+| `checked_at` | TIMESTAMPTZ NOT NULL | |
+| `found` | BOOLEAN NOT NULL | false: the directory has no such person |
 
 ### directory_exclusion_pattern
 
@@ -318,7 +413,7 @@ authenticates with the OAuth `tokenscope.emit` credential; the read joiner gates
 | `identity_state` | TEXT NOT NULL = `confirmed` | identity provenance (mig 0057): `confirmed` = the authenticated `provision_emit` flow or a later confirmed merge; `provisional` = an emit-on-install enroll where the human hasn't signed in yet. Propagated onto `attribution_record` at join time |
 | `claimed_email` | TEXT | the email a provisional enroll request *claimed* (mig 0057); NULL for the authenticated flow, where `principal_email` already carries the verified identity |
 | `deployment_env` | TEXT | cross-environment reuse guard (mig 0060): the `dev`/`sandbox`/`production`/`local` label of the deployment that minted this instance. A re-provision from a different environment is rejected (409); NULL = pre-0060 (treated as same-environment) |
-| `joiner_read_at` | TIMESTAMPTZ | read rotation (mig 0149): when a scheduled `azure-monitor-read` run last attempted this device, success or failure. Stamped once at the end of each scheduled run for every device it attempted; operator-scoped runs, forced deep reads and `telemetry-recovery` do not stamp it. The joiner's selection orders by it least recently read first (after confirmed before provisional), so its cap and deadline rotate through the fleet. NULL = never attempted by a scheduled run, and sorts first |
+| `joiner_read_at` | TIMESTAMPTZ | read rotation (mig 0149): when a scheduled `azure-monitor-read` run last attempted this device, success or failure. Stamped once at the end of each scheduled run for every device it attempted; operator-scoped runs, forced deep reads and `telemetry-recovery` do not stamp it. The joiner's selection orders by it least recently read first (after confirmed before provisional, and after each device's rank within its teammate), so its cap and deadline rotate through the fleet. NULL = never attempted by a scheduled run, and sorts first |
 | `client_plugin_version` · `client_cli_version` · `client_version_at` | TEXT · TEXT · TIMESTAMPTZ | client-asserted versions sent on each `/bearer` mint (mig 0092); `client_version_at` stamps the last claim of any `client_*` field. Diagnostic only — nothing gates on them |
 | `client_platform` | TEXT ≤ 40 | client-asserted `<os>-<arch>` in Node vocabulary (`win32-x64`, `darwin-arm64`, `linux-x64`), from `X-TokenScope-Client-Platform` on `/bearer` (mig 0150). Written only when reported, never nulled. Diagnostic only |
 | `client_surface` | TEXT ≤ 40 | client-asserted launch surface (mig 0150): Claude Code's `CLAUDE_CODE_ENTRYPOINT` (`cli`, `sdk-cli`, …) or Copilot `app`/`cli`. Same rules as `client_platform` |
@@ -414,10 +509,12 @@ as an independent truth source.
 
 The core ledger — one row per attributed cost event. `cost_usd` is set on
 write. Other columns change after write: tagging updates `project_id`,
-`cost_owning_unit_id` and `activity` (`server/utils/tag-session.ts`), an admin
-placement correction updates `org_unit_id` or `cost_owning_unit_id`
-(`server/governance/rehome-placement.ts`, `rehome-spend.ts`), and instance
-confirmation updates identity and dimensions. Each of these bumps
+`cost_owning_unit_id` and `activity` (`server/utils/tag-session.ts`), Migrate
+updates the project's `cost_owning_unit_id` (`server/governance/rehome-spend.ts`),
+and instance confirmation updates identity and dimensions. `region_id` /
+`org_unit_id` are the recorded placement: nothing else edits them and no report
+reads them (reports use the current-placement views, see
+[Reporting](Reporting.md#placement-reports-follow-where-people-sit-now)). Each of these bumps
 `ts_recorded`. `is_frozen` is written `true` and enforces nothing.
 
 | Column | Type | Notes |
@@ -444,7 +541,7 @@ confirmation updates identity and dimensions. Each of these bumps
 | `ts_recorded` | TIMESTAMPTZ NOT NULL = now() | |
 | `source_run_id` | TEXT | provider-side run id (span/request id; retro claims + Copilot parallel-subagent dedup) |
 | `is_frozen` | BOOL NOT NULL = true | written `true`, read nowhere; no trigger, CHECK or policy enforces it |
-| `activity` | TEXT | orthogonal activity axis (mig 0020), denormalised from `session_assignment` for within-project activity rollups; nullable |
+| `activity` | TEXT | orthogonal activity axis (mig 0020) for within-project activity rollups; nullable. Stamped by the joiner on insert: the session's manual tag (`session_assignment.activity`, read under the tag lock) if set, else the folder default the client emits as `tokenscope.activity` when it names an active standard activity (global or the teammate's region), in the vocabulary's spelling (#475) |
 | `query_source` | TEXT | Claude's per-event `query_source` (mig 0045), stored RAW — Claude's own token (`repl_main_thread`, `agent:custom`, `compact`, …) and **never** the word `main`; classify with `shared/usage/query-source.ts`; NULL = attr absent / pre-0045 (unknown lane, never assumed to be a conversation) |
 | `identity_state` | TEXT | identity provenance (mig 0057) stamped from the emitting instance's `instance_attestation.identity_state` so surfaces can exclude/label provisional usage; display-only, never gates money; NULL = pre-0057 (treat as `confirmed`) |
 | `emitting_email` | TEXT | canonicalised (trim + lower) Claude per-event `user.email` (mig 0119) — which **account** was signed in, as distinct from which device emitted (`instance_id`); the evidence for `billing_lane`; NULL = the emitter did not report one; redacted in place on erasure (`billing_lane` survives, stamped at write) |
@@ -557,7 +654,7 @@ source-of-truth grain that **survives raw retention**. Once a monthly
 `attribution_record` partition is exported and dropped, the read path serves that
 cold window from here instead of the raw ledger. `project_id` / `cost_owning_unit_id`
 / `activity` / `query_source` are nullable grain dims; `region_id` / `org_unit_id`
-are point-in-time values carried from raw.
+are the recorded placement carried from raw (reports do not group by them).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -629,9 +726,10 @@ in-query scope predicates, as on every report read.
 
 The retro-mutation refresh queue for `usage_rollup_daily` (mig 0136).
 `v_complete_usage` changes retroactively with no timestamp a trailing window
-can see on two paths — a quarantine flip (over-emission resolve) and a
-placement re-home — so those writers upsert the affected teammate here in the
-same transaction. The `usage-rollup` worker drains the queue by recomputing
+can see — a quarantine flip (over-emission resolve), a project Migrate, and
+the reconciliation and transform writers — so those writers upsert the affected
+teammate here in the same transaction. A placement change does not need it:
+reports read where people sit at query time. The `usage-rollup` worker drains the queue by recomputing
 that teammate's full history, deleting the request only afterwards (a crashed
 run re-drains).
 
@@ -641,7 +739,7 @@ run re-drains).
 | `requested_at` | TIMESTAMPTZ NOT NULL = now() | |
 
 RLS is enabled: a developer's own over-emission resolve writes their own row;
-the admin lanes (re-home) write anyone's.
+the admin and worker lanes write anyone's.
 
 ### ledger_archive_state
 
@@ -1024,7 +1122,7 @@ is the unit of the needs-tagging worklist: one row, one tagging decision.
 |---|---|---|
 | `id` | UUID PK | |
 | `teammate_id` | UUID NOT NULL → teammate | |
-| `region_id` / `org_unit_id` | UUID → region / org_unit | stamped from the teammate's placement at first write; recompute refreshes only the money and tokens. An admin placement correction (`rehome-placement.ts`) can update `org_unit_id` |
+| `region_id` / `org_unit_id` | UUID → region / org_unit | stamped from the teammate's placement at first write (recorded placement); recompute refreshes only the money and tokens, and nothing edits these or reports on them |
 | `day` | DATE NOT NULL | the API's finest grain |
 | `tool` | TEXT NOT NULL | |
 | `cost_usd` | NUMERIC(14,6) NOT NULL | the reconciled delta, ≥ 0; recomputed every run |
@@ -1106,9 +1204,11 @@ no overlapping invoices per workspace.
 
 ## Governance & allocation
 
-The governance domain (`drizzle/schema/projects.ts`, `governance.ts`;
-migrations 0001, 0007, 0008) holds the registry of projects, who's assigned to
-them, and the budgets that govern spend.
+The governance domain (`drizzle/schema/projects.ts`, `governance.ts`,
+`governance-setting.ts`, `project-requests.ts`, `quota-request.ts`; migrations
+0001, 0007, 0008, 0049, 0164, 0165) holds the registry of projects, who's
+assigned to them, who may create them, the requests for new projects and more
+budget, and the budgets that govern spend.
 
 ### reporting_snapshot
 
@@ -1160,6 +1260,8 @@ path so a client-identifying code never crosses the Foundry boundary.
 | `is_authorised` | BOOL NOT NULL = true | SEC-5 gate; unauthorised codes flow to Spill |
 | `is_onboarded` | BOOL NOT NULL = false | TRUE once actively budget-managed |
 | `allocation_mode` | TEXT NOT NULL = `shared_pool` | `shared_pool` / `per_dev_fixed` |
+| `wbs_code` | TEXT | optional finance-system WBS code; correlation only |
+| `end_date` | TIMESTAMPTZ | NULL = open-ended. Spend recorded after it, plus the lifecycle grace, goes to unallocated; moving it later does not re-attribute that spend. Written by the admin PATCH and the PM's `PATCH /projects/{id}/timeline` |
 | `created_at` | TIMESTAMPTZ NOT NULL = now() | |
 | `retired_at` | TIMESTAMPTZ | soft-retire |
 | `metadata` | JSONB | |
@@ -1208,11 +1310,19 @@ draws against. Carries the provenance triple.
 | `project_id` | UUID NOT NULL → project | |
 | `teammate_id` | UUID NOT NULL → teammate | |
 | `effective` | TSTZRANGE NOT NULL | assignment window |
+| `role` | TEXT NOT NULL = `member` | `manager` / `member` (CHECK, mig 0048). `manager` makes the teammate a **PM of this project** while `effective` contains now |
 | `source` / `is_pinned` / `last_sync_at` | provenance triple | |
 
 Constraint: `EXCLUDE USING gist (project_id WITH =, teammate_id WITH =, effective WITH &&)`
 — no overlapping assignments for the same dev on the same project. Indexes:
 `(teammate_id)`, `(project_id)`.
+
+**Last-PM rule.** Removing or demoting a member locks the project row
+(`SELECT … FOR UPDATE`) and, after the write, counts the project's current
+open-ended `manager` rows. If the write took a manager away and none is left,
+the request is refused (409) unless the caller is `platform-admin` or the
+region admin of the project's region. A finite PM assignment that runs out is
+not prevented (`server/projects/last-manager.ts`).
 
 ### allocation
 
@@ -1254,6 +1364,162 @@ per-dev rows coexist. Indexes: `allocation_teammate_idx (teammate_id) WHERE
 teammate_id IS NOT NULL`, and `allocation_scope_kind_idx (scope_type, scope_id,
 allocation_kind)` (mig 0134) — the probe shape every budget read keys on; the
 GiST EXCLUDE above is a constraint, not a probe, and excludes `top-up` rows.
+
+**Caps follow their pool's period.** A per-developer cap is a `baseline` row
+with `teammate_id` set and exactly the `effective` range of the pool baseline it
+sits under:
+
+- `POST /allocations/{id}/split` writes every cap with the pool's range, and
+  refuses (422) caps that sum above the pool: the baseline plus the pool
+  top-ups that overlap its period.
+- `PATCH /allocations/{id}` on a pool baseline moves the caps that share its old
+  range to the new one. A cap row itself is refused there (400).
+- Approving a budget request on a `per_dev_fixed` project raises the
+  requester's cap with the pool's exact range (see
+  [quota_request](#quota_request)).
+
+**A project's budget is its pool rows only.** Every project or Business Unit
+budget total, budget coverage and the budget alert sum the project's `baseline`
+and `top-up` rows with `teammate_id IS NULL` (burst excluded). A cap is one
+member's share of that pool, so it is never added to it. See
+[Reporting](Reporting.md#project-budgets).
+
+### project_manager_grant
+
+The **Project managers list** (mig 0164): teammates who may create a project
+without approval, in any region unless `projects.pm_own_region_only` is on (see
+[governance_setting](#governance_setting)). Org-wide, and managed by
+`platform-admin` only. Holding a grant is not the same as being PM of a project:
+that is a `project_assignment` row with `role = 'manager'`. Revoking a grant
+leaves the projects the holder created, and their PM assignments, as they are.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `teammate_id` | UUID NOT NULL → teammate | the holder |
+| `granted_by` | UUID → teammate | |
+| `granted_at` | TIMESTAMPTZ NOT NULL = now() | |
+| `revoked_at` / `revoked_by` | TIMESTAMPTZ / UUID → teammate | soft revoke; both set or both NULL (CHECK `project_manager_grant_revoke_shape`) |
+| `note` | TEXT | at most 500 characters (CHECK) |
+
+Partial unique index `project_manager_grant_live_unique (teammate_id) WHERE
+revoked_at IS NULL`: at most one live grant per teammate; a re-grant is a new
+row. Grant and revoke are audited as `project-manager-granted` /
+`project-manager-revoked`.
+
+### project_request
+
+A teammate's request for a new project (mig 0164), decided by an admin of the
+request's region (`platform-admin`, or that region's `admin`).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `requester_teammate_id` | UUID NOT NULL → teammate | |
+| `status` | TEXT NOT NULL = `pending` | `pending` / `approved` / `rejected` / `withdrawn` (CHECK) |
+| `source` | TEXT NOT NULL = `person` | `person` / `connector` (CHECK). Nothing writes `connector` |
+| `suggested_code` | TEXT | the requester's suggestion; the approving admin sets the final code |
+| `display_name` | TEXT NOT NULL | |
+| `type` | TEXT NOT NULL | `billable` / `pursuit` / `internal` (CHECK) |
+| `region_id` | UUID NOT NULL → region | |
+| `cost_owning_unit_id` | UUID NOT NULL → org_unit | the proposed Business Unit |
+| `wbs_code` / `end_date` | TEXT / TIMESTAMPTZ | optional |
+| `proposed_pm_teammate_id` | UUID NOT NULL → teammate | defaults to the requester |
+| `budget_usd` | NUMERIC(14,2) NOT NULL | > 0 (CHECK) |
+| `budget_from` / `budget_to` | TIMESTAMPTZ NOT NULL | the baseline's period; `budget_from < budget_to` (CHECK) |
+| `justification` | TEXT NOT NULL | |
+| `created_at` | TIMESTAMPTZ NOT NULL = now() | |
+| `decided_by` / `decided_at` / `decision_note` | UUID → teammate / TIMESTAMPTZ / TEXT | a withdrawal records the requester here |
+| `created_project_id` | UUID → project `ON DELETE SET NULL` | the project approval created; request history survives a project delete |
+| `idempotency_key` | UUID | mig 0170: the key the client sent with the submit, if any; a resend with it returns this request instead of filing another |
+
+CHECKs: `decided_at` is NULL exactly when `status = 'pending'`; a rejection
+carries a `decision_note`; only an approved request has a `created_project_id`.
+Indexes: `(status, region_id)`, `(requester_teammate_id, created_at DESC)`, and
+the partial unique `(requester_teammate_id, idempotency_key) WHERE
+idempotency_key IS NOT NULL` (keys are per requester).
+
+Every decision (approve, reject, withdraw) is a conditional `UPDATE … WHERE
+status = 'pending'`, so a second decision, or a withdrawal racing a decision,
+gets 409. Approving creates the project in the same transaction (project, PM
+assignment, baseline allocation), from the proposal with any fields the admin
+changed, and makes the requester a member when they are not the PM.
+Submitting sends a `project-request` inbox item to the Admins
+(`platform-admin`) and any Region admin of the request's region. A decision or
+a withdrawal resolves every open copy of it, and a decision sends the requester
+a `project-request-decided` item. The pending queue itself is **Admin → Project
+requests**, whatever the inbox did.
+
+### quota_request
+
+A project member's request for more budget on that project (mig 0165), called a
+**budget request** in the product.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `project_id` | UUID NOT NULL → project `ON DELETE CASCADE` | |
+| `requester_teammate_id` | UUID NOT NULL → teammate | |
+| `amount_usd` | NUMERIC(14,2) NOT NULL | > 0 (CHECK); the route caps it at $1,000,000 |
+| `reason` | TEXT NOT NULL | 1..1000 characters (CHECK) |
+| `status` | TEXT NOT NULL = `pending` | `pending` / `approved` / `rejected` / `withdrawn` (CHECK) |
+| `approved_amount_usd` | NUMERIC(14,2) | the amount approved, which may differ from the amount asked |
+| `decided_by` / `decided_at` | UUID → teammate / TIMESTAMPTZ | the requester, on a withdrawal |
+| `decision_note` | TEXT | at most 1000 characters |
+| `allocation_id` | UUID → allocation `ON DELETE SET NULL` | the top-up approval created |
+| `created_at` | TIMESTAMPTZ NOT NULL = now() | |
+
+CHECK `quota_request_decision_shape`: a pending row has no decider, decision time
+or approved amount; a decided row has a decider and time; only an approved row
+has an approved amount; a rejection has a note. Partial unique index
+`quota_request_one_pending (project_id, requester_teammate_id) WHERE status =
+'pending'`: one pending request per member per project. Indexes
+`(project_id, status)`, `(requester_teammate_id, created_at DESC)`.
+
+Only a current member of a project that has not ended may file one. Filing
+sends a `quota-request` inbox item to the project's current PMs, or, when it
+has none, to the Admins and any Region admin of the project's region. A PM of the project or an admin in scope
+decides. Approving, in one transaction with the conditional `UPDATE … WHERE
+status = 'pending'`:
+
+- refuses (409) when the project has ended, the requester is no longer a
+  member, or the project has no pool baseline in force ("set a budget first");
+- adds one `top-up` allocation of the approved amount on that pool's period,
+  through the same insert, top-up limit and audit as a manual top-up;
+- on a `per_dev_fixed` project, also raises the requester's cap with the
+  pool's range by the same amount. A requester with no cap gets none: they
+  already draw on the whole pool, which the top-up raised.
+
+Rejecting needs a note and is allowed on an ended project. A decision or
+withdrawal resolves the open `quota-request` items for that request, and a
+decision sends the requester a `quota-request-decided` item.
+
+### governance_setting
+
+The governance dials (mig 0049): one numeric value per key, as a platform row
+plus optional per-region overrides; a region row wins over the platform row.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | |
+| `key` | TEXT NOT NULL | one of the keys below |
+| `scope_type` | TEXT NOT NULL | `platform` / `region` (CHECK) |
+| `scope_id` | UUID → region | NULL exactly for `platform` (CHECK `governance_setting_scope_shape`) |
+| `value_numeric` | NUMERIC NOT NULL | bounds are enforced by the admin PUT, not the database |
+| `updated_by` / `updated_at` | UUID → teammate / TIMESTAMPTZ | |
+
+Partial unique indexes: one platform row per key, one row per (key, region).
+The migrations seed one platform row per key, and a missing one is an error, not
+a default. Keys (`server/utils/governance-settings.ts`):
+`velocity.spike_threshold`, `reconciliation.gap_threshold`,
+`reconciliation.epsilon_usd`, `reconciliation.lag_buffer_hours`,
+`placement.default_unit_warn_threshold`, and `projects.pm_own_region_only`.
+
+`projects.pm_own_region_only` (mig 0164, seeded 0) is a switch: the PUT accepts
+only 0 or 1, and only at platform scope. 0 lets a Project managers list holder
+create projects in any region; 1 limits them to the region they are placed in
+now, and refuses a holder with no region. It applies to `POST /projects` only:
+admins and request approvals keep their own region scope.
 
 ### limit_policy
 
@@ -1326,7 +1592,7 @@ dispatcher code, not in a table.
 |---|---|---|
 | `id` | UUID PK | |
 | `recipient_teammate_id` | UUID NOT NULL → teammate | who sees it |
-| `category` | TEXT NOT NULL | `sync-conflict` / `velocity-warning` / `over-budget` / `untagged-backlog` / `connector-health` / … |
+| `category` | TEXT NOT NULL | `sync-conflict` / `velocity-warning` / `over-budget` / `untagged-backlog` / `connector-health` / `project-request` / `project-request-decided` / `quota-request` / `quota-request-decided` / … |
 | `severity` | TEXT NOT NULL = `info` | `info` / `attention` / `urgent` |
 | `subject` | TEXT NOT NULL | headline |
 | `body` | JSONB NOT NULL | structured per-category payload |
@@ -1378,7 +1644,7 @@ admin (via `inbox_item`).
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID PK | |
-| `connector_id` | TEXT NOT NULL | e.g. `psr-apac`, `scim-entra` |
+| `connector_id` | TEXT NOT NULL | e.g. `pathway-apac`, `scim-entra` |
 | `target_table` | TEXT NOT NULL | e.g. `project`, `teammate` |
 | `target_pk` | UUID NOT NULL | the pinned row that conflicted |
 | `manual_row_snapshot` | JSONB NOT NULL | the pinned row at conflict time |
@@ -1418,8 +1684,8 @@ closed out (`failed`, superseded) and replaced.
 
 ### report_access_grant
 
-A per-teammate, revocable, optionally-expiring reporting-access row (migs 0129,
-0130). The admin roles already see reports by ROLE — a region admin sees their
+A per-teammate, revocable, optionally-expiring reporting-access grant (mig 0129).
+The admin roles already see reports by ROLE — a region admin sees their
 own region, `platform-admin` see the whole company — so a row
 here is an OVERRIDE of that default, not the only source of access:
 
@@ -1429,12 +1695,6 @@ here is an OVERRIDE of that default, not the only source of access:
   them into the finance pack). Each is independent of the other and of the
   holder's platform role; on an org-wide role, whose baseline already holds both,
   a positive row is a no-op.
-- `revoke-all` (mig 0130) REMOVES all report access for the teammate — below their
-  role default and below any positive grant (**deny-wins**). The "administer, no
-  data access" separation of duties. A teammate may hold at most one active
-  `revoke-all` row; lifting it requires a **different** admin (a revoked admin
-  keeps their role, so they cannot clear their own revoke — enforced by
-  `report-access/[id].delete.ts`).
 
 Soft-revoked (`revoked_at`/`revoked_by`, the
 `cou_owner` shape, mig 0048): a revocation must carry its actor, an active row
@@ -1453,7 +1713,7 @@ came from the migration's backfill (system), not an admin action. Enforcement li
 |---|---|---|
 | `id` | UUID PK | |
 | `teammate_id` | UUID NOT NULL → teammate | |
-| `permission` | TEXT NOT NULL | `permission IN ('operational','finance','revoke-all')` CHECK (mig 0129 for the two positive grants, mig 0130 for `revoke-all`), pinned to `REPORT_ACCESS_GRANT_VALUES` |
+| `permission` | TEXT NOT NULL | `permission IN ('operational','finance')` CHECK (mig 0129; mig 0130 added a `revoke-all` deny, mig 0158 removed it and its rows), pinned to `REPORT_ACCESS_PERMISSIONS` |
 | `granted_by` | UUID → teammate | NULL = system (migration backfill) |
 | `granted_at` | TIMESTAMPTZ NOT NULL = now() | |
 | `expires_at` | TIMESTAMPTZ | optional; NULL = open-ended |
@@ -1573,6 +1833,13 @@ Tables with policies defined:
 - `attribution_aggregate`, `limit_policy`, `tier_assignment`, `spill_record`,
   `repo_project_map`, `audit_event` — admin-only policies.
 - `inbox_item` — `inbox_item_self` (recipient-scoped).
+- `project_manager_grant` — the holder reads their own row; `platform-admin`
+  has full access (mig 0164).
+- `project_request` — the requester's own rows; `platform-admin` all; a region
+  `admin` their region's (mig 0164).
+- `quota_request` — `platform-admin` all; a region `admin` the requests on
+  their region's projects; the requester their own; a current PM of the
+  project its requests (mig 0165).
 - `allocation` — **two** OR-combined permissive policies. `allocation_admin_only`
   (mig 0002) gives admin / platform-admin full access. `allocation_manager_scope`
   (mig 0007) adds manager visibility: a `FOR ALL` policy where an allocation is
@@ -1581,7 +1848,8 @@ Tables with policies defined:
   admits the `manager` role at the app layer, and app checks must be at least as
   restrictive as RLS. It mirrors the app-side predicate in
   `server/auth/allocation-scope.ts` one-for-one. Like every policy here it does
-  not execute; the app-level predicate is the live gate.
+  not execute; the app-level predicate is the live gate. The allocation routes'
+  second arm, a current PM of the project, has no policy counterpart.
 
 ### The attestation-state CHECK
 

@@ -9,9 +9,6 @@
  *     toast.
  *   - self-row's dropdown is disabled (self-protection is also enforced
  *     server-side via evaluateRoleChange).
- *   - last-admin badge surfaces when the row is the sole admin in the
- *     region — the server enforces the demotion block; the UI surfaces
- *     why a future drop will refuse.
  *
  * Pagination: limit=50 offset=N. Region filter is implicit (caller's
  * home region for admin; the same for platform-admin in Wave VI — a
@@ -28,7 +25,6 @@ import PlaceTeammateDialog from '../../components/admin/PlaceTeammateDialog.vue'
 // (Rollup runs from `.nuxt/dist/server/_nuxt/`, not the source path).
 import { SELECTABLE_ROLES, roleLabel, type Role } from '#shared/auth/roles'
 import { BU_LABEL } from '#shared/reports/vocabulary'
-import { formatUsd } from '../../utils/money'
 definePageMeta({ layout: 'admin', middleware: 'admin' })
 
 interface UserRow extends Record<string, unknown> {
@@ -79,10 +75,13 @@ const {
   '/api/v1/admin/regions',
   { server: false, default: () => null },
 )
-const viewRegionId = ref('')
+// A link can open the page on one person: ?region=<id>&q=<email> (Org setup's top person).
+const route = useRoute()
+const fromQuery = (k: string) => (typeof route.query[k] === 'string' ? (route.query[k] as string) : '')
+const viewRegionId = ref(fromQuery('region'))
 watch(regionId, (r) => { if (!viewRegionId.value && r) viewRegionId.value = r }, { immediate: true })
 
-const query = ref('')
+const query = ref(fromQuery('q'))
 const roleFilter = ref<Role | ''>('')
 const offset = ref(0)
 const LIMIT = 50
@@ -159,13 +158,6 @@ watch(
 const toast = ref<{ kind: 'ok' | 'err'; message: string } | null>(null)
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 function flashToast(kind: 'ok' | 'err', message: string) {
-  /*
-   * ANY later message clears the receipt. It renders in the toast's slot and
-   * takes precedence, so leaving Alice's success on screen would swallow Bob's
-   * refusal entirely — the operator would see a green panel about somebody else
-   * and believe their own action worked.
-   */
-  moveResult.value = null
   toast.value = { kind, message }
   if (toastTimer) clearTimeout(toastTimer)
   toastTimer = setTimeout(() => { toast.value = null }, 3500)
@@ -211,8 +203,7 @@ async function reassignRegion(row: UserRow, newRegionId: string) {
 /*
  * Business Unit placement — PATCH /api/v1/admin/users/:id/org-unit.
  *
- * The picker no longer applies on `change`. It opens a confirmation, because
- * the same control can now also restate months of reported usage
+ * The picker does not apply on `change`. It opens a confirmation
  * (PlaceTeammateDialog explains why). Cancelling must put the select back:
  * the options carry `:selected` bindings rather than a v-model, so the element
  * is uncontrolled and Vue will not reconcile the user's own choice away. The
@@ -223,118 +214,37 @@ const pendingMove = ref<{
   row: UserRow
   unitId: string
   unitName: string
-  sameUnit: boolean
-  /** Opened by changing the picker (needs a reset on cancel) vs the repair button. */
-  viaPicker: boolean
   openedAtUnitId: string
 } | null>(null)
 const pickerNonce = ref(0)
 
-/**
- * The RECEIPT for a correction that moved money, held until dismissed.
- *
- * A toast is right for "role updated" and wrong for "eleven thousand dollars now
- * reports somewhere else": that one is read, checked, and sometimes screenshotted
- * for whoever in finance asked for it.
- */
-const moveResult = ref<{
-  email: string
-  unitName: string
-  placementChanged: boolean
-  /** Everything that moved, INCLUDING the derived rollups — "did anything happen". */
-  total: number
-  /** The ledger rows alone — what the headline counts, so it matches its own list. */
-  ledgerRows: number
-  /** What the operator was shown and agreed to. Null when they never checked. */
-  approvedUsd: number | null
-  /** Everything recorded in the range. Distinguishes "none" from "already here". */
-  rangeUsd: number | null
-  rows: {
-    attributionRows: number
-    unaccountedRows: number
-    overEmissionRows: number
-    actualSpendRows: number
-    reconciliationRows: number
-    rollupRows: number
-  }
-} | null>(null)
-
 function askOrgUnit(row: UserRow, newUnitId: string) {
   if (!newUnitId) return
   const unit = orgUnitOptions.value.find((u) => u.id === newUnitId)
-  if (!unit) return
+  if (!unit || unit.id === row.orgUnitId) return
   pendingMove.value = {
     row,
     unitId: unit.id,
     unitName: unit.display_name,
-    sameUnit: unit.id === row.orgUnitId,
-    viaPicker: true,
     /*
      * Where they were when the dialog opened. Confirmed against the row at
-     * apply time: another admin can move somebody while this dialog is open,
-     * and "their placement will not change" would then be a promise the write
-     * breaks.
+     * apply time: another admin can move somebody while this dialog is open.
      */
     openedAtUnitId: row.orgUnitId,
   }
 }
 
-/*
- * ── THE REPAIR NEEDS ITS OWN CONTROL ─────────────────────────────────────────
- * A `<select>` fires no `change` event when you pick the option that is already
- * selected, so "choose the unit they are already in" is not something a person
- * can do — even though the server supports exactly that as a history-only
- * repair. Playwright's `selectOption()` dispatches the event regardless, which
- * is how two browser harnesses both passed over a feature no human could reach.
- *
- * So it is an explicit affordance. That is better anyway: nobody discovers a
- * repair by re-selecting a dropdown value.
- */
-function askRepairHistory(row: UserRow) {
-  const unit = orgUnitOptions.value.find((u) => u.id === row.orgUnitId)
-  if (!unit) return
-  pendingMove.value = {
-    row,
-    unitId: unit.id,
-    unitName: unit.display_name,
-    sameUnit: true,
-    viaPicker: false,
-    openedAtUnitId: row.orgUnitId,
-  }
-}
-
 async function cancelMove() {
-  const viaPicker = pendingMove.value?.viaPicker ?? false
   const rowId = pendingMove.value?.row.id
   pendingMove.value = null
-
-  /*
-   * Only remount when the PICKER is the thing that needs resetting. Cancelling
-   * a repair (opened from its own button) left the select untouched, so bumping
-   * the nonce destroyed the element `useModalA11y` restores focus to and dropped
-   * a keyboard user on the document body.
-   */
-  if (!viaPicker) {
-    await nextTick()
-    document.querySelector<HTMLElement>(`[data-testid="user-repair-history-${rowId}"]`)?.focus()
-    return
-  }
   pickerNonce.value++
   // The remount replaces the element mid-restore, so put focus back by hand.
   await nextTick()
   document.querySelector<HTMLElement>(`[data-testid="user-orgunit-${rowId}"]`)?.focus()
 }
 
-/*
- * Optimistic on the NAME only. `rehome` restates recorded usage, which this
- * page does not show, so there is nothing to optimistically restate — the
- * refresh below is what makes the rest of the page agree.
- */
-async function confirmMove(payload: {
-  rehome?: { from: string }
-  previewedUsd?: number
-  previewedRangeUsd?: number
-}) {
+/* Optimistic on the NAME; the refresh below makes the rest of the page agree. */
+async function confirmMove() {
   const move = pendingMove.value
   if (!move) return
   const { row, unitId, unitName } = move
@@ -342,10 +252,9 @@ async function confirmMove(payload: {
 
   /*
    * The dialog described the placement as it was when it OPENED. Another admin
-   * can move somebody while it is open, and "their placement will not change"
-   * would then be a promise this write breaks — or a move the operator never
-   * saw. Refuse and make them look again, rather than applying a decision made
-   * about a different state.
+   * can move somebody while it is open, so this would be a move the operator
+   * never saw. Refuse and make them look again, rather than applying a decision
+   * made about a different state.
    */
   const liveRow = rows.value.find((r) => r.id === row.id)
   if (liveRow && liveRow.orgUnitId !== move.openedAtUnitId) {
@@ -361,56 +270,11 @@ async function confirmMove(payload: {
   const idx = rows.value.findIndex((r) => r.id === row.id)
   if (idx >= 0) rows.value[idx] = { ...row, orgUnitName: unitName, orgUnitId: unitId }
   try {
-    const res = await $fetch<{
-      outcome: string
-      rehomed?: {
-        attributionRows: number
-        unaccountedRows: number
-        overEmissionRows: number
-        actualSpendRows: number
-        reconciliationRows: number
-        rollupRows: number
-      }
-    }>(`/api/v1/admin/users/${row.id}/org-unit`, {
+    await $fetch(`/api/v1/admin/users/${row.id}/org-unit`, {
       method: 'PATCH',
-      // `previewedUsd` is for the receipt only — the server neither needs nor
-      // accepts it, and sending it would be a field the schema rejects.
-      body: { org_unit_id: unitId, ...(payload.rehome ? { rehome: payload.rehome } : {}) },
+      body: { org_unit_id: unitId },
     })
-    const r = res.rehomed
-    if (r) {
-      /*
-       * COUNTS, NAMED. The operator just approved restating reported usage and
-       * the only confirmation was a 3.5-second sentence containing no figures —
-       * so the honest question "did that work?" had no answer short of the audit
-       * log. `moveResult` persists until dismissed; the toast is the glance.
-       */
-      /*
-       * LEDGER rows only. `spend_rollup_daily` is a derived summary of these, so
-       * adding it would count the same money twice in one sentence — but it is
-       * still reported, and it still counts as "something happened": a teammate
-       * whose raw rows aged out can have ONLY rollups move, and calling that
-       * "nothing needed moving" would be false.
-       */
-      const ledgerRows =
-        r.attributionRows + r.unaccountedRows + r.overEmissionRows + r.actualSpendRows + r.reconciliationRows
-      const total = ledgerRows + r.rollupRows
-      moveResult.value = {
-        email: row.email,
-        unitName,
-        placementChanged: res.outcome !== 'history-repaired',
-        rows: r,
-        total,
-        ledgerRows,
-        approvedUsd: payload.previewedUsd ?? null,
-        rangeUsd: payload.previewedRangeUsd ?? null,
-      }
-      // Deliberately NO toast: the receipt above is the message, and two panels
-      // saying the same sentence teach a reader to skim past both.
-      toast.value = null
-    } else {
-      flashToast('ok', `Moved ${row.email} to ${unitName}`)
-    }
+    flashToast('ok', `Moved ${row.email} to ${unitName}`)
   } catch (err) {
     if (idx >= 0) rows.value[idx] = { ...row, orgUnitName: previousName, orgUnitId: previousId }
     pickerNonce.value++
@@ -482,12 +346,6 @@ async function revokeSessions(row: UserRow) {
   }
 }
 
-const adminCount = computed(() => data.value?.adminCount ?? 0)
-
-function isLastAdmin(row: UserRow): boolean {
-  return row.role === 'admin' && adminCount.value <= 1
-}
-
 const columns = [
   { key: 'email', label: 'Email', cellClass: 'font-medium' },
   { key: 'displayName', label: 'Name' },
@@ -499,7 +357,8 @@ const columns = [
 
 function fmtTs(v: string | null): string {
   if (!v) return '—'
-  return new Date(v).toLocaleString()
+  // An instant, so the viewer's zone; minutes are enough for a sync time.
+  return new Date(v).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
 // Typed cast for the slot binding — AdminDataTable's row slot is
@@ -541,91 +400,13 @@ function roleOptionsFor(current: string): Role[] {
       sub="Teammates in this region. Change role via the dropdown; the audit trail records every change."
     />
 
-    <!--
-      THE RECEIPT — one surface, where the eye already goes.
-
-      It sits in the toast's slot rather than beside it: two panels saying almost
-      the same sentence is how a reader learns to ignore both. A placement change
-      is a toast (3.5s, glanceable). A correction that RESTATED REPORTED USAGE is
-      this, and it stays until dismissed — somebody moved other people's money
-      and will be asked, by finance, exactly what moved.
-    -->
     <div
-      v-if="moveResult"
-      class="mb-4 rounded-lg border border-brand-harmony/30 bg-brand-harmony-sheer px-4 py-3"
-      role="status"
-      data-testid="move-receipt"
-    >
-      <div class="flex items-start justify-between gap-4">
-        <div>
-          <p class="text-xs font-bold uppercase tracking-[1.4px] text-brand-harmony">
-            {{ moveResult.placementChanged ? 'Moved, and usage restated' : 'History repaired' }}
-          </p>
-          <p class="text-sm text-carbon mt-1">
-            {{ moveResult.email }} → <strong>{{ moveResult.unitName }}</strong>
-            <span v-if="!moveResult.placementChanged" class="text-carbon-3">
-              · they were already here, so only their recorded usage moved
-            </span>
-          </p>
-        </div>
-        <UiButton kind="ghost" size="sm" data-testid="move-receipt-close" @click="moveResult = null">
-          Dismiss
-        </UiButton>
-      </div>
-
-      <p v-if="moveResult.total === 0" class="text-[12px] text-carbon-2 mt-2" data-testid="move-receipt-rows">
-        Nothing needed moving — their recorded usage was already on this {{ BU_LABEL }}.
-      </p>
-      <div v-else class="mt-2" data-testid="move-receipt-rows">
-        <p class="text-[13px] font-semibold text-carbon">
-          {{ moveResult.ledgerRows.toLocaleString() }} record(s) now report to {{ moveResult.unitName }}
-        </p>
-        <!-- The figure they APPROVED, named as such. The response carries counts;
-             the operator's question is about the money they were shown. Saying
-             "moved $X" would overstate it — a few dollars of newer usage can land
-             between the preview and the write. -->
-        <!-- `v-if` on the number itself hid a legitimate $0.00, and formatting it
-             here rather than through `formatUsd` reported "$0.00" for the same
-             sub-cent figure the dialog had just called "< $0.01". -->
-        <p v-if="moveResult.approvedUsd !== null" class="text-[12px] text-carbon-2">
-          Covering the {{ formatUsd(moveResult.approvedUsd) }} you approved.
-        </p>
-        <!-- Per table, because "1,204 records" is not what finance asks about.
-             They ask whether the BILL moved, which is `actual_spend`. -->
-        <ul class="text-[12px] text-carbon-2 mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
-          <li v-if="moveResult.rows.attributionRows">
-            {{ moveResult.rows.attributionRows.toLocaleString() }} tagged usage
-          </li>
-          <li v-if="moveResult.rows.unaccountedRows">
-            {{ moveResult.rows.unaccountedRows.toLocaleString() }} untagged usage days
-          </li>
-          <li v-if="moveResult.rows.actualSpendRows">
-            {{ moveResult.rows.actualSpendRows.toLocaleString() }} provider bill rows
-          </li>
-          <li v-if="moveResult.rows.reconciliationRows">
-            {{ moveResult.rows.reconciliationRows.toLocaleString() }} reconciliation rows
-          </li>
-          <li v-if="moveResult.rows.overEmissionRows">
-            {{ moveResult.rows.overEmissionRows.toLocaleString() }} over-emission rows
-          </li>
-          <li v-if="moveResult.rows.rollupRows">
-            {{ moveResult.rows.rollupRows.toLocaleString() }} daily rollups
-          </li>
-        </ul>
-      </div>
-      <p class="text-[11px] text-carbon-3 mt-2">
-        Reports can take up to a minute to catch up. The full record — including the
-        range you chose — is in the audit log.
-      </p>
-    </div>
-
-    <div
-      v-else-if="toast"
+      v-if="toast"
       :data-testid="`admin-users-toast-${toast.kind}`"
       class="mb-4 p-3 rounded-md text-sm font-medium"
       :class="toast.kind === 'ok'
         ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30'
-        : 'bg-brand-hunger/10 text-brand-hunger border border-brand-hunger/30'"
+        : 'bg-brand-hunger/10 text-brand-heart border border-brand-hunger/30'"
     >
       {{ toast.message }}
     </div>
@@ -646,7 +427,7 @@ function roleOptionsFor(current: string): Role[] {
             v-model="query"
             type="search"
             placeholder="Search by name or email…"
-            class="flex-1 px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+            class="flex-1 px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
             data-testid="admin-users-search"
             @search="refresh()"
           >
@@ -697,8 +478,11 @@ function roleOptionsFor(current: string): Role[] {
           :data-testid="`admin-users-row-${asUserRow(row).id}`"
           class="hover:bg-brand-harmony-sheer/30"
         >
-          <td class="px-5 py-3 text-sm text-carbon font-medium">{{ asUserRow(row).email }}</td>
-          <td class="px-5 py-3 text-sm text-carbon">{{ asUserRow(row).displayName ?? '—' }}</td>
+          <!-- Long emails and names truncate (full text on hover) so the six
+               columns fit the card at 1440 and 1024 wide; the card scrolls
+               sideways only below that. -->
+          <td class="px-5 py-3 text-sm text-carbon font-medium max-w-[240px] truncate" :title="asUserRow(row).email">{{ asUserRow(row).email }}</td>
+          <td class="px-5 py-3 text-sm text-carbon max-w-[180px] truncate" :title="asUserRow(row).displayName ?? undefined">{{ asUserRow(row).displayName ?? '—' }}</td>
           <td class="px-5 py-3 text-sm">
             <div class="flex items-center gap-2">
               <select
@@ -711,12 +495,6 @@ function roleOptionsFor(current: string): Role[] {
               >
                 <option v-for="r in roleOptionsFor(asUserRow(row).role)" :key="r" :value="r">{{ roleLabel(r) }}</option>
               </select>
-              <UiBadge
-                v-if="isLastAdmin(asUserRow(row))"
-                kind="hunger"
-                :data-testid="`admin-users-last-admin-${asUserRow(row).id}`"
-                title="Sole admin in this region — demoting this row is blocked server-side."
-              >Last admin</UiBadge>
             </div>
           </td>
           <td class="px-5 py-3 text-sm">
@@ -753,9 +531,9 @@ function roleOptionsFor(current: string): Role[] {
               >(can't move)</span>
             </span>
           </td>
-          <td class="px-5 py-3 text-sm text-carbon-3">{{ fmtTs(asUserRow(row).lastSyncAt) }}</td>
+          <td class="px-5 py-3 text-sm text-carbon-3 whitespace-nowrap">{{ fmtTs(asUserRow(row).lastSyncAt) }}</td>
           <td class="px-5 py-3 text-sm">
-            <div class="flex items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2">
             <select
               v-if="isOrgWide && !regionsError"
               :data-testid="`admin-users-region-${asUserRow(row).id}`"
@@ -778,18 +556,6 @@ function roleOptionsFor(current: string): Role[] {
               class="text-[11px] font-semibold text-brand-hunger"
               title="The region list could not be loaded, so this teammate cannot be re-homed. Retry above the table."
             >regions unavailable</span>
-            <!-- Reachable, and discoverable. See `askRepairHistory`: a select
-                 cannot offer "the value you already have". -->
-            <UiButton
-              v-if="orgUnitOptions.some((u) => u.id === asUserRow(row).orgUnitId)"
-              kind="ghost"
-              size="sm"
-              :data-testid="`user-repair-history-${asUserRow(row).id}`"
-              :title="`Bring recorded usage that an earlier move left on another ${BU_LABEL} across to this one. Their placement does not change.`"
-              @click="askRepairHistory(asUserRow(row))"
-            >
-              Repair history
-            </UiButton>
             <UiButton
               kind="ghost"
               size="sm"
@@ -819,11 +585,8 @@ function roleOptionsFor(current: string): Role[] {
 
     <PlaceTeammateDialog
       :open="!!pendingMove"
-      :teammate-id="pendingMove?.row.id ?? ''"
       :teammate-label="pendingMove?.row.email ?? ''"
-      :to-unit-id="pendingMove?.unitId ?? ''"
       :to-unit-name="pendingMove?.unitName ?? ''"
-      :same-unit="pendingMove?.sameUnit ?? false"
       @cancel="cancelMove"
       @confirm="confirmMove"
     />

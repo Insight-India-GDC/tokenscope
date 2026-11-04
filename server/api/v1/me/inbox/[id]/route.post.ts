@@ -15,8 +15,7 @@ import { eq, sql } from 'drizzle-orm'
 import { assertSameOrigin } from '../../../../../auth/csrf'
 import { requireRole, requireRegionScope } from '../../../../../auth/rbac'
 import { withRequestRls } from '../../../../../db/request-rls'
-import { InboxRouteBody, REPORT_DATA_INBOX_CATEGORIES } from '../../../../../../shared/schemas/inbox'
-import { activeReportDenySql } from '../../../../../auth/report-deny-sql'
+import { InboxRouteBody } from '../../../../../../shared/schemas/inbox'
 import { schema } from '../../../../../db'
 import { recordAuditEvent } from '../../../../../db/audit'
 import { requireUuidParam } from '../../../../../utils/require-uuid-param'
@@ -65,9 +64,10 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 404, statusMessage: 'Inbox item not found' })
   }
   // Region-scope the SOURCE: a region admin may only read (and therefore
-  // forward) an item addressed to a recipient in their own region. Applied
-  // only after the 404 above, so an unresolvable id still 404s and this
-  // endpoint never becomes an existence oracle for other regions' item ids.
+  // forward) an item addressed to a recipient in their own region. An unknown
+  // id is a 404 and another region's id is a 403, so the status does tell a
+  // region admin that a foreign id exists. Accepted: ids are v4 uuids the
+  // caller must already hold, and an item's existence is not sensitive here.
   await requireRegionScope(event, source.region_id)
 
   // Validate the target teammate is active, then forward — ONE transaction for
@@ -106,7 +106,7 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 404, statusMessage: 'Target teammate not found' })
     }
     // Region-scope the TARGET: stops the mirror-image leak — a region-A admin
-    // injecting a forwarded item into region B. Same 404-before-403 ordering.
+    // injecting a forwarded item into region B.
     await requireRegionScope(event, target.regionId)
     if (!target.isActive) {
       throw createError({
@@ -121,28 +121,6 @@ export default defineEventHandler(async (event) => {
             'Pick an active teammate or reactivate the target first.',
         },
       })
-    }
-
-    // Report data moves only between admins who may see it: a platform admin, or
-    // an admin of the region the notice was delivered in, and neither side may
-    // hold an active report-access deny.
-    if (REPORT_DATA_INBOX_CATEGORIES.includes(source.category)) {
-      const [check] = [
-        ...(await tx.execute<{ caller: boolean; target: boolean; target_admin: boolean }>(sql`
-          SELECT ${activeReportDenySql(sql`${session.teammateId}::uuid`)} AS caller,
-                 ${activeReportDenySql(sql`${body.recipient_teammate_id}::uuid`)} AS target,
-                 EXISTS (SELECT 1 FROM teammate WHERE id = ${body.recipient_teammate_id}::uuid
-                          AND (role = 'platform-admin'
-                               OR (role = 'admin' AND region_id = ${source.region_id}::uuid))) AS target_admin`)),
-      ]
-      if (check?.caller || check?.target || !check?.target_admin) {
-        throw createError({
-          statusCode: 403,
-          statusMessage: check?.caller
-            ? 'You do not have report access, so you cannot forward this item'
-            : 'This item carries report data and can only be forwarded to a platform admin, or an admin of its region, with report access',
-        })
-      }
     }
 
     const [forwarded] = await tx

@@ -21,6 +21,7 @@ import {
   utcDaysInMonth,
   utcMonthEnd,
   utcMonthOf,
+  utcWeekStart,
 } from '../../../shared/reports/clock'
 
 describe('resolveServerClock — three quantities, kept apart', () => {
@@ -111,5 +112,19 @@ describe('pure derivations from a server-resolved day', () => {
   it('utcDay reads an instant as its UTC day', () => {
     expect(utcDay(Date.parse('2026-08-05T23:59:59Z'))).toBe('2026-08-05')
     expect(utcDay(Date.parse('2026-08-06T00:00:00Z'))).toBe('2026-08-06')
+  })
+})
+
+describe('utcWeekStart — the ISO week bucket, from a server day', () => {
+  it('is the Monday of the week, as Postgres date_trunc(\'week\') gives it', () => {
+    expect(utcWeekStart('2026-03-02')).toBe('2026-03-02') // Monday
+    expect(utcWeekStart('2026-03-04')).toBe('2026-03-02') // Wednesday
+    expect(utcWeekStart('2026-03-08')).toBe('2026-03-02') // Sunday ends the ISO week
+    expect(utcWeekStart('2026-03-09')).toBe('2026-03-09')
+  })
+
+  it('crosses month and year boundaries', () => {
+    expect(utcWeekStart('2026-03-01')).toBe('2026-02-23')
+    expect(utcWeekStart('2027-01-01')).toBe('2026-12-28')
   })
 })

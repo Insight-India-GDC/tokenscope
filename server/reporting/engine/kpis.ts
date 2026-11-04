@@ -21,7 +21,7 @@
  * (docs/design/provider-billing-attribution-model.md, consistency contract C2).
  *
  * That is precisely why the scope argument is a PAIR of separately-lane-typed
- * clamps rather than one predicate: §A clamps address (region_id, org_unit_id)
+ * clamps rather than one predicate: §A clamps address the people in a placement (or a current-lens column)
  * and §B clamps address (region_id, cost_owning_unit_id), so passing either one
  * where the other belongs is a compile error (engine/scope.ts `Lane`), not a
  * quietly smaller number.
@@ -63,7 +63,7 @@ interface ChargeRow extends Record<string, unknown> {
  * does have data in — cannot be introduced by editing one and not the other.
  */
 export interface ReportKpiScope {
-  /** §A clamp, over (`region_id`, `org_unit_id`) on `usage_rollup_daily` (same column names as the lane). */
+  /** §A clamp, unaliased, on `v_usage_rollup_current` (`teammate_id`, or a current-lens column). */
   usage: UsageScope
   /** §B clamp, over (`region_id`, `cost_owning_unit_id`) on the `v_finance_*` views. */
   finance: FinanceScope
@@ -265,7 +265,7 @@ export async function fetchKpiCore(
                SUM(cost_usd)  AS cost,
                SUM(tokens)    AS tokens,
                MAX(day)       AS as_of
-        FROM usage_rollup_daily
+        FROM v_usage_rollup_current
         WHERE ${scopeSql(scope.usage)}
           AND day >= ${startDate}::date
           AND day <  ${endDate}::date
@@ -345,7 +345,7 @@ export async function fetchKpiCore(
       // plus whole days), so the ::date translation is exact.
       ...(await tx.execute<{ genuine: string }>(sql`
         SELECT COALESCE(SUM(cost_usd), 0)::text AS genuine
-        FROM usage_rollup_daily
+        FROM v_usage_rollup_current
         WHERE ${scopeSql(scope.usage)}
           AND day >= ${momPrevWindow.startIso.slice(0, 10)}::date
           AND day <  ${momPrevWindow.endIso.slice(0, 10)}::date`)),

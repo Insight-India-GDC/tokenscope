@@ -26,6 +26,7 @@ import SettlingStateChip from './SettlingStateChip.vue'
 import CoverageMarker from './CoverageMarker.vue'
 import { useReportState } from '../../composables/useReportState'
 import { useDrillGrants } from '../../composables/useDrillContract'
+import { useAdminAccess } from '../../composables/useAdminAccess'
 import type { DrillFrame } from './drill-contract'
 import type { FinanceReport, FinanceDrill } from './finance-report-types'
 import type { SettlingState } from '#shared/reports/types'
@@ -92,6 +93,9 @@ const windowQuery = computed<Record<string, string>>(() => {
  * the SAME `windowQuery` the two fetches bind on, so a link can never carry a
  * window different from the figures beside it.
  */
+// "Fix org homing →" opens /admin, which bounces non-admins: show it to admins only.
+const { isAdmin: canFixHoming } = useAdminAccess()
+
 const drillWindow = computed<Omit<DrillFrame, 'src'>>(() =>
   isRange.value
     ? { month: null, from: rs.from.value as string, to: rs.to.value as string }
@@ -266,6 +270,7 @@ const exportFilename = computed(() => `tokenscope-finance-ledger-${exportMonth.v
       :ledger-month-only="isRange"
       :drill-grants="drillGrants"
       :drill-window="drillWindow"
+      :can-fix-homing="canFixHoming"
       @drill="rs.patch({ cc: $event })"
       @clear-drill="rs.patch({ cc: null })"
     />

@@ -26,6 +26,7 @@ import type { ActiveTrend, Seasonality } from '../../../shared/reports/types'
 // Asserted through the CONSTANT: these tests are about the CLAIM, and pinning
 // the noun made a vocabulary change read as a behaviour regression.
 import { BU_LABEL_LOWER } from '#shared/reports/vocabulary'
+import { PLACEMENT_NOTE } from '../../../app/components/reporting/lane-captions'
 
 // DateRangeControl self-wires to the auto-imported useReportState (undefined outside
 const global = regionalViewGlobal
@@ -232,6 +233,9 @@ describe('ScopeRegionalView — the four exclusive states', () => {
     expect(w.find('[data-testid="report-header-notes-trigger"]').text().length).toBeGreaterThan(0)
     // The lens explainer came too; it is no longer printed under the control.
     expect(w.find('[data-testid="lane-caption"]').exists()).toBe(false)
+    // Where usage is counted: the current-org lens, stated in the panel.
+    expect(panel.find('[data-testid="notes-placement"]').text()).toBe(PLACEMENT_NOTE)
+    expect(w.text()).not.toContain('point-in-time')
   })
 })
 
@@ -460,7 +464,7 @@ describe('ScopeRegionalView — the §A/§B lane re-lens', () => {
     expect(w.find('[data-testid="regional-practice-rank"]').exists()).toBe(false)
     const cbRank = w.find('[data-testid="regional-chargeback-rank"]')
     expect(cbRank.exists()).toBe(true)
-    expect(cbRank.text()).toContain('Chargeback by cost-centre')
+    expect(cbRank.text()).toContain('Chargeback by Business Unit')
 
     /*
      * THE TILE ROW DOES NOT RE-LENS, at this width either. It used to swap three
@@ -474,7 +478,7 @@ describe('ScopeRegionalView — the §A/§B lane re-lens', () => {
     expect(w.find('[data-testid="scope-kpi-active"]').text()).toContain('Active people')
     expect(w.find('[data-testid="scope-kpi-row"]').text()).not.toContain('Billed tokens')
     expect(w.find('[data-testid="scope-chargeback-caveat"]').text()).toBe(
-      'Active people and Median per person are attributed usage (§A) in both lenses.',
+      'Active people and Median per person are attributed usage in both lenses.',
     )
 
     // §A/usage cards RE-LENS to their §B bill-lane analogue (not usage-only

@@ -31,8 +31,8 @@ withDefaults(
     :class="[
       kind === 'neutral' && 'bg-calm-2 text-carbon-2',
       kind === 'harmony' && 'bg-brand-harmony-lite text-brand-harmony',
-      kind === 'vision' && 'bg-brand-vision-lite text-[#1f4ea3]',
-      kind === 'zeal' && 'bg-brand-zeal-lite text-[#0b7290]',
+      kind === 'vision' && 'bg-brand-vision-lite text-brand-vision-ink',
+      kind === 'zeal' && 'bg-brand-zeal-lite text-brand-zeal-ink',
       kind === 'hunger' && 'bg-brand-hunger-lite text-brand-heart',
       kind === 'rag-green' && 'bg-[#DCFCE7] text-[#166534]',
       kind === 'rag-amber' && 'bg-[#FEF3C7] text-[#92400E]',

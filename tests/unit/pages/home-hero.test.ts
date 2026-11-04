@@ -180,7 +180,6 @@ const STUBS = {
   UiFetchErrorBanner: true,
   UiFreshness,
   UiPbar: { props: ['pct'], template: '<div data-testid="pbar" :data-pct="pct" />' },
-  UiRagChip: true,
   UiToolPill: true,
   NuxtLink: passThrough('link'),
   Icon: true,

@@ -144,6 +144,33 @@ describe('resilientFetch deadline', () => {
   }, 15_000)
 })
 
+describe('resilientFetch caller signal', () => {
+  it('aborting during a backoff wait rejects at once and sends no retry', async () => {
+    let hits = 0
+    const url = await serve((_req, res) => {
+      hits += 1
+      res.writeHead(503)
+      res.end()
+    })
+    const c = new AbortController()
+    const started = Date.now()
+    const call = resilientFetch(url, {}, { retries: 3, backoffMs: 5_000, signal: c.signal })
+    setTimeout(() => c.abort(new DOMException('budget', 'TimeoutError')), 100)
+    await expect(call).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(Date.now() - started).toBeLessThan(2_000)
+    expect(hits).toBe(1)
+  })
+
+  it('aborting cancels the request in flight', async () => {
+    const url = await serve(() => undefined) // never answers
+    const c = new AbortController()
+    const call = resilientFetch(url, {}, { retries: 2, timeoutMs: 30_000, signal: c.signal })
+    setTimeout(() => c.abort(new DOMException('budget', 'TimeoutError')), 100)
+    await expect(call).rejects.toMatchObject({ name: 'TimeoutError' })
+    server!.closeAllConnections()
+  })
+})
+
 describe('parseRetryAfterMs', () => {
   it('parses delta-seconds', () => {
     expect(parseRetryAfterMs('2')).toBe(2000)

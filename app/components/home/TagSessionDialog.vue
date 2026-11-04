@@ -233,7 +233,7 @@ async function save() {
           <template v-else>
             <dt class="text-carbon-3">Session</dt>
             <dd class="font-mono text-carbon truncate" :title="target.session_id">{{ target.session_id }}</dd>
-            <dt class="text-carbon-3">Instance</dt>
+            <dt class="text-carbon-3">Device</dt>
             <dd class="font-mono text-carbon-2 truncate" :title="target.instance_id ?? ''">{{ target.instance_id ?? '—' }}</dd>
             <dt class="text-carbon-3">Spend</dt>
             <dd class="text-carbon">
@@ -260,7 +260,7 @@ async function save() {
           id="tag-budget"
           ref="firstField"
           v-model="projectId"
-          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
           data-testid="tag-project"
         >
           <option value="">No budget — unallocated</option>
@@ -287,7 +287,7 @@ async function save() {
           v-model="activity"
           list="tag-activity-types"
           placeholder="e.g. Research, Documentation"
-          class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+          class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
           data-testid="tag-activity"
           @keyup.enter="save"
         >

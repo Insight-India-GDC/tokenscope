@@ -13,6 +13,14 @@ import { describe, it, expect } from 'vitest'
 import { scrubSecrets, readRawPage, MAX_ERROR_BODY_CHARS } from '../../../server/utils/raw-page'
 
 describe('scrubSecrets', () => {
+  it('removes the XML-escaped form a blob error body echoes a signed link in', () => {
+    const link = 'https://blob.example/r.csv?sv=2025-01-01&se=2026-10-16&sig=Zm9vYmFyc2ln'
+    const body = `<Error><Code>AuthenticationFailed</Code><Url>${link.replace(/&/g, '&amp;')}</Url></Error>`
+    const out = scrubSecrets(body, [link])
+    expect(out).not.toContain('Zm9vYmFyc2ln')
+    expect(out).toContain('<redacted-credential>')
+  })
+
   it('removes a long credential wherever it appears', () => {
     const out = scrubSecrets('bad key sk-ant-0123456789 (sk-ant-0123456789)', ['sk-ant-0123456789'])
     expect(out).not.toContain('sk-ant-0123456789')

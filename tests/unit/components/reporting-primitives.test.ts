@@ -4,7 +4,7 @@
  * The recurring guardrail across every chip/banner: the word "finalised" is
  * BANNED (settling honesty — nothing is billed-grade).
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 import SettlingStateChip from '../../../app/components/reporting/SettlingStateChip.vue'
 import ProviderFreshnessBar from '../../../app/components/reporting/ProviderFreshnessBar.vue'
@@ -12,7 +12,6 @@ import ForecastBanner from '../../../app/components/reporting/ForecastBanner.vue
 import ExportCsvButton from '../../../app/components/reporting/ExportCsvButton.vue'
 import ReportEmpty from '../../../app/components/reporting/ReportEmpty.vue'
 import ReportSkeleton from '../../../app/components/reporting/ReportSkeleton.vue'
-import ChartsRankedBars from '../../../app/components/charts/RankedBars.vue'
 import type { ProviderState, ReportMeta } from '#shared/reports/types'
 
 describe('SettlingStateChip', () => {
@@ -62,7 +61,6 @@ describe('ForecastBanner', () => {
     asOfDate: '2026-07-10',
     providerStates: [],
     scope: 'across',
-    pointInTimeDims: false,
   }
 
   it('shows the data-anchored projection for the in-progress month', () => {
@@ -121,40 +119,11 @@ describe('ForecastBanner', () => {
       asOfDate: '2026-05-31',
       providerStates: [{ vendor: 'anthropic', state: 'settling', settlesAt: '2026-06-30', closeRun: false }],
       scope: 'across',
-      pointInTimeDims: true,
     }
     const w = mount(ForecastBanner, { props: { forecast: null, actualUsd: 980, meta: closedMeta } })
     expect(w.find('[data-testid="forecast-actual"]').text()).toContain('$980')
     expect(w.text()).toContain('actual for the month')
     expect(w.findComponent(SettlingStateChip).exists()).toBe(true)
-  })
-})
-
-describe('ChartsRankedBars', () => {
-  const rows = [
-    { label: 'MPO', value: 1125, spendClass: 'estimated' as const },
-    { label: 'Trent', value: 141, spendClass: 'pooled-usage' as const, badge: 'pooled' },
-  ]
-
-  it('is an accessible image: role=img + aria-label + per-bar <title>', () => {
-    const w = mount(ChartsRankedBars, { props: { rows } })
-    const svg = w.find('svg')
-    expect(svg.attributes('role')).toBe('img')
-    expect(svg.attributes('aria-label')).toBeTruthy()
-    expect(w.findAll('title').length).toBeGreaterThan(0)
-  })
-
-  it('invokes onSelect on a bar click when interactive', async () => {
-    const onSelect = vi.fn()
-    const w = mount(ChartsRankedBars, { props: { rows, onSelect } })
-    await w.find('svg g').trigger('click')
-    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ label: 'MPO' }))
-  })
-
-  it('shows a quiet empty state with no data', () => {
-    const w = mount(ChartsRankedBars, { props: { rows: [] } })
-    expect(w.find('svg').exists()).toBe(false)
-    expect(w.text()).toContain('No data to rank yet')
   })
 })
 

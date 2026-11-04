@@ -13,8 +13,8 @@ import { sql } from 'drizzle-orm'
 import { requireAuth } from '../../../../auth/rbac'
 import { allocationScopePredicate } from '../../../../auth/allocation-scope'
 import { withRequestRls } from '../../../../db/request-rls'
-import { InboxListQuery, REPORT_DATA_INBOX_CATEGORIES } from '../../../../../shared/schemas/inbox'
-import { activeReportDenySql } from '../../../../auth/report-deny-sql'
+import { InboxListQuery } from '../../../../../shared/schemas/inbox'
+import { isPlatformAdmin } from '../../../../../shared/auth/roles'
 
 interface InboxRow extends Record<string, unknown> {
   id: string
@@ -38,6 +38,15 @@ interface InboxRow extends Record<string, unknown> {
    * emitted when the recipient passes the editor's own dual gate).
    */
   target_allocation_id: string | null
+  /*
+   * For items where related_entity_kind='project', the project's CODE: the
+   * drawer's "Open project →" goes to /projects/{code}. Emitted only when THIS
+   * recipient passes that page's own gate (honourable-links rule): a current
+   * member, an active owner of the project's Business Unit, or an admin in
+   * scope of its region (platform-admin, or that region's admin), the same
+   * three arms as requireProjectMembership + isProjectAdmin. Null otherwise.
+   */
+  target_project_code: string | null
   /*
    * Total rows matched by the filters, computed via COUNT(*) OVER ()
    * before the LIMIT clause clips the result. Use this for unread-bell
@@ -67,6 +76,13 @@ export default defineEventHandler(async (event) => {
     ? sql`AND severity = ${query.severity}`
     : sql``
 
+  // The admin arm of the project page's gate (isProjectAdmin), as SQL operands.
+  const adminAnyRegion = isPlatformAdmin(session.role)
+  const adminRegionId =
+    session.role === 'admin' && typeof session.regionId === 'string' && session.regionId !== ''
+      ? session.regionId
+      : null
+
   const rows = await withRequestRls(event, async (tx) =>
     tx.execute<InboxRow>(sql`
       SELECT
@@ -76,6 +92,7 @@ export default defineEventHandler(async (event) => {
         i.ack_state, i.ack_at::text AS ack_at,
         i.created_at::text AS created_at,
         target_alloc.allocation_id AS target_allocation_id,
+        target_proj.code AS target_project_code,
         COUNT(*) OVER ()::text AS total_matched
       FROM inbox_item i
       LEFT JOIN LATERAL (
@@ -109,12 +126,29 @@ export default defineEventHandler(async (event) => {
          ORDER BY lower(al.effective) DESC
          LIMIT 1
       ) target_alloc ON i.related_entity_kind = 'project'
+      LEFT JOIN LATERAL (
+        SELECT p.code
+          FROM project p
+         WHERE p.id = i.related_entity_id
+           AND (
+             EXISTS (
+               SELECT 1 FROM project_assignment pa
+               WHERE pa.project_id = p.id
+                 AND pa.teammate_id = ${session.teammateId}::uuid
+                 AND pa.effective @> now()
+             )
+             OR EXISTS (
+               SELECT 1 FROM cou_owner co
+               WHERE co.org_unit_id = p.cost_owning_unit_id
+                 AND co.teammate_id = ${session.teammateId}::uuid
+                 AND co.revoked_at IS NULL
+             )
+             OR ${adminAnyRegion}::boolean
+             OR p.region_id = ${adminRegionId}::uuid
+           )
+         LIMIT 1
+      ) target_proj ON i.related_entity_kind = 'project'
       WHERE i.recipient_teammate_id = ${session.teammateId}::uuid
-        -- A deny granted after delivery hides what was already sent.
-        AND NOT (
-          i.category IN (${sql.join(REPORT_DATA_INBOX_CATEGORIES.map((c) => sql`${c}`), sql`, `)})
-          AND ${activeReportDenySql(sql`${session.teammateId}::uuid`)}
-        )
         AND ${ackStateFilter}
         ${categoryFilter}
         ${severityFilter}

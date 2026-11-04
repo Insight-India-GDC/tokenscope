@@ -59,6 +59,7 @@ const fmtUsd = (v: string | number) => `$${Number(v).toFixed(2)}`
 async function mountPage(projects: ProjectCard[]) {
   vi.stubGlobal('fmtUsd', fmtUsd)
   vi.stubGlobal('useSession', () => ({ session: ref({ teammateId: 't1' }), ensure: async () => {} }))
+  vi.stubGlobal('useRoute', () => ({ query: {} }))
   vi.stubGlobal('useFetch', () => ({
     data: ref({ projects, total: projects.length, untagged_usd: '0.00' }),
     pending: ref(false),

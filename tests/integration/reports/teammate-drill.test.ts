@@ -10,7 +10,7 @@
  * $100 row must head at $100 — never at $350.
  *
  * T25 TokenSheet denominators · T28 E3 shape (and its ABSENCES) · T29 the C14
- * extension · T31 the emit-time gate · T32 audit + no-store · T33 the refusal.
+ * extension · T31 the in-frame gate · T32 audit + no-store · T33 the refusal.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { startTestDb, stopTestDb, type TestDb } from '../helpers/db'
@@ -297,10 +297,10 @@ describe('T28 — E3 contribution view: what is there, and what must NOT be', ()
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// T31 — the gate: emit-time homing ∧ is_active, each conjunct isolated
+// T31 — the gate: an in-frame row ∧ is_active, each conjunct isolated
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('T31 — emit-time homing, with is_active a SEPARATE conjunct', () => {
+describe('T31 — an in-frame row, with is_active a SEPARATE conjunct', () => {
   it('a viewer with NO people-scope grant is 403 even inside their own region', async () => {
     // A plain developer holds `regional: own-region` and nothing else; the
     // per-person governance view is not a reporting width.
@@ -308,12 +308,14 @@ describe('T31 — emit-time homing, with is_active a SEPARATE conjunct', () => {
     await expectForbidden(teammateReport(event))
   })
 
-  it('a subject MOVED OUT is still drillable from the scope their spend homed to', async () => {
+  it("a subject MOVED OUT is still drillable from their project's Business Unit", async () => {
     /*
-     * The point of emit-time homing (annex :902-909). Alice's May spend homed to
-     * apac.cto; move her CURRENT placement to apac.delivery and the drill from
-     * apac.cto must still open — gating on current placement would make her a
-     * dead row in the very table that named her.
+     * The current-org lens (docs/design/current-org-lens/00-design.md §3.3):
+     * Alice's $100 is TAGGED to proj-scholarship, whose Business Unit is
+     * apac.cto, and project-tagged usage stays with the project's unit when its
+     * author moves. So the apac.cto frame still holds her row after she moves to
+     * apac.delivery, and the drill opens on it. (Her person-placed rows move
+     * with her — tests/integration/reports/current-org-lens.test.ts.)
      */
     await t.client`UPDATE teammate SET org_unit_id = ${ids.uApacDelivery}::uuid WHERE id = ${ids.alice}::uuid`
     const { body } = await call(ownerSess(), ids.alice, `src=cc:${ids.uApacCto}&${MONTH}`)

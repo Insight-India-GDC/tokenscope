@@ -8,6 +8,8 @@
  *     budget and effective range
  *   - Writes an audit_event recording the actor + reason
  *   - CSRF guarded
+ *   - The insert, cap and audit live in appendProjectTopup, shared with
+ *     approving a budget request
  */
 import { requestClock } from '../../../../utils/request-clock'
 import {
@@ -25,11 +27,9 @@ import { isPlatformAdmin } from '../../../../../shared/auth/roles'
 import { assertSameOrigin } from '../../../../auth/csrf'
 import { withRequestRls } from '../../../../db/request-rls'
 import { requireUuidParam } from '../../../../utils/require-uuid-param'
-import { EffectiveRangeSchema, MAX_LIVE_TOPUPS_PER_PROJECT, TopUpBudgetUsdSchema } from '../../../../utils/allocation-validation'
-import { translatePgConstraintError } from '../../../../utils/pg-constraint-error'
-import { allocation } from '../../../../../drizzle/schema'
-import { recordAuditEvent } from '../../../../db/audit'
-import { advisoryXactLock } from '../../../../db/advisory-lock'
+import { EffectiveRangeSchema, TopUpBudgetUsdSchema } from '../../../../utils/allocation-validation'
+import { appendProjectTopup } from '../../../../allocations/append-topup'
+import { lockProjectRowAt } from '../../../../projects/last-manager'
 
 
 const PostBody = z.object({
@@ -90,6 +90,16 @@ export default defineEventHandler(async (event) => {
   const ua = getHeader(event, 'user-agent') ?? null
 
   return await withRequestRls(event, async (tx) => {
+    // A project allocation: lock the project first (projects/last-manager.ts), so
+    // the PM arm below reads the caller's standing under the lock, at the
+    // post-lock instant, and a PM demoted or removed through the assignment routes while
+    // we waited is read as such.
+    const [scope] = await tx.execute<{ project_id: string }>(sql`
+      SELECT scope_id::text AS project_id FROM allocation
+      WHERE id = ${id}::uuid AND scope_type = 'project'
+    `)
+    const pmAt = scope ? await lockProjectRowAt(tx, scope.project_id, at) : at
+
     // Look up the focused row to inherit its scope. Two gates, a true OR
     // (R1 F4): org roles try the scope predicate first; the PM
     // relationship is then tried for EVERYONE on a miss — so a
@@ -113,7 +123,7 @@ export default defineEventHandler(async (event) => {
             WHERE pa.project_id = a.scope_id
               AND pa.teammate_id = ${session.teammateId}::uuid
               AND pa.role = 'manager'
-              AND pa.effective @> ${at}::timestamptz
+              AND pa.effective @> ${pmAt}::timestamptz
           )
         LIMIT 1
       `)
@@ -152,87 +162,23 @@ export default defineEventHandler(async (event) => {
       })
     }
 
-    // Per-project live top-up cap (H32), counted under a project-keyed lock
-    // so concurrent requests serialise and cannot all pass the same count.
-    // Only a top-up that is itself live counts against the cap: recording an
-    // already-ended one never adds to the live set (same rule as PATCH).
-    await tx.execute(advisoryXactLock('allocationTopup', base.scope_id))
-    const [live] = await tx.execute<{ n: number; becomes_live: boolean }>(sql`
-      SELECT upper(${body.effective}::tstzrange) > ${at}::timestamptz AS becomes_live,
-             (SELECT COUNT(*)::int FROM allocation
-               WHERE scope_type = 'project' AND scope_id = ${base.scope_id}::uuid
-                 AND allocation_kind = 'top-up'
-                 AND upper(effective) > ${at}::timestamptz) AS n
-    `)
-    if (live?.becomes_live && (live.n ?? 0) >= MAX_LIVE_TOPUPS_PER_PROJECT) {
-      throw createError({
-        statusCode: 409,
-        statusMessage: `This project already has ${MAX_LIVE_TOPUPS_PER_PROJECT} active top-ups, the most allowed. Wait for one to end, or raise the baseline instead.`,
-      })
-    }
-
-    // 1) audit_event first (FK target for the new allocation row).
-    const evt = await recordAuditEvent(tx, {
-      eventType: 'allocation-topup-added',
+    const topup = await appendProjectTopup(tx, {
+      projectId: base.scope_id,
+      focusedAllocationId: id,
+      budgetUsd: body.budget_usd,
+      effective: body.effective,
       actorTeammateId: session.teammateId,
-      subjectKind: 'allocation',
-      subjectId: id,
-      payload: {
-        after: {
-          budget_usd: body.budget_usd,
-          effective: body.effective,
-          allocation_kind: 'top-up',
-        },
-        context: {
-          focused_allocation_id: id,
-          scope_type: base.scope_type,
-          scope_id: base.scope_id,
-          reason: body.reason ?? null,
-          // J2: which gate admitted the actor — org role vs PM relationship.
-          via,
-        },
-      },
+      at,
+      reason: body.reason ?? null,
+      // J2: which gate admitted the actor — org role vs PM relationship.
+      context: { via },
       ipAddress: ip,
       userAgent: ua,
     })
 
-    // 2) Append the top-up allocation row. Top-ups STACK (mig 0052): the
-    //    allocation no-overlap EXCLUDE applies to baselines only, and
-    //    fetchProjectAllocation sums every baseline + top-up covering now(),
-    //    so multiple top-ups for the same period simply add up — adding more
-    //    budget to a month that already has a top-up is the normal flow.
-    //    The try/catch is now defensive: a top-up can no longer trip 23P01
-    //    by design, but an unexpected constraint race still surfaces as a
-    //    clean 409 rather than a raw 500.
-    let topup: { id: string } | undefined
-    try {
-      ;[topup] = await tx
-        .insert(allocation)
-        .values({
-          scopeType: base.scope_type,
-          scopeId: base.scope_id,
-          budgetUsd: body.budget_usd,
-          effective: body.effective,
-          allocationKind: 'top-up',
-          createdBy: session.teammateId,
-          auditEventId: evt.id,
-          source: 'manual',
-          isPinned: true,
-        })
-        .returning({ id: allocation.id })
-    } catch (err: unknown) {
-      translatePgConstraintError(err, {
-        '23P01': {
-          title: 'Could not append the top-up',
-          detail:
-            'A concurrent write conflicted with this top-up. Reload the allocation and try again.',
-        },
-      })
-    }
-
     return {
-      id: topup!.id,
-      audit_event_id: evt.id,
+      id: topup.id,
+      audit_event_id: topup.auditEventId,
       appended_at: new Date().toISOString(),
     }
   })

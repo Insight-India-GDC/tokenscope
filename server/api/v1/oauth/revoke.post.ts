@@ -1,8 +1,8 @@
 /*
  * OAuth Token Revocation — RFC 7009.
  *
- * Revokes a refresh token (and thereby its access token, which is the same
- * oauth_token row). Per RFC 7009 §2.2 the server ALWAYS returns 200 regardless
+ * Revokes a refresh or access token; both live on one oauth_token row, so
+ * either ends both. Per RFC 7009 §2.2 the server ALWAYS returns 200 regardless
  * of whether the token existed — so an attacker can't probe which tokens are
  * live. Client-authenticated (client_secret_post); no user session.
  *
@@ -19,7 +19,7 @@
  */
 import { defineEventHandler, readValidatedBody, setResponseHeaders, setResponseStatus, type H3Event } from 'h3'
 import { consola } from 'consola'
-import { validateClientCredentials, revokeRefreshToken } from '../../../auth/oauth'
+import { validateClientCredentials, revokeOAuthToken } from '../../../auth/oauth'
 import { recordAuditEvent } from '../../../db/audit'
 import { getDb } from '../../../db'
 import { revokeRequestSchema, type RevokeRequestBody } from '../../../../shared/schemas/oauth'
@@ -52,9 +52,11 @@ export default defineEventHandler(async (event) => {
   // Always 200 per RFC 7009 — swallow any error so the response can't be used
   // to distinguish valid from invalid tokens.
   try {
-    await revokeRefreshToken(db, body.token, body.client_id)
+    const revoked = await revokeOAuthToken(db, body.token, body.client_id)
+    if (!revoked) return {}
     await recordAuditEvent(db, {
       eventType: 'oauth_token_revoke',
+      actorTeammateId: revoked.teammateId,
       actorSystem: 'oauth',
       subjectKind: 'oauth_client',
       payload: { client_id: body.client_id, token_type_hint: body.token_type_hint ?? null },

@@ -2,6 +2,11 @@
 /*
  * Residual placement freezes at first write (issue #44).
  *
+ * Still the write rule under the current-org lens: the stamps are each row's
+ * RECORDED placement, written once and never edited. Reports no longer read
+ * them (they group by where the person sits now, mig 0162), so the sections
+ * below on the placement correction are history.
+ *
  * ── THE DEFECT ───────────────────────────────────────────────────────────────
  * `unaccounted_usage` refreshed `region_id` / `org_unit_id` from the teammate's
  * CURRENT placement on every recompute, over a trailing 35-day window. So a

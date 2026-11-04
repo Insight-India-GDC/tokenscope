@@ -8,7 +8,7 @@
  * results; `cancel()` bumps the sequence so an in-flight response is also
  * dropped when the caller clears the search.
  */
-import { ref } from 'vue'
+import { getCurrentScope, onScopeDispose, ref } from 'vue'
 
 export function useDebouncedSearch<T>(options: {
   search: (term: string) => Promise<T>
@@ -53,6 +53,10 @@ export function useDebouncedSearch<T>(options: {
     seq++
     pending.value = false
   }
+
+  // A debounce still pending when the component goes away would fire a search
+  // for a page nobody is on (and, in tests, after the globals are unstubbed).
+  if (getCurrentScope()) onScopeDispose(cancel)
 
   return { run, cancel, pending }
 }

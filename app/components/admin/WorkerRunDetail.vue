@@ -182,7 +182,7 @@ const hasResult = computed(
         </thead>
         <tbody>
           <template v-for="c in conditionRows" :key="c.key">
-            <tr class="border-t border-carbon-7" :data-testid="`worker-run-condition-${c.key}`">
+            <tr class="border-t border-calm-2" :data-testid="`worker-run-condition-${c.key}`">
               <td class="font-mono text-carbon py-1 pr-4 align-top">{{ c.key }}</td>
               <td class="py-1 pr-4 align-top">
                 <UiBadge :kind="severityKind(c.entry.severity)">{{ c.entry.severity }}</UiBadge>
@@ -219,7 +219,7 @@ const hasResult = computed(
       <div
         v-for="[k, v] in scalarEntries"
         :key="k"
-        class="flex items-center justify-between gap-2 border-b border-carbon-7 py-1"
+        class="flex items-center justify-between gap-2 border-b border-calm-2 py-1"
       >
         <span class="text-carbon-2 font-mono text-xs">{{ k }}</span>
         <span class="text-carbon font-mono text-xs font-bold">{{ display(v) }}</span>

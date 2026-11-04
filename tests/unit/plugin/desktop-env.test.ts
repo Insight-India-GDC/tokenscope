@@ -24,6 +24,9 @@ import {
   sessionDesktopAttrs,
 } from '../../../plugin/scripts/desktop-env.mjs'
 
+// Windows (#430): skipped on win32 because this file expects the macOS LaunchAgent path under /Users.
+const POSIX_ONLY = process.platform === 'win32'
+
 const IID = '273f7fb3-7001-40a7-9096-3592d14a2328'
 const VALUE = `tokenscope.instance_id=${IID},tool=claude-code`
 
@@ -40,7 +43,7 @@ function recorder() {
   }
 }
 
-describe('isDesktopSession: only the Claude app runs this', () => {
+describe.skipIf(POSIX_ONLY)('isDesktopSession: only the Claude app runs this', () => {
   it('is true for the app’s entrypoint and false for everything else, the CLI included', () => {
     expect(isDesktopSession({ CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' })).toBe(true)
     // Exact only: a near miss is reported by setup, never acted on.
@@ -53,7 +56,7 @@ describe('isDesktopSession: only the Claude app runs this', () => {
   })
 })
 
-describe('desktopAttrsValue: built from the instance id, never passed through', () => {
+describe.skipIf(POSIX_ONLY)('desktopAttrsValue: built from the instance id, never passed through', () => {
   it('carries only the device keys', () => {
     expect(desktopAttrsValue(IID)).toBe(VALUE)
     expect(desktopAttrsValue(IID.toUpperCase())).toBe(VALUE)
@@ -66,7 +69,7 @@ describe('desktopAttrsValue: built from the instance id, never passed through', 
   })
 })
 
-describe('applyDesktopEnv', () => {
+describe.skipIf(POSIX_ONLY)('applyDesktopEnv', () => {
   it('macOS: writes the LaunchAgent for later logins and sets the value now', () => {
     const r = recorder()
     expect(applyDesktopEnv(IID, { platform: 'darwin', home: '/Users/x', ...r, current: () => null })).toEqual({
@@ -155,7 +158,7 @@ describe('applyDesktopEnv', () => {
   })
 })
 
-describe('mergeDesktopAttrs: the user’s own login attributes survive', () => {
+describe.skipIf(POSIX_ONLY)('mergeDesktopAttrs: the user’s own login attributes survive', () => {
   it('keeps other key=value pairs and replaces only ours', () => {
     expect(mergeDesktopAttrs(null, IID)).toBe(VALUE)
     expect(mergeDesktopAttrs('deployment.env=prod, team=apac', IID)).toBe(`deployment.env=prod,team=apac,${VALUE}`)
@@ -183,7 +186,7 @@ describe('mergeDesktopAttrs: the user’s own login attributes survive', () => {
   })
 })
 
-describe('readDesktopEnv and desktopEnvVerdict (status)', () => {
+describe.skipIf(POSIX_ONLY)('readDesktopEnv and desktopEnvVerdict (status)', () => {
   it('reads launchctl on macOS and the user environment key on Windows', () => {
     expect(readDesktopEnv({ platform: 'darwin', exec: () => `${VALUE}\n` })).toBe(VALUE)
     const reg = `\r\nHKEY_CURRENT_USER\\Environment\r\n    OTEL_RESOURCE_ATTRIBUTES    REG_SZ    ${VALUE}\r\n`
@@ -249,7 +252,7 @@ describe('readDesktopEnv and desktopEnvVerdict (status)', () => {
   })
 })
 
-describe('sessionDesktopAttrs (Linux): the session’s own claude process', () => {
+describe.skipIf(POSIX_ONLY)('sessionDesktopAttrs (Linux): the session’s own claude process', () => {
   type Proc = { name: string; ppid: number; environ?: string }
   const tree = (procs: Record<number, Proc>) => {
     const read: string[] = []
@@ -296,7 +299,7 @@ describe('sessionDesktopAttrs (Linux): the session’s own claude process', () =
   })
 })
 
-describe('the Desktop gate trusts only the app, not a project’s settings', () => {
+describe.skipIf(POSIX_ONLY)('the Desktop gate trusts only the app, not a project’s settings', () => {
   const settings = (map: Record<string, Record<string, string>>) => (path: string) => map[path] ?? {}
 
   it('a project .claude/settings(.local).json that sets the entrypoint, at or above cwd, disables the gate', () => {
@@ -319,7 +322,7 @@ describe('the Desktop gate trusts only the app, not a project’s settings', () 
   })
 })
 
-describe('setup (claude-redeem.mjs): the Desktop step never runs outside the Claude app', () => {
+describe.skipIf(POSIX_ONLY)('setup (claude-redeem.mjs): the Desktop step never runs outside the Claude app', () => {
   it('outside Desktop it does not touch the environment and prints nothing', async () => {
     const { desktopSetupStep } = await import('../../../plugin/scripts/claude-redeem.mjs')
     let called = 0
@@ -375,7 +378,7 @@ describe('setup (claude-redeem.mjs): the Desktop step never runs outside the Cla
   })
 })
 
-describe('windowsSystem32Path (emit-helper-spawn.mjs)', () => {
+describe.skipIf(POSIX_ONLY)('windowsSystem32Path (emit-helper-spawn.mjs)', () => {
   it('the fixed C:\\Windows path only; SystemRoot is never consulted', async () => {
     const { windowsSystem32Path } = await import('../../../plugin/scripts/emit-helper-spawn.mjs')
     const has = (paths: string[]) => (p: string) => paths.includes(p)

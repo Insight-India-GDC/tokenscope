@@ -54,7 +54,7 @@ schema, not a reporting toggle:
   whether or not their tools were instrumented. This is _attribution_, not
   chargeback, and it must never read below the provider's own truth.
 - **§B — Billing / chargeback.** The cost-of-record, charged at the grain the
-  provider actually bills (per-user for some, pooled-per-cost-centre for others)
+  provider actually bills (per-user for some, a shared pool for others, as Copilot does)
   and displayed at the grain people care about.
 
 _Showing usage is not the same as charging for it._ Keeping that line clean is
@@ -80,10 +80,11 @@ the difference between a tool people trust and a tool people game.
   vs a real project budget for budgeted work, with **volume** and **velocity**
   limits — budgets that teach, not gates that block.
 - **Reporting scopes & roles.** Developer "my usage", manager budget-burn,
-  finance chargeback, and cost-centre P&L — a six-role RBAC model with
-  region-scoped and platform-wide admins.
-- **Cost-centre ownership & directory placement.** Every token lands on a
-  project, or failing that a named cost-owning unit, placed from your identity
+  finance chargeback, and Business Unit reporting, on three roles: developer,
+  manager and Admin (one admin role, across all regions). Company-wide report
+  access is a per-person grant, not a role.
+- **Business Unit ownership & directory placement.** Every token lands on a
+  project, or failing that a named Business Unit, placed from your identity
   directory.
 
 Provider coverage grows as OpenTelemetry and provider usage APIs allow — Claude

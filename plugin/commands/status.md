@@ -10,12 +10,11 @@ query tools/prompts can run).
 Run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/status.mjs"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/status.mjs" --session "${CLAUDE_SESSION_ID}"
 ```
 
 **Windows without Node** (`node` is not found): run the PowerShell probe
-instead. It prints the same JSON (with `project` null: the repo project check
-needs Node):
+instead. It prints the same JSON, the project-tag check included:
 
 ```
 C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${CLAUDE_PLUGIN_ROOT}/scripts/status.ps1"
@@ -36,7 +35,11 @@ Returns:
 ```json
 {
   "emitting": true,
-  "probe": { "status": 200, "message": "OK: this computer can send usage to TokenScope. ..." },
+  "probe": { "status": 200, "message": "OK: this computer can send usage to TokenScope." },
+  "device": { "instance": "203d6725", "message": "This install is device 203d6725, as listed on your Account page." },
+  "project": { "code": "HBR-2041", "billable": true, "message": "Project tag “HBR-2041” is billable on this environment." },
+  "last_landed": { "at": "2026-10-30T09:12:00Z", "source": "server", "message": "Usage from this computer last arrived at ..." },
+  "work": { "project": { "code": "HBR-2041", "source": "from .tokenscope" }, "activity": { "label": "Research", "source": "folder default" } },
   "last_failure": { "ts": "...", "http_status": 401, "message": "..." },
   "mcp_authed": true
 }
@@ -47,7 +50,7 @@ words (no "emit", "bearer" or "OAuth" in what you say):
 
 - **GREEN — ✓ emitting + connected** (`emitting` true AND `mcp_authed` true):
   this device's emit credential works AND the MCP connection is authed. Quote
-  `probe.message` (it says the check covers the credential, not delivery).
+  `probe.message`, then `last_landed.message` (when usage last arrived).
 - **YELLOW — ⚠ emit-only** (`emitting` true, `mcp_authed` false): usage IS
   recorded, but the MCP server isn't connected, so the query tools/prompts
   (`my_usage`, `tag_session`, the setup/tag/project/usage prompts) can't run.
@@ -77,12 +80,34 @@ Also:
   Mention it when it is not `~/.claude/settings.json`. If `config_dir_refused`
   is present, quote it: CLAUDE_CONFIG_DIR was set but not trusted, so the
   report is about `~/.claude` instead.
+- **This device (`device`)**: quote `device.message` once, so they can match
+  this install to its row on the Account page. The Claude app and the Claude
+  Code CLI on one computer are separate installs with separate devices. Null
+  means this install is not set up.
+- **Project tag billability (`project`)**: `billable` true or false, quote
+  `project.message` (false means spend in this folder is landing untagged: give
+  the re-tag step it names). `billable` null with a `reason` means the check
+  could not run: quote `project.message`, which names why; it is not a warning
+  about the tag itself.
+- **What the work is tagged with (`work`)**: say the project and the activity,
+  each with where it came from (`source`: "set this session" by
+  `/tokenscope:activity`, "from .tokenscope", "from .claude/settings.json", or
+  "folder default", the folder's `tokenscope.activity`). For a folder default,
+  also say `activity.note`: it applies from the next session, and only if it is
+  one of the region's activity types. A project from
+  `.claude/settings.json` has only its `code_hash`; say the folder is tagged
+  there. A null part is "none"; for no activity, mention `/tokenscope:activity`.
+- **Last arrival (`last_landed`)**: when TokenScope last received usage from
+  this computer. `source` `server` is a live answer; `cache` is the status
+  line's last answer (TokenScope could not be asked just now, `checked_at` says
+  when it was); `null` means it is not known (not set up, or never checked).
+  Quote `last_landed.message`. Usage arrives about 4-5 min after it happens, so
+  a time a few minutes old is normal; hours old during active use is worth
+  re-running `/tokenscope:status` for, and then `/tokenscope:setup`.
 - **Last recorded failure**: if `last_failure` is non-null, surface it (HTTP
   `last_failure.http_status`: `last_failure.message` at `last_failure.ts`). Even
   if the live probe now succeeds, a recent sentinel means emission flapped.
 - For the attribution view (recent sessions / what's attributed) use the
   **`my_usage`** MCP tool or the TokenScope **web dashboard**.
 - If `emitting` is false but they just set up: tell them to restart Claude Code.
-  Claude reads telemetry config only at **startup**. (Ingest lag does not affect
-  this probe: it checks the credential, not delivery. Delivery shows in
-  `my_usage` about 4-5 min after real usage.)
+  Claude reads telemetry config only at **startup**.

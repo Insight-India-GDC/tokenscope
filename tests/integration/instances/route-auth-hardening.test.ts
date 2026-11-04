@@ -25,6 +25,7 @@ import { injectTestSession } from '../../helpers/auth'
 import type { Session } from '../../../server/utils/auth'
 import bearerHandler from '../../../server/api/v1/instances/[instanceId]/bearer.get'
 import endHandler from '../../../server/api/v1/instances/[instanceId]/end.post'
+import claudeSessionsHandler from '../../../server/api/v1/instances/[instanceId]/claude-sessions.post'
 import deleteHandler from '../../../server/api/v1/instances/[instanceId].delete'
 
 let t: TestDb
@@ -120,6 +121,11 @@ describe('AUTH-7 — malformed instanceId → 400, not 500', () => {
   it('end.post', async () => {
     expect(await statusOfRejection(endHandler(instanceEvent('not-a-uuid', { method: 'POST' }) as never))).toBe(400)
   })
+  it('claude-sessions.post', async () => {
+    expect(
+      await statusOfRejection(claudeSessionsHandler(instanceEvent('not-a-uuid', { method: 'POST' }) as never)),
+    ).toBe(400)
+  })
   it('36-hex-no-dashes (the known-bad shape) → 400 too', async () => {
     expect(
       await statusOfRejection(bearerHandler(instanceEvent('a'.repeat(36)) as never)),
@@ -151,6 +157,19 @@ describe('AUTH-7 — no unauthenticated existence oracle', () => {
     const missing = randomUUID()
     const sExisting = await statusOfRejection(endHandler(instanceEvent(existing, { method: 'POST', token: 'garbage' }) as never))
     const sMissing = await statusOfRejection(endHandler(instanceEvent(missing, { method: 'POST', token: 'garbage' }) as never))
+    expect(sExisting).toBe(401)
+    expect(sMissing).toBe(401)
+  })
+
+  it('claude-sessions.post: existing and non-existing ids return the SAME status for an unauthenticated caller', async () => {
+    const existing = await enrolInstance()
+    const missing = randomUUID()
+    const sExisting = await statusOfRejection(
+      claudeSessionsHandler(instanceEvent(existing, { method: 'POST', token: 'garbage' }) as never),
+    )
+    const sMissing = await statusOfRejection(
+      claudeSessionsHandler(instanceEvent(missing, { method: 'POST', token: 'garbage' }) as never),
+    )
     expect(sExisting).toBe(401)
     expect(sMissing).toBe(401)
   })

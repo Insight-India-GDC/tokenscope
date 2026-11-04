@@ -52,7 +52,7 @@
  */
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, sep } from 'node:path'
 import { isMainModule } from './is-main.mjs'
 import { execFileSync } from 'node:child_process'
 import { encodeExportLogsServiceRequest } from './otlp-logs.mjs'
@@ -60,8 +60,11 @@ import {
   launchResourceAttrs,
   safeProcessEnv,
   trustedStateDir,
+  claudeInstallStateDir,
   resolveScriptsDir,
+  realHome,
 } from './plugin-runtime.mjs'
+import { assertConfinedPath } from './argv-guard.mjs'
 import { assertSafeEndpoint, unsafeEndpointError } from './endpoint-guard.mjs'
 import { resolveRepoRoot } from './tag-repo.mjs'
 import { emitHelperSpawn, helperScriptName } from './emit-helper-spawn.mjs'
@@ -76,7 +79,12 @@ const HARD_MAX_RECORDS = 50000
 const DEFAULT_MAX_WINDOW_HOURS = 48
 
 // ── arg parsing ────────────────────────────────────────────────────────────
-export function parseArgs(argv) {
+// The transcripts root, on the passwd home: argv here is composed by a model
+// under a prefix grant, so --projects-dir may only narrow inside it, never name
+// a planted directory of transcripts elsewhere (argv-guard.mjs).
+const defaultProjectsRoot = () => join(claudeConfigDir({ home: realHome() }), 'projects')
+
+export function parseArgs(argv, { projectsRoot = defaultProjectsRoot() } = {}) {
   const out = {
     since: null,
     until: null,
@@ -106,7 +114,7 @@ export function parseArgs(argv) {
         out.maxWindowHours = Number(next())
         break
       case '--projects-dir':
-        out.projectsDir = next()
+        out.projectsDir = assertConfinedPath(next() ?? '', { flag: '--projects-dir', roots: [projectsRoot] })
         break
       // Opt-in to sweeping EVERY project/CW transcript on the host. Default is
       // THIS project only (derived from cwd) — a multi-CW host has many other
@@ -400,8 +408,8 @@ function mintBearer(pluginRoot, env, stateDirOverride = undefined, toolDirOverri
   // sandbox dir, this is the net beneath that.
   const underVitest =
     typeof globalThis.__vitest_worker__ === 'object' && globalThis.__vitest_worker__ !== null
-  const stateDir = stateDirOverride ?? trustedStateDir()
-  if (underVitest && stateDir === trustedStateDir()) {
+  const stateDir = stateDirOverride ?? claudeInstallStateDir()
+  if (underVitest && (stateDir === trustedStateDir() || stateDir.startsWith(trustedStateDir() + sep))) {
     throw new Error(
       'refusing to run the emit helper against the REAL state dir from a test — pass an explicit stateDir',
     )
@@ -444,8 +452,8 @@ function mintBearer(pluginRoot, env, stateDirOverride = undefined, toolDirOverri
 // ── main ───────────────────────────────────────────────────────────────────
 async function run(opts, env, now = new Date()) {
   // `opts.stateDir` exists so a test can sandbox the emit helper: mintBearer
-  // otherwise resolves trustedStateDir(), which honours no environment override
-  // by design and therefore cannot be redirected any other way.
+  // otherwise resolves claudeInstallStateDir(), which TOKENSCOPE_STATE_DIR cannot
+  // redirect by design.
   if (!Number.isFinite(opts.maxRecords) || opts.maxRecords <= 0) {
     throw new Error('--max-records must be a positive number')
   }
@@ -568,6 +576,8 @@ async function run(opts, env, now = new Date()) {
       // A black-holed endpoint must fail this batch loud, not hang the whole
       // backfill forever (the batch is retried on re-run; the joiner dedups).
       signal: AbortSignal.timeout(30_000),
+      // Never follow: the scheme guard checked only this URL (curl/PowerShell lanes agree).
+      redirect: 'error',
     })
     if (res.status >= 200 && res.status < 300) {
       emitted += slice.length
@@ -593,8 +603,9 @@ async function run(opts, env, now = new Date()) {
 
 /**
  * `env` with `OTEL_RESOURCE_ATTRIBUTES` ALWAYS rebuilt by `launchResourceAttrs`
- * for the repository containing `cwd`: device identity from the trusted global
- * enrolment, the project tag from the repo root's settings.local.json. An
+ * for the repository containing `cwd`: the instance a live session there emits
+ * under (keptRepoTagEnrolment) and the project tag from the repo root's
+ * settings.local.json. An
  * inherited value is discarded, because a repo-tagged session's process.env
  * is repo-merged (see safeProcessEnv), and a Bash-tool shell has none at all.
  */

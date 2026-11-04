@@ -1,7 +1,7 @@
 /*
  * report-visibility — the ONE source of truth for report-ACCESS vocabulary: a
- * role-derived BASELINE, widened by per-teammate positive GRANTS and zeroed by a
- * per-teammate DENY (`report_access_grant`, migs 0129 + 0130).
+ * role-derived BASELINE, widened by per-teammate positive GRANTS
+ * (`report_access_grant`, mig 0129).
  * Replaces the three-mode admin dial (task #19, mig 0087,
  * `REPORT_VISIBILITY_MODES`/`reportGrants`) — that dial could only say "every
  * region admin" or "every cost-centre owner", org-wide; this says "this
@@ -9,8 +9,7 @@
  *
  * Two positive PERMISSIONS ({@link REPORT_ACCESS_PERMISSIONS}) an admin grants
  * per-teammate: 'operational' (every region + every Business Unit) and
- * 'finance' (the whole-company finance pack); plus ONE deny,
- * {@link REPORT_ACCESS_REVOKE} (mig 0130). {@link baselineGrants} is what every
+ * 'finance' (the whole-company finance pack). {@link baselineGrants} is what every
  * caller holds with NO row at all — role + cost-centre ownership; the ORG-WIDE
  * role (platform-admin) holds the whole company there, every
  * other role is region-bound.
@@ -18,8 +17,7 @@
  * permissions the caller's ACTIVE grants
  * (`server/auth/report-scope.ts::resolveReportPermissions`) return — a widening
  * that applies to ANY role whose baseline lacks that scope, a region `admin`
- * included — and zeroes it outright when an active revoke is present
- * (`resolveReportAccessRevoked`). `ReportScopeGrants` (the resolved per-scope object every reporting
+ * included. `ReportScopeGrants` (the resolved per-scope object every reporting
  * endpoint reads) keeps its SHAPE exactly as before — only what PRODUCES it
  * changed — so `server/auth/report-scope.ts` and the `/reports/**` read path
  * are untouched below the two producer functions.
@@ -47,9 +45,8 @@ import type { Role } from './roles'
 /**
  * The two POSITIVE permissions an admin grants per-teammate
  * (`report_access_grant.permission`, mig 0129). The column's CHECK is pinned
- * 0084-style to {@link REPORT_ACCESS_GRANT_VALUES} — this tuple PLUS the
- * {@link REPORT_ACCESS_REVOKE} deny — as widened by mig 0130; the migration
- * unit test reads both migrations off disk and compares them to that constant.
+ * 0084-style to this tuple (re-narrowed by mig 0158); the migration unit test
+ * reads the migrations off disk and compares them to this constant.
  */
 export const REPORT_ACCESS_PERMISSIONS = ['operational', 'finance'] as const
 export type ReportAccessPermission = (typeof REPORT_ACCESS_PERMISSIONS)[number]
@@ -57,26 +54,6 @@ export type ReportAccessPermission = (typeof REPORT_ACCESS_PERMISSIONS)[number]
 export function isReportAccessPermission(v: string): v is ReportAccessPermission {
   return (REPORT_ACCESS_PERMISSIONS as readonly string[]).includes(v)
 }
-
-/**
- * The REVOKE sentinel (mig 0130). An active `report_access_grant` row with this
- * `permission` value zeroes a teammate's report access — below their role
- * default and below any positive grant. It exists for the "administer, no data
- * access" separation-of-duties case: an org may want an admin who can operate
- * the platform but must not read billed-spend reports. Precedence is DENY-WINS
- * (see {@link effectiveReportGrants}); it is NOT one of the grantable positive
- * {@link REPORT_ACCESS_PERMISSIONS}, so the two sets never overlap.
- *
- * Stored, not a role: revoking is per-PERSON, and it survives a role change, so
- * it lives in the same table as the grants and is set/cleared by the same admin
- * surface. The DB CHECK (mig 0130) pins `permission IN
- * ('operational','finance','revoke-all')`.
- */
-export const REPORT_ACCESS_REVOKE = 'revoke-all' as const
-export type ReportAccessRevoke = typeof REPORT_ACCESS_REVOKE
-
-/** Every value the `report_access_grant.permission` column may hold. */
-export const REPORT_ACCESS_GRANT_VALUES = [...REPORT_ACCESS_PERMISSIONS, REPORT_ACCESS_REVOKE] as const
 
 export const REPORT_ACCESS_PERMISSION_LABELS: Record<ReportAccessPermission, string> = {
   operational: 'Operational reporting (whole company)',
@@ -97,23 +74,6 @@ export const REPORT_ACCESS_PERMISSION_DESCRIPTIONS: Record<ReportAccessPermissio
   operational:
     'Company-wide reporting: every region and Business Unit view, including their billed-spend figures.',
   finance: 'The whole-company finance pack (month close, Business Unit invoices).',
-}
-
-/**
- * Labels + descriptions for EVERY report_access_grant value, including the
- * {@link REPORT_ACCESS_REVOKE} deny (mig 0130). The admin grant surface and the
- * grants list read these so a 'revoke-all' row never renders as an undefined
- * label. The revoke copy states the OPPOSITE of a grant — it takes access away.
- */
-export const REPORT_ACCESS_GRANT_LABELS: Record<(typeof REPORT_ACCESS_GRANT_VALUES)[number], string> = {
-  ...REPORT_ACCESS_PERMISSION_LABELS,
-  'revoke-all': 'Revoke — no report access',
-}
-
-export const REPORT_ACCESS_GRANT_DESCRIPTIONS: Record<(typeof REPORT_ACCESS_GRANT_VALUES)[number], string> = {
-  ...REPORT_ACCESS_PERMISSION_DESCRIPTIONS,
-  'revoke-all':
-    'Remove ALL report access for this person — below their role default and any grant. They can still administer; they see no reports. The "administer, no data" separation of duties.',
 }
 
 /**
@@ -145,7 +105,7 @@ export interface ReportScopeGrants {
    *
    * `'people-scope'` is a GRANT LEVEL, never an admission: holding it is the
    * FIRST conjunct of {@link teammateDrillAdmission}, which still requires the
-   * emit-time homing evidence and `is_active` (D34). It is deliberately NOT a
+   * in-frame row evidence and `is_active` (D34). It is deliberately NOT a
    * region-wide level: the grant model cannot express
    * region-leader-sees-whole-region today (annex E1 :850-867 — recorded open
    * owner decision 2), so this column documents CC-subtree/self, widening only
@@ -250,14 +210,6 @@ function withDrillGrants(
  * through that predicate. `'all'` never touches the predicate — it routes
  * through `costCentreScopeOpts`'s `unbounded` arm, the resolvers' explicit
  * "every BU" path. So the hazard #251 named is designed out, not re-opened.
- *
- * Pulling a specific org-wide admin BELOW this default is an explicit admin
- * action and it IS expressible: an active `report_access_grant` row carrying
- * {@link REPORT_ACCESS_REVOKE} (mig 0130) zeroes their report access.
- * DENY-WINS — {@link effectiveReportGrants} returns {@link REVOKED_GRANTS}
- * before any union, so the deny beats this floor AND any positive grant. What
- * is NOT expressible is a PARTIAL deny (revoke finance, keep operational);
- * that is a deliberate follow-up, not this lever.
  */
 export function baselineGrants(role: Role, ownsCostCentre: boolean): ReportScopeGrants {
   const devTier: ReportScopeGrants = withDrillGrants({
@@ -292,11 +244,6 @@ export function baselineGrants(role: Role, ownsCostCentre: boolean): ReportScope
       // `own-region` floor is degenerate — there is no home region to clamp to,
       // which is exactly how a platform-admin ended up staring at an empty report
       // shell while their backfilled grant sat unread on another teammate row.
-      // The role is the default; an explicit REVOKE
-      // (report_access_grant.permission = 'revoke-all') pulls a specific admin
-      // below it — the "administer, no data access" separation-of-duties case
-      // (see effectiveReportGrants). Finer per-scope granularity is a TODO.
-      //
       // `costCentre: 'all'` is deliberate and SAFE: it routes through the
       // resolvers' `unbounded` arm (costCentreScopeOpts → `unbounded: true`) and
       // the project path's explicit `return null` — NEVER the org-subtree
@@ -393,25 +340,8 @@ function permissionOverlay(
 }
 
 /**
- * What a caller with report access explicitly REVOKED holds: nothing. Every
- * report scope is `false`, so `meta.scopes` is empty and the shell renders the
- * "no access" state — by DESIGN this time, not by the degenerate-floor accident
- * #251 produced. `withDrillGrants` still fills `teammate: false` /
- * `project: 'membership'` (the `me/*` floor everyone keeps — a revoke removes
- * REPORT depth, not membership of one's own projects).
- */
-const REVOKED_GRANTS: ReportScopeGrants = withDrillGrants({
-  across: false,
-  regional: false,
-  costCentre: false,
-  finance: false,
-})
-
-/**
- * The ONE enforcement primitive: (role × ownership × held permissions × the
- * deny) → the caller's effective per-scope grants. An active
- * {@link REPORT_ACCESS_REVOKE} short-circuits to {@link REVOKED_GRANTS}
- * (DENY-WINS, before anything is unioned); otherwise
+ * The ONE enforcement primitive: (role × ownership × held permissions) → the
+ * caller's effective per-scope grants:
  * `baselineGrants(role, ownsCostCentre)` UNION `permissionOverlay(permissions)`,
  * field-wise widest ({@link unionGrants}), then {@link withDrillGrants}. PURE
  * and TOTAL — no DB handle, no throw: an empty `permissions` array degrades to
@@ -422,16 +352,7 @@ export function effectiveReportGrants(caller: {
   role: Role
   ownsCostCentre: boolean
   permissions: readonly ReportAccessPermission[]
-  /**
-   * True when the teammate holds an active {@link REPORT_ACCESS_REVOKE} row.
-   * DENY-WINS: a revoke overrides BOTH the role default and any positive grant,
-   * so it is checked before anything is unioned. Defaults false — an omitted
-   * flag degrades to exactly the pre-revoke behaviour, so every existing caller
-   * is unchanged until it opts in.
-   */
-  revoked?: boolean
 }): ReportScopeGrants {
-  if (caller.revoked) return REVOKED_GRANTS
   const base = baselineGrants(caller.role, caller.ownsCostCentre)
   const overlay = permissionOverlay(caller.permissions)
   return withDrillGrants(unionGrants(base, overlay))
@@ -517,8 +438,8 @@ export function grantsToScopes(g: ReportScopeGrants): string[] {
   else if (rg.allRegions) out.push('Region (all regions)')
   else if (rg.crossRegion) out.push('Region (every region)')
   else if (rg.ownRegion) out.push('Region (own region)')
-  if (g.costCentre === 'all') out.push('Cost centres (all)')
-  else if (g.costCentre === 'owned-or-subtree') out.push('Cost centres (owned)')
+  if (g.costCentre === 'all') out.push('Business Units (all)')
+  else if (g.costCentre === 'owned-or-subtree') out.push('Business Units (owned)')
   if (g.finance) out.push('Finance (whole company)')
   /*
    * The two DRILL columns (D38). They render from this ONE function so the admin
@@ -548,9 +469,9 @@ export function grantsToScopes(g: ReportScopeGrants): string[] {
 export const REPORT_VISIBILITY_PERSONAS = [
   { key: 'developer', label: 'Developer', role: 'developer', ownsCostCentre: false },
   { key: 'manager', label: 'Manager', role: 'manager', ownsCostCentre: false },
-  { key: 'admin', label: 'Region admin', role: 'admin', ownsCostCentre: false },
-  { key: 'cost-centre-owner', label: 'Cost-centre owner', role: 'developer', ownsCostCentre: true },
-  { key: 'platform-admin', label: 'Platform admin', role: 'platform-admin', ownsCostCentre: false },
+  { key: 'admin', label: 'Region admin (retired)', role: 'admin', ownsCostCentre: false },
+  { key: 'cost-centre-owner', label: 'Business Unit owner', role: 'developer', ownsCostCentre: true },
+  { key: 'platform-admin', label: 'Admin', role: 'platform-admin', ownsCostCentre: false },
 ] as const satisfies readonly { key: string; label: string; role: Role; ownsCostCentre: boolean }[]
 
 export type ReportVisibilityPersonaKey = (typeof REPORT_VISIBILITY_PERSONAS)[number]['key']
@@ -568,10 +489,6 @@ export type ReportVisibilityPersonaKey = (typeof REPORT_VISIBILITY_PERSONAS)[num
  * object at full elevation (the whole-company set) — that identity is the point:
  * the two permissions together buy everyone the full report set regardless of
  * starting role, which is what "elevated" means.
- *
- * Neither table states the REVOKED state: a deny is not a third column of the
- * same axis, it short-circuits both ({@link REVOKED_GRANTS} — all-false, for
- * every persona alike), so a per-persona row would say the same thing six times.
  */
 export const WHO_SEES_WHAT_BASELINE: Record<ReportVisibilityPersonaKey, ReportScopeGrants> = {
   developer: { across: false, regional: 'own-region', costCentre: false, finance: false, teammate: false, project: 'membership' },
@@ -641,7 +558,7 @@ export const WHO_SEES_WHAT_REGION_ELEVATED: Record<ReportVisibilityPersonaKey, R
  *   1. {@link namedContributionRow} — may this subject be NAMED in a row, or
  *      must they fold into the aggregate remainder (annex :521-526, C3)?
  *   2. {@link teammateDrillAdmission} — may this viewer OPEN this subject's
- *      reports-depth page (D34's emit-time conjunction, ALWAYS)?
+ *      reports-depth page (D34's in-frame conjunction, ALWAYS)?
  *
  * A name can be NAMED by rule 1 and PLAIN TEXT by rule 2. That is the drill
  * contract working, not a bug: a named row is not automatically a door.
@@ -719,13 +636,13 @@ export interface DrillSubject {
   /** `null` when the row names no target id (`__null_*` keys, folded rows). */
   id: string | null
   /**
-   * CONJUNCT 1 — EMIT-TIME HOMING: ≥1 in-window `v_complete_usage` row for this
-   * subject ALREADY inside the viewer's scope predicate (annex :902-909).
+   * CONJUNCT 1 — IN-FRAME ROW: ≥1 in-window `v_complete_usage_current` row for
+   * this subject inside the viewer's scope predicate (annex :902-909).
    *
-   * NOT "the subject is currently placed in my scope": §A homes point-in-time,
-   * so current-placement gating makes moved-OUT teammates dead rows in the very
-   * table that named them, and lets moved-IN teammates leak history earned
-   * somewhere the viewer cannot see.
+   * Every report groups a person's usage by where they sit NOW (the current-org
+   * lens, docs/design/current-org-lens/00-design.md), so the gate reads the same
+   * lens as the table that named them: a moved person's whole history follows
+   * them, and a drill opens exactly where their row was ranked.
    *
    * Server-side this is the EXISTS the endpoint runs. Client-side the row's own
    * presence in a scope-clamped report IS the evidence — that row was computed

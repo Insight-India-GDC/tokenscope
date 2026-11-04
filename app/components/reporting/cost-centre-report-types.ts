@@ -68,7 +68,7 @@ export interface CostCentreDrill {
   meta: ReportMeta
   cc: { id: string; code: string; displayName: string; regionCode: string }
   /**
-   * §A usage BURN homed by emit-time cost_owning_unit_id — the SAME lane as the
+   * §A usage BURN on the current-lens cost_owning_unit_id — the SAME lane as the
    * tracker card burn, so the drill reconciles to the tracker row (chargeback /
    * billing for this CC lives in the Finance tab, never mixed in here).
    */

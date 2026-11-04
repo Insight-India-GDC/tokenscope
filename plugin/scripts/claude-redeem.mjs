@@ -20,9 +20,11 @@
  *       the Azure Monitor Bearer as a refreshing helper). It carries
  *       `--state-dir` when this redeem was given one (#410).
  *     - env: CLAUDE_CODE_ENABLE_TELEMETRY + logs-only OTLP plumbing +
- *       TOKENSCOPE_BEARER_ENDPOINT + the durable OAuth emit credential
- *       (TOKENSCOPE_OAUTH_REFRESH_TOKEN/_TOKEN_ENDPOINT/_CLIENT_ID) +
+ *       TOKENSCOPE_BEARER_ENDPOINT + TOKENSCOPE_OAUTH_TOKEN_ENDPOINT/_CLIENT_ID +
  *       OTEL_RESOURCE_ATTRIBUTES (tokenscope.instance_id=<sid>,tool=claude-code).
+ *       NOT the refresh token: every process Claude Code spawns inherits this
+ *       env block, so the durable credential lives only in the 0600 device
+ *       store (config.claude-code.json), which the emit helper reads first.
  *   Pre-existing top-level keys other than otelHeadersHelper (e.g. permissions,
  *   statusLine) are always preserved. Same-environment re-runs rotate the credential in place.
  *   When the redeem points at a DIFFERENT deployment than the one currently
@@ -31,7 +33,7 @@
  *   credentials and endpoints from the old environment (a now-removed legacy
  *   TOKENSCOPE_SESSION_TOKEN, TOKENSCOPE_READ_*, TOKENSCOPE_OAUTH_*, and the old
  *   TOKENSCOPE_BEARER_ENDPOINT / OTEL_EXPORTER_OTLP_LOGS_ENDPOINT) cannot survive
- *   at rest pointing at the wrong deployment. Mirrors tag-repo's replaceEnv pin.
+ *   at rest pointing at the wrong deployment.
  *
  * Usage (prefer the --handoff-code form — a base64url code can begin with `-`,
  * which a bare positional arg would be mis-parsed as a flag):
@@ -56,14 +58,15 @@
  *
  * Restart `claude` after running — Claude reads its OTel config once at startup.
  */
-import { existsSync, mkdirSync, realpathSync } from 'node:fs'
+import { mkdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from './is-main.mjs'
 import { resolveApiBase, configuredServerUrl, knownApiOrigins } from './api-base.mjs'
 import { discoverMcpOrigin } from './mcp-origin.mjs'
 import { resolveClaudeConfigDir } from './claude-config-dir.mjs'
+import { staleInstall, staleInstallMessage } from './stale-install.mjs'
 import {
   acceptApiBaseArg,
   assertConfinedPath,
@@ -75,11 +78,10 @@ import {
   httpsPostJson,
   realHome,
   trustedStateDir,
+  claudeStateDir,
   writeDeviceStore,
   attrsInstance,
   assertStoreConsistent,
-  deviceStorePath,
-  legacyStorePath,
   casWriteFile,
   recordSettingsFile,
   recordIsolatedSettingsFile,
@@ -139,7 +141,7 @@ function parseArgs(argv) {
         out.stateDir = assertConfinedPath(flagValue(argv, ++i, flag), { flag, refuseInsideRepo: true })
         break
       case '--settings-path':
-        // The durable OAuth emit credential is written to this path, so it is a
+        // The emit endpoints and client id are written to this path, so it is a
         // trust sink, not merely a location — confine it to the account's own
         // (passwd, HOME-leak-proof) home, the same anchor main() uses for the
         // default. `settings.json` because that is the file Claude Code reads;
@@ -190,6 +192,14 @@ const RETIRED_ENV_KEYS = [
   'TOKENSCOPE_READ_REFRESH_TOKEN',
   'TOKENSCOPE_READ_CLIENT_ID',
 ]
+
+/*
+ * Kept in the envBlock (the store is written from it) but never in settings.json:
+ * that file's env block reaches every hook, Bash command and MCP server Claude
+ * Code spawns. Stripping the MERGED result also removes a copy an older redeem
+ * left behind.
+ */
+export const STORE_ONLY_ENV_KEYS = ['TOKENSCOPE_OAUTH_REFRESH_TOKEN']
 
 function buildClaudeDeviceEnv(claude, oauth) {
   if (!claude) return {}
@@ -302,9 +312,9 @@ function assertClaudeRedeemResponse(resp) {
     throw unsafeEndpointError("Redeem response's oauth_token_endpoint", err)
   }
   // The COMPLETE tuple, under the same rule the helper refuses on, BEFORE either
-  // file is written. settings.json is persisted first and is the helper's source
-  // on a device with no store, so a bundle that fails this check must never
-  // reach it. Throws naming the field, never the value.
+  // file is written. settings.json is persisted first and the store holds the
+  // refresh token, so a bundle that fails this check must reach neither.
+  // Throws naming the field, never the value.
   assertStoreConsistent(
     'claude-code',
     claudeStoreFields(resp.oauth_refresh_token, {
@@ -378,18 +388,15 @@ function claudeStoreFields(oauthRefreshToken, endpoints = {}) {
  * Write this lane's own store, `${dir}/config.claude-code.json`, whole.
  *
  * The helper reads it FIRST (source 1 of the ordered list in
- * otel-headers-helper.sh) and reaches settings.json only when neither this
- * file nor a claimable legacy store exists, so a tagged repo — whose repo-local
- * tag deliberately omits the refresh token — still mints from the device. A failure is fatal when a store is already on
- * disk (it would shadow this enrolment) and best-effort otherwise; the catch
- * distinguishes the two. docs/design/device-store-per-tool-sections.md
+ * otel-headers-helper.sh). It is the only place the refresh token is written,
+ * so a failure is always fatal. docs/design/device-store-per-tool-sections.md
  */
 function writeSharedCredentialStore(oauthRefreshToken, dir, endpoints = {}, helperRecord = undefined) {
   if (!oauthRefreshToken) return
-  // OUTSIDE the best-effort try below: a store that would be refused is a bad
-  // bundle, never an I/O failure to shrug off. `helper` is the record the
-  // settings command was built from, so session start and the repo pin rebuild
-  // the same string (S1, #408).
+  // Before any write: a store that would be refused is a bad bundle, not an
+  // I/O failure. `helper` is the record the
+  // settings command was built from, so session start rebuilds the same string
+  // (S1, #408).
   const fields = assertStoreConsistent('claude-code', {
     ...claudeStoreFields(oauthRefreshToken, endpoints),
     ...(helperRecord ? { helper: helperRecord } : {}),
@@ -436,7 +443,8 @@ function writeSharedCredentialStore(oauthRefreshToken, dir, endpoints = {}, help
    * script's spawns. The real fix is a shared sandboxed spawn helper.
    */
   const underVitest = typeof globalThis.__vitest_worker__ === 'object' && globalThis.__vitest_worker__ !== null
-  if (underVitest && canon(dir) === canon(join(realHome(), '.tokenscope'))) {
+  const realStore = canon(join(realHome(), '.tokenscope'))
+  if (underVitest && (canon(dir) === realStore || canon(dir).startsWith(realStore + sep))) {
     throw new Error(
       'refusing to write the REAL credential store from a test — pass an explicit dir',
     )
@@ -448,48 +456,21 @@ function writeSharedCredentialStore(oauthRefreshToken, dir, endpoints = {}, help
     // docs/design/device-store-per-tool-sections.md
     writeDeviceStore('claude-code', fields, dir)
   } catch (err) {
-    /*
-     * Best-effort ONLY while nothing is left behind to shadow this enrolment.
-     *
-     * The old comment here — "settingsPath already carries the primary
-     * credential" — stopped being true when the helper started REFUSING to pair
-     * a stored credential with an environment destination. The two cases now
-     * differ, so this branch distinguishes them instead of always swallowing:
-     *
-     *  - NO store on disk: the helper's no-store path still reads the
-     *    environment, which settings.json just received. Emission works. A
-     *    failure here is not worth failing an otherwise good enrolment.
-     *  - A store IS on disk: it takes precedence over the environment and we
-     *    could not confirm it matches this enrolment, so it may be a token-only
-     *    or previous-deployment store. That device stops emitting for good while
-     *    redeem prints success — silence plus a success message, which is the
-     *    worst pair available. Fail loudly instead.
-     */
-    let shadowing
-    try {
-      // Either file shadows the environment, so a failed replace of either must
-      // fail the redeem loudly rather than report success over a stale store.
-      shadowing =
-        existsSync(deviceStorePath('claude-code', dir)) || existsSync(legacyStorePath(dir))
-    } catch {
-      shadowing = true // cannot tell — assume the worse case
-    }
-    if (shadowing) {
-      throw new Error(
-        `TokenScope: could not update the device credential store in ${dir}, and an existing ` +
-          'store is still there. The emit helper prefers that store over the environment and ' +
-          'requires the token AND both endpoints in it, so this device would stop emitting. ' +
-          'Enrolment is NOT complete: make the directory writable (mode 0700) and re-run setup.',
-        { cause: err },
-      )
-    }
+    // Always fatal: settings.json no longer carries the credential, so a store
+    // that did not land leaves this device with nothing to emit with.
+    throw new Error(
+      `TokenScope: could not write the device credential store in ${dir}. The emit helper ` +
+        'reads the durable credential only from that store, so this device would not emit. ' +
+        'Enrolment is NOT complete: make the directory writable (mode 0700) and re-run setup.',
+      { cause: err },
+    )
   }
 }
 
 // ── ~/.claude/settings.json writer ─────────────────────────────────────────────
 // Read-merge-write so a developer's pre-existing top-level settings (permissions,
-// statusLine) survive; otelHeadersHelper is ours and is rewritten. Never logs the env block (it carries the
-// refresh token). Refuses to proceed if an existing settings.json is present but
+// statusLine) survive; otelHeadersHelper is ours and is rewritten. Never logs
+// the env block. Refuses to proceed if an existing settings.json is present but
 // unparseable, rather than clobbering it. Writes atomically (temp + rename, 0600)
 // so a concurrent `claude` / SessionStart hook never reads a half-written file.
 //
@@ -497,7 +478,7 @@ function writeSharedCredentialStore(oauthRefreshToken, dir, endpoints = {}, help
 // deployment (the bearer-endpoint host changed), the env block is REPLACED
 // wholesale (replaceEnv) instead of additively merged — otherwise stale
 // credentials/endpoints from the old environment would survive at rest pointing at
-// the wrong deployment (mirrors tag-repo's replaceEnv pin). On a same-environment
+// the wrong deployment. On a same-environment
 // re-run or a fresh device the merge stays ADDITIVE, so an unrelated env key a
 // developer set by hand is preserved. Returns the env-change descriptor so main()
 // can print a one-line note (never a credential).
@@ -523,10 +504,9 @@ function writeClaudeSettings(
   credentialStoreDir = trustedStateDir(),
   { sessionScoped = false, indexDir = trustedStateDir() } = {},
 ) {
-  // BEFORE the first persist. settings.json is the helper's source on a device
-  // with no store, so it must never receive a tuple the store write would then
-  // refuse; main() has already checked the response, this makes the function
-  // safe on its own.
+  // BEFORE the first persist, so settings.json never receives endpoints the
+  // store write would then refuse; main() has already checked the response,
+  // this makes the function safe on its own.
   assertStoreConsistent('claude-code', claudeStoreFields(envBlock.TOKENSCOPE_OAUTH_REFRESH_TOKEN, {
     tokenEndpoint: envBlock.TOKENSCOPE_OAUTH_TOKEN_ENDPOINT,
     bearerEndpoint: envBlock.TOKENSCOPE_BEARER_ENDPOINT,
@@ -560,7 +540,7 @@ function writeClaudeSettings(
     // same-environment re-provision (replaceEnv=false) the additive merge keeps the
     // old env, so a legacy TOKENSCOPE_SESSION_TOKEN/READ_* would otherwise persist at
     // rest. replaceEnv=true already drops them, so this is the same-env safety net.
-    if (merged.env) for (const k of RETIRED_ENV_KEYS) delete merged.env[k]
+    if (merged.env) for (const k of [...RETIRED_ENV_KEYS, ...STORE_ONLY_ENV_KEYS]) delete merged.env[k]
     return JSON.stringify(merged, null, 2) + '\n'
   })
   // Persistent contention means the credential did NOT land; success would lie.
@@ -569,10 +549,9 @@ function writeClaudeSettings(
       `${settingsPath} kept changing while the enrolment was being written — nothing was saved. Re-run setup.`,
     )
   }
-  // Mirror the fresh refresh token into the shared device credential store —
-  // BOTH lanes (this redeem's own env AND any tagged repo relying on the
-  // state-dir fallback) must agree on the same value. Uses envBlock (the
-  // value THIS redeem just minted), not merged.env, though they agree.
+  // The refresh token goes to the device credential store and nowhere else.
+  // Uses envBlock (the value THIS redeem just minted): merged.env no longer
+  // carries it.
   // trustedStateDir(), NOT stateDir(): the latter honours TOKENSCOPE_STATE_DIR
   // from the ambient environment, so running setup inside a hostile repo wrote
   // the DURABLE refresh token into a directory that repo chose. The helper
@@ -635,6 +614,18 @@ async function main() {
     console.error(
       '[tokenscope] handoff code is required (pass it as the first argument or via --handoff-code)',
     )
+    process.exit(1)
+  }
+
+  // #456: a session open across a plugin update still serves the old version's
+  // setup text, pointing here. Stop before the handoff is spent, so nothing an
+  // older redeem would write (or undo) reaches this install.
+  const stale = staleInstall({
+    pluginRoot: fileURLToPath(new URL('..', import.meta.url)),
+    configDir: resolveClaudeConfigDir({ home: realHome() }).dir,
+  })
+  if (stale) {
+    console.error(staleInstallMessage(stale))
     process.exit(1)
   }
 
@@ -718,13 +709,6 @@ async function main() {
   }
 
   const envBlock = buildClaudeDeviceEnv(claude, oauth)
-  // The record the helper command is built from. --state-dir rides along so
-  // the command mints from the store this redeem wrote, not the default one
-  // (#410: without it a session-scoped enrolment minted another identity).
-  const helper = {
-    record: { tool: 'claude-code', platform: process.platform, ...(args.stateDir ? { stateDir: args.stateDir } : {}) },
-    scriptsDir: resolveScriptsDir(),
-  }
   // The durable emit credential lands in this file, which makes the path a
   // trust sink and not merely a location. os.homedir() trusts $HOME, so a
   // leaked or planted HOME writes a live refresh token into a directory
@@ -759,9 +743,18 @@ async function main() {
     )
   }
   const settingsPath = args.settingsPath ?? join(configDir.dir, 'settings.json')
+  const storeDir = args.stateDir || (args.settingsPath ? trustedStateDir() : claudeStateDir(configDir.dir))
+  // The record the helper command is built from. --state-dir rides along so
+  // the command mints from the store this redeem wrote, not the default one
+  // (#410: without it a session-scoped enrolment minted another identity).
+  const recordDir = args.stateDir || (storeDir !== trustedStateDir() ? storeDir : undefined)
+  const helper = {
+    record: { tool: 'claude-code', platform: process.platform, ...(recordDir ? { stateDir: recordDir } : {}) },
+    scriptsDir: resolveScriptsDir(),
+  }
   let envChange
   try {
-    envChange = writeClaudeSettings(settingsPath, helper, envBlock, args.stateDir || trustedStateDir(), {
+    envChange = writeClaudeSettings(settingsPath, helper, envBlock, storeDir, {
       sessionScoped: Boolean(args.settingsPath),
     })
   } catch (err) {

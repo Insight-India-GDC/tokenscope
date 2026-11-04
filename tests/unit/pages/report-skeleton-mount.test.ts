@@ -91,6 +91,7 @@ function stubGlobals(fetchState: { data: Ref<unknown>; pending: Ref<boolean> }) 
     ensure: async () => {},
   }))
   vi.stubGlobal('useRoute', () => ({ params: { code: 'ACME-1' }, query: {} }))
+  vi.stubGlobal('useRouter', () => ({ replace: vi.fn() }))
   vi.stubGlobal('usePersonalLens', () => ref<'usage' | 'chargeback'>('usage'))
   vi.stubGlobal('useRefreshOnVisible', () => {})
   stubServerClock()

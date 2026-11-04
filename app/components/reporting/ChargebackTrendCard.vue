@@ -230,7 +230,7 @@ function compactUsd(v: number): string {
       dashed = run-rate projection to month-end
     </p>
     <p class="mt-2 text-[11px] text-carbon-3 leading-snug" data-testid="chargeback-trend-caveat">
-      Anthropic per-teammate chargeback · Copilot is pooled per cost-centre.
+      Anthropic per-teammate chargeback · Copilot is pooled per Business Unit.
     </p>
   </UiCard>
 </template>

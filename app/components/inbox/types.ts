@@ -19,6 +19,11 @@ export interface InboxItem {
    * exists or the related entity is not a project.
    */
   target_allocation_id: string | null
+  /*
+   * Server-resolved target for "Open project →": the project's code, emitted
+   * only when this recipient can open /projects/{code}. Null otherwise.
+   */
+  target_project_code: string | null
   ack_state: 'unread' | 'read' | 'acknowledged' | 'dismissed' | 'resolved'
   ack_at: string | null
   created_at: string
@@ -31,6 +36,8 @@ export type DrawerBodyVariant =
   | 'untagged'
   | 'personal-subscription'
   | 'over-emission'
+  | 'project-request'
+  | 'budget-request'
   | 'generic'
 
 export function variantForCategory(category: string): DrawerBodyVariant {
@@ -48,7 +55,43 @@ export function variantForCategory(category: string): DrawerBodyVariant {
       return 'personal-subscription'
     case 'over-emission-escalated':
       return 'over-emission'
+    case 'project-request':
+    case 'project-request-decided':
+      return 'project-request'
+    case 'quota-request':
+    case 'quota-request-decided':
+      return 'budget-request'
     default:
       return 'generic'
+  }
+}
+
+/** The words a person reads for a category; an unlisted one shows its raw key. */
+export function categoryLabel(category: string): string {
+  switch (category) {
+    case 'over-budget':
+      return 'Over budget'
+    case 'velocity-warning':
+      return 'Velocity'
+    case 'sync-conflict':
+      return 'Sync conflict'
+    case 'untagged-backlog':
+      return 'Untagged'
+    case 'structural-conflict':
+      return 'Structural'
+    case 'connector-health':
+      return 'Connector'
+    case 'over-emission-escalated':
+      return 'Over-emission'
+    case 'project-request':
+      return 'Project request'
+    case 'project-request-decided':
+      return 'Project decision'
+    case 'quota-request':
+      return 'Budget request'
+    case 'quota-request-decided':
+      return 'Budget decision'
+    default:
+      return category
   }
 }

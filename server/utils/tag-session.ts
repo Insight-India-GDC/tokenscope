@@ -22,6 +22,7 @@ import { sql } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { recordAuditEvent } from '../db/audit'
 import { endedProjectExpr } from '../db/project-predicates'
+import { sessionTagXactLock } from '../db/advisory-lock'
 
 type Tx = PostgresJsDatabase<Record<string, unknown>>
 
@@ -58,14 +59,10 @@ export async function tagSessionTx(
 ): Promise<TagResult> {
   const { setProject, projectVal, setActivity, activityVal } = axes
 
-  // Serialize concurrent tags of the SAME conversation by the SAME teammate. There
-  // are now TWO writers — the web Re-tag dialog AND the agentic MCP tag_session
-  // tool — which can fire together. Without this, both capture the same stale
-  // current-state snapshot below and the session_assignment ON CONFLICT upsert can
-  // stamp a stale PRESERVED axis (e.g. A sets project while B clears activity → B's
-  // upsert reverts A's project). An advisory xact lock orders them; released at
-  // commit/rollback. A hashtext collision only ever over-serializes (harmless).
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${conversationId} || '|' || ${teammateId}::text))`)
+  // Serialise against other tags of this session (or both capture the same stale
+  // snapshot below and the upsert reverts a PRESERVED axis) and against the read
+  // joiner, which takes the same lock to stamp activity on the rows it inserts.
+  await tx.execute(sessionTagXactLock(conversationId, teammateId))
 
   // Ownership: the conversation must have attribution_record rows for ME (the
   // joiner writes them from the unspoofable attestation, incl. itemised
@@ -108,7 +105,12 @@ export async function tagSessionTx(
         )
     `)
     currentProject = ledger?.project_id ?? null
-    currentActivity = ledger?.activity ?? null
+    // NOT the ledger's activity (#475): with no assignment row nobody has tagged
+    // an activity, so whatever the rows carry is the joiner-stamped folder
+    // default. Carrying it here would record it as a MANUAL tag on a project-only
+    // re-tag, and the session would stop following the folder default. The rows
+    // keep showing it either way: only `setActivity` rewrites their activity.
+    currentActivity = null
   }
 
   // Budget gate + lookup — only when SETTING a non-null project.
@@ -213,6 +215,8 @@ export async function tagSessionTx(
   //     "clear this session" means "put it back in the queue", not "leave it
   //     dismissed with no tags".
   const finalProject = setProject ? projectVal : currentProject
+  // A project-only tag keeps the session's MANUAL activity (from its assignment
+  // row); a folder default stays a default (see currentActivity above).
   const finalActivity = setActivity ? activityVal : currentActivity
   if (finalProject === null && finalActivity === null) {
     await tx.execute(sql`
@@ -234,6 +238,16 @@ export async function tagSessionTx(
   // non-UUID conversation id can NEVER abort the whole tag transaction with a
   // 22P02 — the MCP tool lets an agent drive arbitrary session_id strings. The id
   // is preserved in the payload regardless of shape.
+  //
+  // An activity-only tag keeps the session's project: name its code too, so the
+  // caller (/tokenscope:activity, the Copilot skill) does not report "no project"
+  // for a session that still has one. A project the caller cannot see stays null.
+  if (projCode === null && finalProject !== null) {
+    const [kept] = await tx.execute<{ code: string | null }>(sql`
+      SELECT code FROM project WHERE id = ${finalProject}::uuid
+    `)
+    projCode = kept?.code ?? null
+  }
   const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(conversationId)
   await recordAuditEvent(tx, {
     eventType: 'session-tagged',

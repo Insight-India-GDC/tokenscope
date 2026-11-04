@@ -26,6 +26,7 @@ import type { Session } from '../../../server/utils/auth'
 
 import regionsCreate from '../../../server/api/v1/admin/regions.post'
 import orgUnitsCreate from '../../../server/api/v1/admin/org-units.post'
+import { unplacedOrgUnitIdForRegion } from '../../../server/auth/placement-home'
 
 let t: TestDb
 let homeRegionId: string
@@ -180,5 +181,49 @@ describe("org-units.post.ts reserves 'default' (S3 part f)", () => {
       ev({ body: { region_id: region.id, code: 'eng', display_name: 'Engineering', unit_type: 'bu' }, session: platformAdmin() }),
     )
     expect(out.code).toBe('eng')
+  })
+})
+
+describe('org-units.post.ts nests a new unit inside its region (org-setup 01, item 1)', () => {
+  it("a null or absent parent means the region's default unit", async () => {
+    const region = await call<{ id: string }>(
+      regionsCreate,
+      ev({ body: { code: 'osi-nest', display_name: 'OSI Nest' }, session: platformAdmin() }),
+    )
+    for (const [code, parent] of [['nest-null', { parent_id: null }], ['nest-absent', {}]] as const) {
+      const out = await call<{ id: string; path: string }>(
+        orgUnitsCreate,
+        ev({ body: { region_id: region.id, code, display_name: code, unit_type: 'bu', ...parent }, session: platformAdmin() }),
+      )
+      const [row] = await t.db.execute<{ parent_code: string; parent_parent: string | null }>(sql`
+        SELECT p.code AS parent_code, p.parent_id::text AS parent_parent
+        FROM org_unit ou JOIN org_unit p ON p.id = ou.parent_id WHERE ou.id = ${out.id}::uuid
+      `)
+      expect(row).toEqual({ parent_code: 'default', parent_parent: null })
+      expect(out.path).toBe(`osi_nest.${code.replace('-', '_')}`)
+    }
+  })
+
+  it('refuses a parent that is the holding node or anything beneath it (422)', async () => {
+    const region = await call<{ id: string }>(
+      regionsCreate,
+      ev({ body: { code: 'osi-hold', display_name: 'OSI Hold' }, session: platformAdmin() }),
+    )
+    const holdingId = await unplacedOrgUnitIdForRegion(t.db, region.id)
+    const [under] = await t.db.execute<{ id: string }>(sql`
+      INSERT INTO org_unit (region_id, parent_id, path, code, display_name, unit_type, is_cost_owning_unit)
+      VALUES (${region.id}::uuid, ${holdingId}::uuid, 'osi_hold_unplaced.legacy', 'legacy', 'Legacy', 'team', false)
+      RETURNING id::text AS id
+    `)
+    for (const parentId of [holdingId, under!.id]) {
+      await expect(
+        call(
+          orgUnitsCreate,
+          ev({ body: { region_id: region.id, parent_id: parentId, code: 'refused', display_name: 'Refused', unit_type: 'bu' }, session: platformAdmin() }),
+        ),
+      ).rejects.toMatchObject({ statusCode: 422 })
+    }
+    const rows = await t.db.execute<{ n: string }>(sql`SELECT COUNT(*)::text AS n FROM org_unit WHERE code = 'refused'`)
+    expect(Number([...rows][0]!.n)).toBe(0)
   })
 })

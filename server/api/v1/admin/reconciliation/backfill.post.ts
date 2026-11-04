@@ -25,6 +25,7 @@ import { withRequestRls } from '../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../db/audit'
 import { translatePgConstraintError } from '../../../../utils/pg-constraint-error'
 import { reconciliationBackfillRequest } from '../../../../../drizzle/schema'
+import { isRealUtcDay } from '#shared/schemas/activity'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_BACKFILL_DAYS = 90
@@ -32,7 +33,7 @@ const MAX_BACKFILL_DAYS = 90
 const Body = z.object({
   targetKind: z.enum(['org', 'enterprise']),
   targetId: z.string().regex(UUID_RE),
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(isRealUtcDay, 'not a real calendar day'),
 })
 
 function badRequest(detail: string): never {

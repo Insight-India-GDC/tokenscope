@@ -22,7 +22,9 @@ import { join } from 'node:path'
 
 const DIRS = ['plugin/scripts', 'copilot-plugin/scripts'].map((d) => join(process.cwd(), d))
 // Dot-sourced libraries run inside an entry script, after its preamble.
-const LIBRARIES = new Set(['ps-json.ps1'])
+// claude-config-dir.ps1 (#449) defines functions only; claude-redeem.ps1 and
+// status.ps1 dot-source it after their own PSModulePath and PATH pins.
+const LIBRARIES = new Set(['ps-json.ps1', 'claude-config-dir.ps1'])
 
 const scripts = DIRS.flatMap((d) =>
   readdirSync(d)

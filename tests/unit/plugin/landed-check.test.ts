@@ -2,7 +2,7 @@
 /*
  * landed-check (Claude) — the "did my telemetry LAND?" probe
  * (plugin/scripts/landed-check.mjs). It calls GET /instances/{id}/health and
- * writes the last-landed.json cache the always-on statusline reads.
+ * writes the last-landed.claude-code.json cache the always-on statusline reads.
  *
  * Pins the contract the statusline's classifyLanding() now DEPENDS on: on a real
  * 200 the cache carries `ok:true` (so a reached-but-stale answer is judge-able,
@@ -55,7 +55,18 @@ describe('refreshLanded (Claude) — fail-open guards leave the cache untouched'
     writeAccess()
     const r = await refreshLanded({ env: {}, stateDir: dir })
     expect(r).toEqual({ ok: false, reason: 'not-configured' })
-    expect(existsSync(join(dir, 'last-landed.json'))).toBe(false)
+    expect(existsSync(join(dir, 'last-landed.claude-code.json'))).toBe(false)
+  })
+
+  it("attrs naming another instance than the endpoint's → instance-mismatch, no cache written", async () => {
+    // A repo tag can carry another local install's instance id; this /health
+    // answer would then be cached under that install's name.
+    writeAccess()
+    mockFetch(() => ({ ok: true, json: async () => ({ last_emission: '2026-10-15T11:00:00Z' }) }))
+    const other ='tokenscope.instance_id=7c2e9a41-5b0d-4f38-a6e2-d19b8c3f0a57,tool=claude-code'
+    const r = await refreshLanded({ env: { ...env, OTEL_RESOURCE_ATTRIBUTES: other }, stateDir: dir })
+    expect(r).toEqual({ ok: false, reason: 'instance-mismatch' })
+    expect(existsSync(join(dir, 'last-landed.claude-code.json'))).toBe(false)
   })
 
   it('no cached access token → no-token', async () => {
@@ -71,7 +82,16 @@ describe('refreshLanded (Claude) — fail-open guards leave the cache untouched'
     })
     const r = await refreshLanded({ env, stateDir: dir })
     expect(r).toEqual({ ok: false, reason: 'fetch-failed' })
-    expect(existsSync(join(dir, 'last-landed.json'))).toBe(false)
+    expect(existsSync(join(dir, 'last-landed.claude-code.json'))).toBe(false)
+  })
+
+  it('never follows a redirect: the scheme guard checked only the first URL', async () => {
+    writeAccess()
+    const spy = vi.fn(() => ({ ok: false, status: 500 }))
+    vi.stubGlobal('fetch', spy as never)
+    await refreshLanded({ env, stateDir: dir })
+    expect(spy).toHaveBeenCalledOnce()
+    expect((spy.mock.calls[0] as unknown[])[1]).toMatchObject({ redirect: 'error' })
   })
 
   it('non-2xx → http-<status>', async () => {
@@ -107,7 +127,7 @@ describe('refreshLanded (Claude) — S1 fixes 2+3: state dir + endpoint safety',
      * repo's .claude/settings.json env block into the processes it spawns, and
      * the status line is one of them.
      *
-     * That matters here because last-landed.json is not just displayed — it
+     * That matters here because last-landed.claude-code.json is not just displayed — it
      * feeds landedRefreshDue(). A repo that picks this directory can pre-seed a
      * fresh, healthy cache, so the status line reports delivery that is not
      * happening AND skips the refresh that would discover it.
@@ -136,7 +156,7 @@ describe('refreshLanded (Claude) — S1 fixes 2+3: state dir + endpoint safety',
       mockFetch(() => ({ ok: true, json: async () => ({ last_emission: null, silent: true, revoked: false }) }))
       const r = await refreshLanded({ env })
       expect(
-        existsSync(join(poisoned, 'last-landed.json')),
+        existsSync(join(poisoned, 'last-landed.claude-code.json')),
         'the ambient env chose where the delivery cache was written',
       ).toBe(false)
       expect(r.ok).toBe(false)
@@ -166,7 +186,7 @@ describe('refreshLanded (Claude) — success writes the cache the statusline rea
     expect(r.lastBearer).toBe('2026-07-01T00:30:28.697Z')
     expect(r.revoked).toBe(false)
 
-    const cache = JSON.parse(readFileSync(join(dir, 'last-landed.json'), 'utf8'))
+    const cache = JSON.parse(readFileSync(join(dir, 'last-landed.claude-code.json'), 'utf8'))
     expect(cache.ok).toBe(true) // load-bearing: distinguishes reached-but-stale from unreachable
     expect(cache.instanceId).toBe(INSTANCE)
     expect(cache.lastEmission).toBe('2026-06-30 21:38:58.933+00')
@@ -189,7 +209,7 @@ describe('refreshLanded (Claude) — success writes the cache the statusline rea
     }))
     const r = await refreshLanded({ env, stateDir: dir })
     expect(r.tsStart).toBe('2026-06-28T09:00:00.000Z')
-    const cache = JSON.parse(readFileSync(join(dir, 'last-landed.json'), 'utf8'))
+    const cache = JSON.parse(readFileSync(join(dir, 'last-landed.claude-code.json'), 'utf8'))
     // Without this the null last_emission above is indistinguishable from a
     // seconds-old enrolment, which is how a dead device reads as benign cyan.
     expect(cache.tsStart).toBe('2026-06-28T09:00:00.000Z')
@@ -204,7 +224,7 @@ describe('refreshLanded (Claude) — success writes the cache the statusline rea
     const r = await refreshLanded({ env, stateDir: dir })
     expect(r.ok).toBe(true)
     expect(r.tsStart).toBeNull()
-    const cache = JSON.parse(readFileSync(join(dir, 'last-landed.json'), 'utf8'))
+    const cache = JSON.parse(readFileSync(join(dir, 'last-landed.claude-code.json'), 'utf8'))
     expect(cache.tsStart).toBeNull() // classifyLanding then keeps its old neutral behaviour
   })
 
@@ -216,7 +236,7 @@ describe('refreshLanded (Claude) — success writes the cache the statusline rea
     }))
     const r = await refreshLanded({ env, stateDir: dir })
     expect(r.revoked).toBe(true)
-    const cache = JSON.parse(readFileSync(join(dir, 'last-landed.json'), 'utf8'))
+    const cache = JSON.parse(readFileSync(join(dir, 'last-landed.claude-code.json'), 'utf8'))
     expect(cache.revoked).toBe(true)
     expect(cache.ok).toBe(true)
   })

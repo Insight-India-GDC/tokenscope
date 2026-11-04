@@ -31,10 +31,19 @@ param oidcSessionSecret = readEnvironmentVariable('OIDC_SESSION_SECRET')
 param oidcAuthSessionSecret = readEnvironmentVariable('OIDC_AUTH_SESSION_SECRET')
 param oidcTokenKey = readEnvironmentVariable('OIDC_TOKEN_KEY')
 param entraIdClientSecret = readEnvironmentVariable('ENTRA_CLIENT_SECRET')
-// Optional provider credentials: empty = not configured. The GITHUB_* names
-// are the earlier spelling, still read so existing secrets files keep working
-// (GitHub Actions refuses secrets named GITHUB_*).
+// Optional provider credentials: empty = not configured.
 param anthropicApiKey = readEnvironmentVariable('ANTHROPIC_API_KEY', '')
+// GitHub: up to three PATs and one GitHub App key. Register each GitHub
+// enterprise in Admin, Reconciliation under its slot's credential name:
+// GH_PAT_1 and GH_APP_KEY_1 -> github-1, GH_PAT_2 -> github-2, GH_PAT_3 -> github-3.
+param githubPat1 = readEnvironmentVariable('GH_PAT_1', '')
+param githubPat2 = readEnvironmentVariable('GH_PAT_2', '')
+param githubPat3 = readEnvironmentVariable('GH_PAT_3', '')
+param githubAppKey1 = readEnvironmentVariable('GH_APP_KEY_1', '')
+// DEPRECATED: the earlier, named GitHub secrets (and their GITHUB_* spelling).
+// Still read for now so a deployment that set them keeps reconciling under its
+// old credential names; CHANGELOG.md says how to move to the slots above and
+// when these stop being read.
 param githubPatPartnerDemo = readEnvironmentVariable('GH_PAT_PARTNER_DEMO', readEnvironmentVariable('GITHUB_PAT_PARTNER_DEMO', ''))
 param githubPatProduction = readEnvironmentVariable('GH_PAT_PRODUCTION', readEnvironmentVariable('GITHUB_PAT_PRODUCTION', ''))
 param githubPatApacNfr = readEnvironmentVariable('GH_PAT_ENTERPRISE_NFR', readEnvironmentVariable('GITHUB_PAT_APAC_NFR', ''))

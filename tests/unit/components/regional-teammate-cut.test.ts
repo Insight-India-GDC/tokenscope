@@ -379,6 +379,8 @@ async function mountContainer(): Promise<Harness> {
 
   const route = reactive({ query: {} as Record<string, string> })
   stubServerClock()
+  // The container reads the session for the admin-only "Fix org homing →".
+  vi.stubGlobal('useSession', () => ({ session: ref({ role: 'manager' }) }))
   vi.stubGlobal('useFetch', useFetchStub)
   vi.stubGlobal('useRoute', () => route)
   vi.stubGlobal('useRouter', () => ({

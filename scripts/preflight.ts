@@ -106,7 +106,9 @@ interface ServiceDef {
 
 /** The provisioned private-endpoint services to probe, resolved from env. */
 export function resolveServices(env: NodeJS.ProcessEnv = process.env): ServiceDef[] {
-  const pg = parseHostPort(env.DATABASE_URL, 5432)
+  // The entrypoint unsets the owner DATABASE_URL once the app-role URL is set;
+  // both point at the same server.
+  const pg = parseHostPort(env.TOKENSCOPE_APP_DATABASE_URL || env.DATABASE_URL, 5432)
   const redis = parseHostPort(env.REDIS_URL, 6380)
   // AZURE_KEYVAULT_URL is already injected (container-app.bicep) — the vault
   // hostname, not a secret.

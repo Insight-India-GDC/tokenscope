@@ -109,8 +109,6 @@ export default defineEventHandler(async (event) => {
       providerStates: providerStatesForWindow(win, now),
       coverage: await reportCoverageMeta(tx),
       scope: 'cost-centre',
-      // Burn is the point-in-time emit-home cost_owning_unit_id (usage lane).
-      pointInTimeDims: true,
       ...(win.isMonth ? {} : { range: { from: win.from, to: win.to } }),
     }
 
@@ -138,7 +136,7 @@ export default defineEventHandler(async (event) => {
       // cost-owning unit is excluded from it (the labelled §A NULL-CoU gap). The
       // drill's showback/chargeable columns are the SEPARATE teammate-homed lane.
       laneNote:
-        'Per-cost-centre burn is the project cost-owning-unit usage axis. Pooled Copilot usage with no cost-owning unit is excluded here and shown in the finance drill.',
+        'Business Unit burn is usage on the projects each Business Unit leads. Pooled Copilot usage with no Business Unit is excluded here and shown in the finance drill.',
     }
     }),
   )

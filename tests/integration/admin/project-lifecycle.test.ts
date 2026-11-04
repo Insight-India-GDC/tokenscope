@@ -195,6 +195,19 @@ describe('DELETE — four-way emptiness (D4)', () => {
   })
 })
 
+describe('POST — cost-owning unit', () => {
+  it('refuses a plain (non-Business-Unit) org node as cost_owning_unit_id (422, no row)', async () => {
+    const [team] = await t.db
+      .insert(schema.orgUnit)
+      .values({ regionId: regionA, path: 'pla.svc.team', code: 'pla-team', displayName: 'Team', unitType: 'team', isCostOwningUnit: false })
+      .returning()
+    const body = { code: 'PL-TEAM-HOME', display_name: 'Team home', type: 'billable', region_id: regionA, cost_owning_unit_id: team!.id }
+    await expect(createHandler(ev({ method: 'POST', body, session: adminA() }))).rejects.toMatchObject({ statusCode: 422 })
+    const rows = await t.client<{ n: string }[]>`SELECT COUNT(*)::text AS n FROM project WHERE code = 'PL-TEAM-HOME'`
+    expect(Number(rows[0]!.n)).toBe(0)
+  })
+})
+
 describe('code-burn (D6)', () => {
   it('rejects a code burned by a prior attributed-then-deleted project, override allows it', async () => {
     // Simulate the deletion audit a future admin-override delete would write.

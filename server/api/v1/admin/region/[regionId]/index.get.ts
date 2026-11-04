@@ -84,16 +84,11 @@ export default defineEventHandler(async (event) => {
     const counters: Record<string, number> = {}
     for (const r of counts) counters[r.entity] = Number(r.count)
 
-    // Connector status: per-region presence.  Today the connectors
-    // table doesn't exist; surface design-time defaults that vary
-    // by region per design-notes §Screen 5.
-    const regionCode = regionRow.code
-    const connectorStatusByRegion: Record<string, { label: string; status: 'configured' | 'planned' | 'unconfigured' | 'none' }> = {
-      apac: { label: 'PSR (APAC, planned)', status: 'planned' },
-      emea: { label: 'None', status: 'none' },
-      us: { label: 'None', status: 'none' },
-    }
-    const connector = connectorStatusByRegion[regionCode] ?? { label: 'None', status: 'none' }
+    // Connector status. No finance- or HR-system connector exists, for any
+    // region, so every region reports 'none'. This used to return design-time
+    // pilot defaults (APAC "planned"), which the Connectors tab rendered as if
+    // they were real state. When a connector table exists, read it here.
+    const connector: { label: string; status: 'configured' | 'none' } = { label: 'None', status: 'none' }
 
     // Checklist computed from real counts (API-16 — the repos / admin-roles
     // rows previously carried fabricated literals; every figure below now
@@ -137,14 +132,14 @@ export default defineEventHandler(async (event) => {
       // every cost-owning unit gets a P&L owner; every project gets a PM.
       {
         key: 'cou-owners',
-        label: 'Assign cost-centre owners',
+        label: 'Assign Business Unit owners',
         status:
           (counters.cous ?? 0) > 0 && (counters.cous_with_owner ?? 0) >= (counters.cous ?? 0)
             ? 'done'
             : (counters.cous_with_owner ?? 0) > 0
               ? 'in_progress'
               : 'todo',
-        sub: `${counters.cous_with_owner ?? 0} of ${counters.cous ?? 0} cost-owning units have an owner`,
+        sub: `${counters.cous_with_owner ?? 0} of ${counters.cous ?? 0} Business Units have an owner`,
       },
       /*
        * C6 — the largest attribution defect in the product, stated as a checklist
@@ -163,7 +158,7 @@ export default defineEventHandler(async (event) => {
        */
       {
         key: 'teammates-placed',
-        label: 'Place teammates in cost centres',
+        label: 'Place teammates in Business Units',
         status:
           unplacedTeammates === 0
             ? 'done'
@@ -174,8 +169,8 @@ export default defineEventHandler(async (event) => {
           unplacedTeammates === 0
             ? totalTeammates === 0
               ? 'No teammates in this region yet'
-              : `All ${totalTeammates} teammates are in a cost centre`
-            : `${unplacedTeammates} of ${totalTeammates} teammates are not in a cost centre — their spend reaches the region and stops there`,
+              : `All ${totalTeammates} teammates are in a Business Unit`
+            : `${unplacedTeammates} of ${totalTeammates} teammates are not in a Business Unit — their spend reaches the region and stops there`,
       },
       {
         key: 'project-pms',

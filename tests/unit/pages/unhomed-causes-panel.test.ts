@@ -272,8 +272,8 @@ describe('unhomed cause-split panel', () => {
       'Across regions',
       'Regional (own region)',
       'Regional (all regions)',
-      'Cost centres (owned)',
-      'Cost centres (all)',
+      'Business Units (owned)',
+      'Business Units (all)',
       'Finance (whole company)',
     ]) {
       expect(PANEL, `scope name hard-coded in the template: ${scope}`).not.toContain(scope)
@@ -298,18 +298,13 @@ describe('unhomed cause-split panel', () => {
     expect(PANEL).not.toContain('/admin/policies/report-visibility')
   })
 
-  it('says who owns each fix, and that two of them cannot read this page', () => {
+  it('says who owns each fix: Admin, the one admin role, who reads this page', () => {
     // A diagnostic that names a problem without naming its owner is half a
-    // feature; one that implies the reader can fix everything is worse.
+    // feature. Region admin can no longer be granted, so no fix is handed over.
     expect(SRC).toContain('UNHOMED_ACTIONS')
     expect(PANEL).toContain('Owner:')
-    expect(PANEL).toContain('data-testid="admin-diag-unhomed-handover"')
-    expect(
-      says(PANEL, '{{ REGION_ADMIN_LABEL }}</strong> for the region concerned — who cannot'),
-    ).toBe(true)
-    // …and that this makes the list something to HAND OVER. Without this second
-    // sentence the panel names an owner and still implies the reader can act.
-    expect(says(PANEL, 'work to hand over, not work to do here')).toBe(true)
+    expect(PANEL).not.toContain('data-testid="admin-diag-unhomed-handover"')
+    expect(SRC).not.toContain('REGION_ADMIN_LABEL')
   })
 
   it('names the ROLES from the shared persona list, not as free text', () => {
@@ -327,18 +322,15 @@ describe('unhomed cause-split panel', () => {
     for (const label of ['Region admin', 'Global finance']) {
       expect(actions, `role label re-typed in UNHOMED_ACTIONS: ${label}`).not.toContain(label)
     }
-    expect(actions).toContain('REGION_ADMIN_LABEL')
     expect(actions).toContain('ORG_WIDE_LABEL')
-    // …and the handover paragraph goes through the same constant.
-    expect(PANEL).not.toContain('<strong>Region admin</strong>')
-    expect(PANEL).toContain('REGION_ADMIN_LABEL')
+    expect(actions).not.toMatch(/owner: '/)
   })
 
   it('states what is NOT in the figure', () => {
     // Stops an operator chasing a discrepancy against the reconciliation
     // surface, and stops them calling the split wrong when it is merely scoped.
     expect(says(PANEL, 'covers CHARGEABLE spend only')).toBe(true)
-    expect(says(PANEL, 'chargeback-exempt spend can also carry no cost-owning unit')).toBe(true)
+    expect(says(PANEL, 'chargeback-exempt spend can also carry no Business Unit')).toBe(true)
   })
 
   it('admits the history is half live and half snapshot, not uniformly recomputed', () => {

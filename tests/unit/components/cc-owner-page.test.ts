@@ -42,7 +42,6 @@ const meta = {
   providerStates: [],
   coverage: { applicable: true, denominator: 3, connected: 3, nonConnected: 0, stale: false },
   scope: 'cost-centre' as const,
-  pointInTimeDims: true,
 }
 
 const ONE_OPTION: CostCentreScope = {

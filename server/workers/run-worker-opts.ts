@@ -86,6 +86,7 @@ export const workerOptsSchema = z
     startingAt: isoDay.optional(),
     endingAt: isoDay.optional(),
     externalOrgId: z.string().min(1).optional(),
+    retryFailed: z.boolean().optional(),
   })
   .strip()
   .superRefine((v, ctx) => {

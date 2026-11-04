@@ -84,6 +84,8 @@ function mountFinance(clockAt: string | null = TODAY) {
   const mine = { n: 0 }
   calls = mine
   stubServerClock(clockAt)
+  // The container reads the session for the admin-only "Fix org homing →".
+  vi.stubGlobal('useSession', () => ({ session: ref({ role: 'manager' }) }))
   vi.stubGlobal('useFetch', () => ({
     data: ref(null),
     pending: ref(false),

@@ -23,6 +23,8 @@ import allocationGet from '../../../server/api/v1/allocations/[id].get'
 import allocationPatch from '../../../server/api/v1/allocations/[id].patch'
 import allocationsPost from '../../../server/api/v1/allocations/index.post'
 import topupsPost from '../../../server/api/v1/allocations/[id]/topups.post'
+import splitPost from '../../../server/api/v1/allocations/[id]/split.post'
+import clockPin from '../../../server/middleware/clock-pin'
 import { MAX_LIVE_TOPUPS_PER_PROJECT } from '../../../server/utils/allocation-validation'
 import { resolveServerClock } from '../../../shared/reports/clock'
 import allocationsList from '../../../server/api/v1/allocations/index.get'
@@ -386,11 +388,14 @@ describe('H32 — top-up role gate, per-project cap, amount ceiling', () => {
     expect(ok.id).toBeTruthy()
   })
 
-  it(`the ${MAX_LIVE_TOPUPS_PER_PROJECT + 1}th LIVE top-up is a 409 and inserts nothing; expired ones do not count`, async () => {
-    // An expired top-up must not consume quota.
+  it(`the ${MAX_LIVE_TOPUPS_PER_PROJECT + 1}th LIVE top-up is a 409 and inserts nothing; old expired ones do not count`, async () => {
+    // An expired top-up recorded long ago must not consume quota.
     const [oldEvt] = await t.db
       .insert(schema.auditEvent)
-      .values({ eventType: 'allocation-topup-added', actorTeammateId: finopsId, subjectKind: 'allocation', subjectId: capBaselineId, payload: { seed: true } })
+      .values({
+        eventType: 'allocation-topup-added', actorTeammateId: finopsId, subjectKind: 'allocation', subjectId: capBaselineId,
+        payload: { seed: true }, tsRecorded: new Date(Date.now() - 90 * 86_400_000),
+      })
       .returning({ id: schema.auditEvent.id })
     await t.db.insert(schema.allocation).values({
       scopeType: 'project', scopeId: capProjectId, budgetUsd: '1.00',
@@ -415,14 +420,42 @@ describe('H32 — top-up role gate, per-project cap, amount ceiling', () => {
       topupsPost(ev({ method: 'POST', id: capBaselineId, body: { budget_usd: '1.00', effective: FUTURE }, session: finops() })),
     ).rejects.toMatchObject({ statusCode: 409 })
     expect(await topupCount()).toBe(before)
-    // An already-ended top-up never joins the live set, so the full cap does not refuse it.
-    const past = (await topupsPost(
-      ev({ method: 'POST', id: capBaselineId, body: { budget_usd: '1.00', effective: '[2020-03-01T00:00:00Z,2020-04-01T00:00:00Z)' }, session: finops() }),
-    )) as { id: string }
-    expect(past.id).toBeTruthy()
+    // An already-ended top-up is still a new row: the full cap refuses it too.
+    await expect(
+      topupsPost(
+        ev({ method: 'POST', id: capBaselineId, body: { budget_usd: '1.00', effective: '[2020-03-01T00:00:00Z,2020-04-01T00:00:00Z)' }, session: finops() }),
+      ),
+    ).rejects.toMatchObject({ statusCode: 409 })
+    expect(await topupCount()).toBe(before)
   })
 
-  // Runs after the cap test: the project now holds the full live quota plus one expired top-up.
+  it('back-dated top-ups count: a project manager cannot append past the cap with already-ended ranges', async () => {
+    const [p] = await t.db
+      .insert(schema.project)
+      .values({ code: 'OC-BACK', codeHash: 'h-oc-back', displayName: 'Back', type: 'billable', regionId, costOwningUnitId: ouId })
+      .returning()
+    const [evt] = await t.db
+      .insert(schema.auditEvent)
+      .values({ eventType: 'allocation-created', actorTeammateId: finopsId, subjectKind: 'project', subjectId: p!.id, payload: { seed: true } })
+      .returning({ id: schema.auditEvent.id })
+    const [baseline] = await t.db
+      .insert(schema.allocation)
+      .values({ scopeType: 'project', scopeId: p!.id, budgetUsd: '1000.00', effective: FUTURE, allocationKind: 'baseline', auditEventId: evt!.id })
+      .returning({ id: schema.allocation.id })
+    await t.db.insert(schema.projectAssignment).values({
+      projectId: p!.id, teammateId: pmId, effective: '[2020-01-01T00:00:00+00,)', role: 'manager',
+    })
+    const PAST = '[2025-01-01T00:00:00Z,2025-02-01T00:00:00Z)'
+    const post = () =>
+      topupsPost(ev({ method: 'POST', id: baseline!.id, body: { budget_usd: '1.00', effective: PAST }, session: as(pmId, 'developer') }))
+    for (let n = 0; n < MAX_LIVE_TOPUPS_PER_PROJECT; n++) await post()
+    await expect(post()).rejects.toMatchObject({ statusCode: 409 })
+    const [row] = await t.db.execute<{ c: string }>(sql`
+      SELECT COUNT(*)::text AS c FROM allocation WHERE scope_id = ${p!.id}::uuid AND allocation_kind = 'top-up'`)
+    expect(Number(row!.c)).toBe(MAX_LIVE_TOPUPS_PER_PROJECT)
+  })
+
+  // Runs after the cap test: the project now holds the full live quota plus one old expired top-up.
   it('PATCH cannot revive an expired top-up past the live cap, nor raise a top-up above the ceiling', async () => {
     const pick = async (live: boolean) =>
       [
@@ -458,6 +491,136 @@ describe('H32 — top-up role gate, per-project cap, amount ceiling', () => {
       ev({ method: 'PATCH', id: live.id, body: { budget_usd: '2.00', effective: FUTURE }, session: finops() }),
     )) as { id: string }
     expect(ok.id).toBe(live.id)
+  })
+})
+
+describe('a demo clock pin never reaches a write (NUXT_DEPLOY_ENV=sandbox)', () => {
+  let exPmId = ''
+  let pinBaselineId = ''
+  const prevEnv = process.env.NUXT_DEPLOY_ENV
+
+  beforeAll(async () => {
+    process.env.NUXT_DEPLOY_ENV = 'sandbox'
+    const [p] = await t.db
+      .insert(schema.project)
+      .values({ code: 'OC-PIN', codeHash: 'h-oc-pin', displayName: 'Pin', type: 'billable', regionId, costOwningUnitId: ouId })
+      .returning()
+    const [evt] = await t.db
+      .insert(schema.auditEvent)
+      .values({ eventType: 'allocation-created', actorTeammateId: finopsId, subjectKind: 'project', subjectId: p!.id, payload: { seed: true } })
+      .returning({ id: schema.auditEvent.id })
+    const [alloc] = await t.db
+      .insert(schema.allocation)
+      .values({ scopeType: 'project', scopeId: p!.id, budgetUsd: '1000.00', effective: '[2027-05-01T00:00:00Z,2027-06-01T00:00:00Z)', allocationKind: 'baseline', auditEventId: evt!.id })
+      .returning({ id: schema.allocation.id })
+    pinBaselineId = alloc!.id
+    const [ex] = await t.db
+      .insert(schema.teammate)
+      .values({ entraOid: 'oid-oc-expm', email: 'oc-expm@x.test', role: 'developer', regionId, orgUnitId: ouId })
+      .returning()
+    exPmId = ex!.id
+    // A project manager whose tenure has ended.
+    await t.db.insert(schema.projectAssignment).values({
+      projectId: p!.id, teammateId: exPmId, effective: '[2024-01-01T00:00:00+00,2025-01-01T00:00:00+00)', role: 'manager',
+    })
+  })
+  afterAll(() => {
+    if (prevEnv === undefined) delete process.env.NUXT_DEPLOY_ENV
+    else process.env.NUXT_DEPLOY_ENV = prevEnv
+  })
+
+  const exPm = (): Session => ({ teammateId: exPmId, email: 'oc-expm@x.test', displayName: 'X', role: 'developer', regionId, orgPath: 'oc.svc' })
+  const INSIDE_TENURE = '2024-06-01T00:00:00Z'
+
+  it('a GET still honours ?clock= (the pin works in this env)', async () => {
+    const e = ev({ method: 'GET', path: `/x?clock=${INSIDE_TENURE}`, session: exPm() }) as unknown as { context: { serverClock?: { now: string } } }
+    await clockPin(e as never)
+    expect(e.context.serverClock?.now).toBe('2024-06-01T00:00:00.000Z')
+  })
+
+  it('a POST ignores ?clock=, so an ex-project-manager cannot top up by pinning back into their tenure', async () => {
+    const e = ev({
+      method: 'POST', id: pinBaselineId, path: `/x?clock=${INSIDE_TENURE}`, session: exPm(),
+      body: { budget_usd: '10.00', effective: '[2027-05-01T00:00:00Z,2027-06-01T00:00:00Z)' },
+    })
+    await clockPin(e as never)
+    expect((e as unknown as { context: { serverClock?: unknown } }).context.serverClock).toBeUndefined()
+    await expect(topupsPost(e)).rejects.toMatchObject({ statusCode: 403 })
+  })
+})
+
+describe('per-developer caps: /split is audited and is the only writer', () => {
+  const PERIOD = '[2029-01-01T00:00:00Z,2029-02-01T00:00:00Z)'
+  let poolId = ''
+  let splitProjectId = ''
+  const devs: string[] = []
+
+  beforeAll(async () => {
+    const [p] = await t.db
+      .insert(schema.project)
+      .values({ code: 'OC-SPLIT', codeHash: 'h-oc-split', displayName: 'Split', type: 'billable', regionId, costOwningUnitId: ouId })
+      .returning()
+    splitProjectId = p!.id
+    const [evt] = await t.db
+      .insert(schema.auditEvent)
+      .values({ eventType: 'allocation-created', actorTeammateId: finopsId, subjectKind: 'project', subjectId: splitProjectId, payload: { seed: true } })
+      .returning({ id: schema.auditEvent.id })
+    const [pool] = await t.db
+      .insert(schema.allocation)
+      .values({ scopeType: 'project', scopeId: splitProjectId, budgetUsd: '1000.00', effective: PERIOD, allocationKind: 'baseline', auditEventId: evt!.id })
+      .returning({ id: schema.allocation.id })
+    poolId = pool!.id
+    for (const n of ['a', 'b']) {
+      const [d] = await t.db
+        .insert(schema.teammate)
+        .values({ entraOid: `oid-oc-split-${n}`, email: `oc-split-${n}@x.test`, role: 'developer', regionId, orgUnitId: ouId })
+        .returning()
+      devs.push(d!.id)
+      await t.db.insert(schema.projectAssignment).values({ projectId: splitProjectId, teammateId: d!.id, effective: '[2020-01-01T00:00:00+00,)' })
+    }
+  })
+
+  const split = (body: unknown) => splitPost(ev({ method: 'POST', id: poolId, body, session: finops() }))
+  const splitEvents = async () =>
+    [
+      ...(await t.db.execute<{ payload: { before: { mode: string; caps: { teammate_id: string; budget_usd: string }[] }; after: { mode: string; caps: unknown[] } } }>(sql`
+        SELECT payload FROM audit_event
+        WHERE event_type = 'allocation-split-set' AND subject_id = ${splitProjectId}::uuid
+        ORDER BY ts_recorded, id`)),
+    ].map((r) => r.payload)
+
+  it('switching to shared_pool records the dropped caps as before, and an empty after', async () => {
+    await split({ mode: 'per_dev_fixed', caps: devs.map((id) => ({ teammate_id: id, budget_usd: '100.00' })) })
+    await split({ mode: 'shared_pool' })
+
+    const events = await splitEvents()
+    expect(events).toHaveLength(2)
+    expect(events[0]!.before.caps).toEqual([])
+    expect(events[0]!.after.mode).toBe('per_dev_fixed')
+    const dropped = events[1]!
+    expect(dropped.before.mode).toBe('per_dev_fixed')
+    expect(dropped.before.caps.map((c) => c.teammate_id).sort()).toEqual([...devs].sort())
+    expect(dropped.before.caps.every((c) => c.budget_usd === '100.00')).toBe(true)
+    expect(dropped.after).toEqual({ mode: 'shared_pool', caps: [] })
+  })
+
+  it('PATCH refuses a per-developer cap row (400) and leaves it unchanged', async () => {
+    await split({ mode: 'per_dev_fixed', caps: devs.map((id) => ({ teammate_id: id, budget_usd: '400.00' })) })
+    const [cap] = [
+      ...(await t.db.execute<{ id: string }>(sql`
+        SELECT id::text AS id FROM allocation WHERE scope_id = ${splitProjectId}::uuid AND teammate_id IS NOT NULL LIMIT 1`)),
+    ]
+    await expect(
+      allocationPatch(ev({ method: 'PATCH', id: cap!.id, body: { budget_usd: '5000.00', effective: PERIOD }, session: finops() })),
+    ).rejects.toMatchObject({ statusCode: 400, statusMessage: expect.stringContaining('/split') })
+    const [after] = [
+      ...(await t.db.execute<{ budget_usd: string }>(sql`SELECT budget_usd::text AS budget_usd FROM allocation WHERE id = ${cap!.id}::uuid`)),
+    ]
+    expect(after!.budget_usd).toBe('400.00')
+    // The pool itself is still editable.
+    await expect(
+      allocationPatch(ev({ method: 'PATCH', id: poolId, body: { budget_usd: '1200.00', effective: PERIOD }, session: finops() })),
+    ).resolves.toMatchObject({ id: poolId })
   })
 })
 

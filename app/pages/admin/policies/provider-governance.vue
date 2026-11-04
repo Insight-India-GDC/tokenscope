@@ -423,7 +423,7 @@ async function triggerRepull() {
     <UiPageHead
       eyebrow="Policies"
       title="Provider governance"
-      sub="The GitHub-heuristic → governance-data cutover, finance-period close/reopen/restate, and the governance-unresolved backlog (ADR-0011)."
+      sub="The move from GitHub heuristics to governance data, reporting snapshots, the unresolved backlog, personal subscription declarations and Copilot rate plans."
     />
 
     <UiCard data-testid="governance-cutover-card">
@@ -496,7 +496,7 @@ async function triggerRepull() {
         >
           Roll back
         </UiButton>
-        <p class="text-[11px] text-carbon-3 mt-1">Only allowed before any closed finance period has used the new regime.</p>
+        <p class="text-[11px] text-carbon-3 mt-1">Only allowed before any month has been recorded under the new regime.</p>
       </div>
       <p v-if="cutoverError" class="text-xs text-rag-red mt-2" data-testid="cutover-error">{{ cutoverError }}</p>
     </UiCard>
@@ -595,15 +595,15 @@ async function triggerRepull() {
       <UiFetchErrorBanner v-else-if="unresolvedError" :error="unresolvedError" label="the governance-unresolved counts" class="mt-3" @retry="refreshUnresolved()" />
       <div v-else-if="unresolved?.reachable" class="mt-3 grid grid-cols-3 gap-4 text-sm">
         <div>
-          <p class="text-[11px] uppercase text-carbon-3">actual_spend</p>
+          <p class="text-[11px] uppercase text-carbon-3">Provider spend</p>
           <p class="font-mono">{{ unresolved.actualSpend?.pendingBackfill ?? 0 }} pending / {{ unresolved.actualSpend?.parkedUnresolved ?? 0 }} parked</p>
         </div>
         <div>
-          <p class="text-[11px] uppercase text-carbon-3">reconciliation_record</p>
+          <p class="text-[11px] uppercase text-carbon-3">Reconciliation records</p>
           <p class="font-mono">{{ unresolved.reconciliationRecord?.pendingBackfill ?? 0 }} pending / {{ unresolved.reconciliationRecord?.parkedUnresolved ?? 0 }} parked</p>
         </div>
         <div>
-          <p class="text-[11px] uppercase text-carbon-3">pending_placement</p>
+          <p class="text-[11px] uppercase text-carbon-3">Pending placements</p>
           <p class="font-mono">{{ unresolved.pendingPlacement?.unresolved ?? 0 }} unresolved</p>
         </div>
       </div>
@@ -722,8 +722,8 @@ async function triggerRepull() {
     <UiCard class="mt-5" data-testid="copilot-money-model-card">
       <UiEyebrow>Copilot rate plans &amp; overage allocation</UiEyebrow>
       <p class="text-sm text-carbon-2 mt-1">
-        Effective-dated seat price / included allowance (ADR-0011 D9) and the pooled-overage
-        allocation policy (D10) — <strong>forecast/showback and distribution inputs only</strong>.
+        Effective-dated seat price and included allowance, and the pooled-overage
+        allocation policy — <strong>forecast/showback and distribution inputs only</strong>.
         The reconciled enterprise bill net is always the authoritative cost of record; a rate-plan
         change never re-costs a closed month, and allocation only redistributes the overage
         already on the bill.
@@ -739,7 +739,7 @@ async function triggerRepull() {
           id="copilot-ent-select"
           v-model="selectedEnterpriseId"
           :disabled="ratePlansBusy || repullBusy"
-          class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none disabled:bg-calm-2 disabled:text-carbon-3"
+          class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony disabled:bg-calm-2 disabled:text-carbon-3"
           data-testid="copilot-ent-select"
         >
           <option value="">Select an enterprise…</option>
@@ -804,7 +804,9 @@ async function triggerRepull() {
           <p class="text-[12px] font-bold uppercase tracking-[1.2px] text-brand-harmony">Historical bill re-pull</p>
           <p class="text-[12px] text-carbon-2 mt-1">
             Re-pull the Copilot pooled bill straight from GitHub for one explicit month and recompute
-            its overage allocation. Refused for a CLOSED finance period — reopen or restate it first.
+            its overage allocation. The allocation splits the overage by the Business Unit each person
+            sits in when it is computed: the current and previous month follow a restructure on the
+            next scheduled run, and an older month keeps its split until you re-pull it here.
           </p>
           <div class="mt-2 flex flex-wrap items-end gap-2">
             <div>
@@ -831,6 +833,6 @@ async function triggerRepull() {
     </UiCard>
   </div>
   <div v-else class="max-w-[1600px] mx-auto px-10 py-16 text-center" data-admin-page="/admin/policies/provider-governance">
-    <div class="text-lg font-bold text-carbon">Org-wide admin access required.</div>
+    <div class="text-lg font-bold text-carbon">Admin access required.</div>
   </div>
 </template>

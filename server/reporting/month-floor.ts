@@ -100,7 +100,7 @@ export interface MonthFloorScope {
    * wrong 400 on a month the caller does have data in.
    */
   key: string
-  /** Scope predicate over v_complete_usage, or null for whole-company. */
+  /** Scope predicate over v_usage_rollup_current (alias `u`), or null for whole-company. */
   where: SQL | null
 }
 
@@ -139,14 +139,22 @@ export async function reportMonthFloor(
   return load
 }
 
+/*
+ * Read off the day rollup, not the raw lane. Its content is defined as an
+ * aggregate of v_complete_usage (mig 0136), so MIN(day) is the month of
+ * MIN(ts_event) in UTC, and every scope predicate here is the one its headline
+ * already sums the rollup with. On the raw lane a current-placement clamp cannot
+ * be pushed into the arms' stamped indexes, which doubled the uncached scan; the
+ * rollup's (teammate_id, day) index answers it in milliseconds.
+ */
 async function loadFloor(tx: Tx, scope: MonthFloorScope): Promise<string | null> {
   const rows = await tx.execute<{ floor_month: string | null }>(
     scope.where
-      ? sql`SELECT to_char(MIN(ts_event), 'YYYY-MM') AS floor_month
-              FROM v_complete_usage u
+      ? sql`SELECT to_char(MIN(day), 'YYYY-MM') AS floor_month
+              FROM v_usage_rollup_current u
              WHERE ${scope.where}`
-      : sql`SELECT to_char(MIN(ts_event), 'YYYY-MM') AS floor_month
-              FROM v_complete_usage u`,
+      : sql`SELECT to_char(MIN(day), 'YYYY-MM') AS floor_month
+              FROM usage_rollup_daily u`,
   )
   return [...rows][0]?.floor_month ?? null
 }

@@ -12,6 +12,8 @@
  *     peer-region teammate's grant gets the 403 (platform-admin
  *     are region-unbounded). RLS is inert under the owner connection, so this is
  *     the live gate. A missing grant 404s (no existence oracle leaked by scope).
+ *   - Holder rule (canModifyHolderOf): a region admin may not revoke a
+ *     platform-admin's grant.
  *
  * Effect: the SAME revokeGrant primitive as the user path — sets revoked_at and,
  * for an EMIT-scoped grant, ends the OWNING teammate's live instance_attestation
@@ -21,6 +23,8 @@ import { createError, defineEventHandler } from 'h3'
 import { eq } from 'drizzle-orm'
 import { assertSameOrigin } from '../../../../../auth/csrf'
 import { requireRole, requireRegionScope } from '../../../../../auth/rbac'
+import { canModifyHolderOf } from '../../../../../auth/admin-guards'
+import type { Role } from '../../../../../../shared/auth/roles'
 import { schema } from '../../../../../db'
 import { withRequestRls } from '../../../../../db/request-rls'
 import { recordAuditEvent } from '../../../../../db/audit'
@@ -46,6 +50,7 @@ export default defineEventHandler(async (event) => {
         instanceId: schema.oauthToken.instanceId,
         regionId: schema.teammate.regionId,
         teammateEmail: schema.teammate.email,
+        teammateRole: schema.teammate.role,
       })
       .from(schema.oauthToken)
       .innerJoin(schema.teammate, eq(schema.teammate.id, schema.oauthToken.teammateId))
@@ -59,6 +64,9 @@ export default defineEventHandler(async (event) => {
     // Region-bound the admin to the GRANT-OWNER's region. A region admin revoking
     // a peer-region grant is refused here (403), before any mutation.
     await requireRegionScope(event, row.regionId)
+    if (!canModifyHolderOf(session.role, row.teammateRole as Role)) {
+      throw createError({ statusCode: 403, statusMessage: 'Only an Admin may act on this teammate' })
+    }
 
     const revoked = await revokeGrant(tx, row)
 

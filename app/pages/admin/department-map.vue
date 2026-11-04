@@ -5,7 +5,8 @@
  * appear on a provider bill before they ever log in. Any tenant keys on the
  * attribute that is region-correlated on THEIR directory (companyName at
  * Insight); the Discover panel samples the directory and shows which one that
- * is. GLOBAL roles only. Region leaders are the manager-walk FALLBACK layer.
+ * is. GLOBAL roles only. Unit rules and a Business Unit owner or Region leader in a person's
+ * manager chain outrank these rules.
  */
 import { computed, ref } from 'vue'
 import { consola } from 'consola'
@@ -17,6 +18,8 @@ import {
   type MatchMode,
 } from '#shared/placement/region-attributes'
 import type { AttributeDistribution } from '#shared/placement/field-distribution'
+import type { PlacementRulePreviewRequest } from '#shared/placement/placement-check'
+import PlacementRulePreview from '../../components/admin/PlacementRulePreview.vue'
 
 definePageMeta({ layout: 'admin', middleware: 'admin' })
 
@@ -87,6 +90,11 @@ const formRegion = ref('')
 const saving = ref(false)
 const formHint = computed(() => regionAttribute(formAttribute.value)?.hint ?? '')
 const selectedRegion = computed(() => regions.value.find((r) => r.id === formRegion.value))
+const previewDraft = computed<PlacementRulePreviewRequest | null>(() =>
+  formValue.value.trim() && formRegion.value
+    ? { attribute: formAttribute.value, match_mode: formMode.value, match_value: formValue.value.trim(), region_id: formRegion.value }
+    : null,
+)
 
 function prefill(attribute: string, value: string, mode: MatchMode = 'exact') {
   formAttribute.value = attribute
@@ -176,9 +184,11 @@ async function discover() {
     />
     <p class="-mt-4 mb-8 text-sm text-carbon-2 leading-relaxed max-w-3xl">
       A rule says “when a teammate's <strong>&lt;attribute&gt;</strong> equals <strong>&lt;value&gt;</strong>, their
-      region is <strong>&lt;R&gt;</strong>”. This is the first placement layer;
-      <NuxtLink to="/admin/regions" class="text-brand-harmony hover:underline">Region leaders</NuxtLink>
-      (the manager-walk) are the fallback, then Unassigned.
+      region is <strong>&lt;R&gt;</strong>”. A unit rule, a Business Unit owner in the person's manager chain
+      and a <NuxtLink to="/admin/regions" class="text-brand-harmony hover:underline">Region leader</NuxtLink>
+      in it all outrank it. With none of these, a first sign-in lands on the default region's Unplaced
+      node; someone first seen on a bill lands on their billing region's Unplaced node when it is known
+      (Copilot), otherwise on Unassigned.
       Not sure which attribute? <strong>Discover</strong> samples your directory below.
     </p>
 
@@ -186,7 +196,7 @@ async function discover() {
       v-if="toast"
       :data-testid="`region-rules-toast-${toast.kind}`"
       class="mb-4 p-3 rounded-md text-sm font-medium"
-      :class="toast.kind === 'ok' ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30' : 'bg-brand-hunger/10 text-brand-hunger border border-brand-hunger/30'"
+      :class="toast.kind === 'ok' ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30' : 'bg-brand-hunger/10 text-brand-heart border border-brand-hunger/30'"
     >
       {{ toast.message }}
     </div>
@@ -258,7 +268,7 @@ async function discover() {
         </label>
         <label class="text-[12px] font-semibold text-carbon">
           Value
-          <input v-model="formValue" data-testid="rule-value" :placeholder="regionAttribute(formAttribute)?.example" class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none">
+          <input v-model="formValue" data-testid="rule-value" :placeholder="regionAttribute(formAttribute)?.example" class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony">
         </label>
         <div>
           <label class="text-[12px] font-semibold text-carbon">
@@ -285,13 +295,17 @@ async function discover() {
         </UiButton>
       </div>
       <p class="text-[11px] text-carbon-3 mt-2 leading-relaxed">{{ formHint }}</p>
+      <div class="mt-4 pt-4 border-t border-calm-2">
+        <p class="text-[12px] text-carbon-2 mb-2">Preview lists who would derive a different placement with this rule, from the last placement check.</p>
+        <PlacementRulePreview :draft="previewDraft" />
+      </div>
     </UiCard>
 
     <!-- Rules -->
     <UiFetchErrorBanner v-if="error" :error="error" label="region rules" @retry="refresh" />
     <AdminPageSkeleton v-else-if="data == null" :toolbar="false" />
     <div v-else-if="!rules.length" class="p-6 rounded-lg border border-calm-2 text-center" data-testid="region-rules-empty">
-      <p class="text-sm text-carbon-2">No region rules yet. Run <strong>Discover</strong> to see which attribute maps to region, then add rules — or unplaced people fall back to Region leaders and Unassigned.</p>
+      <p class="text-sm text-carbon-2">No region rules yet. Run <strong>Discover</strong> to see which attribute maps to region, then add rules. Until then, people are placed by unit rules and the owners and Region leaders in their manager chain, or fall back as described above.</p>
     </div>
     <div v-else class="flex flex-col gap-6" data-testid="region-rules-list">
       <div v-for="g in rulesByAttribute" :key="g.attribute">
@@ -311,6 +325,6 @@ async function discover() {
     </div>
   </div>
   <div v-else class="max-w-[1600px] mx-auto px-10 py-16 text-center" data-admin-page="/admin/department-map">
-    <div class="text-lg font-bold text-carbon">Global finance access required.</div>
+    <div class="text-lg font-bold text-carbon">Admin access required.</div>
   </div>
 </template>

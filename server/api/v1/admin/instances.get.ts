@@ -4,10 +4,12 @@
  *
  * Two-layer RBAC: requireRole(admin) at the edge +
  * requireRegionScope(region) so a region admin can't pivot to another
- * region by passing ?region=. The READ carries an EXPLICIT
- * `WHERE region_id = <region>` predicate — RLS is inert under the owner
- * connection (request-rls.ts), so the same region predicate that bounds
- * the revoke action must bound the read (ADR-0005 STRIDE fix).
+ * region by passing ?region=. The READ carries an EXPLICIT region predicate
+ * — RLS is inert under the owner connection (request-rls.ts), so the same
+ * region boundary that bounds the revoke action must bound the read
+ * (ADR-0005 STRIDE fix). Both use the region the device's teammate sits in
+ * now, not the one stamped on the device at enrolment
+ * (docs/design/current-org-lens/00-design.md).
  *
  * Per instance: the same fields as /me/instances (revoked/silent/
  * last_emission/spend_usd_mtd) PLUS the owning teammate (email,
@@ -74,14 +76,15 @@ export default defineEventHandler(async (event) => {
         ${instanceMetricColumns(monthStartIso)}
       FROM instance_attestation ia
       JOIN teammate t ON t.id = ia.teammate_id
-      WHERE ia.region_id = ${region}::uuid
+      WHERE t.region_id = ${region}::uuid
       ORDER BY ia.ts_start DESC
       LIMIT ${query.limit} OFFSET ${query.offset}
     `)
     const totalRows = await tx.execute<{ total: string }>(sql`
       SELECT COUNT(*)::text AS total
       FROM instance_attestation ia
-      WHERE ia.region_id = ${region}::uuid
+      JOIN teammate t ON t.id = ia.teammate_id
+      WHERE t.region_id = ${region}::uuid
     `)
     return { rows: [...dataRows], total: Number([...totalRows][0]?.total ?? 0) }
   })

@@ -23,6 +23,9 @@ const root = resolve(__dir, '..')
 
 const FILES = [
   'copilot-forwarder.mjs',
+  // copilot-session.mjs (#475): the last-session note both senders write and the
+  // `activity` skill reads; a drifted copy would key the note differently.
+  'copilot-session.mjs',
   // copilot-emit.mjs / copilot-usage.mjs — the shared emit primitives and the
   // usage-extension core; both carry the credential and endpoint guards.
   'copilot-emit.mjs',

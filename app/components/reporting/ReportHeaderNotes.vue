@@ -6,7 +6,7 @@
  * WHAT IT REPLACES. The Region header printed, in order: three settling chips
  * (Anthropic / GitHub Copilot / Usage, each reading "Estimated · month in
  * progress" — one fact, said three times), a coverage marker with its
- * descriptor, "Usage dimensions as at emit (point-in-time)", and the lane
+ * descriptor, a note on how usage was placed, and the lane
  * explainer. Six lines of commentary before the reader reached the figure they
  * came for.
  *
@@ -26,7 +26,7 @@
  *
  * A PAGE WITH NOTHING TO CAVEAT SAYS NOTHING. The chip renders only when there is
  * a real caveat — a settling clock, or coverage the server could not claim. The
- * lane explainer and the point-in-time note are CONTEXT, not caveats: they ride
+ * lane explainer and the placement note are CONTEXT, not caveats: they ride
  * inside the panel when it opens but they never summon the chip on their own,
  * because an amber chip over a page with nothing provisional on it is exactly the
  * over-statement this component exists to remove.
@@ -40,7 +40,7 @@ import { computed } from 'vue'
 import UiBadge from '../ui/Badge.vue'
 import SettlingStateChip from './SettlingStateChip.vue'
 import CoverageMarker from './CoverageMarker.vue'
-import { REPORT_LANE_CAPTIONS } from './lane-captions'
+import { PLACEMENT_NOTE, REPORT_LANE_CAPTIONS } from './lane-captions'
 import type { ReportLane } from '../../composables/useReportState'
 import type { ProviderState, ReportCoverageMeta } from '#shared/reports/types'
 
@@ -49,12 +49,12 @@ const props = withDefaults(
     /** Every vendor clock the page's figures sit on — one chip each, inside. */
     providerStates?: ProviderState[]
     coverage?: ReportCoverageMeta | null
-    /** `meta.pointInTimeDims` — the dimensions-as-at-emit note, when the server sets it. */
-    pointInTimeDims?: boolean
+    /** Carry the placement note (PLACEMENT_NOTE) — on every page that groups usage by placement. */
+    placementNote?: boolean
     /** The active lens, selecting which explainer sentence to carry. */
     lane?: ReportLane
   }>(),
-  { providerStates: () => [], coverage: null, pointInTimeDims: false, lane: 'usage' },
+  { providerStates: () => [], coverage: null, placementNote: false, lane: 'usage' },
 )
 
 /*
@@ -132,8 +132,8 @@ const laneCaption = computed(() => REPORT_LANE_CAPTIONS[props.lane])
 
       <CoverageMarker :coverage="coverage" />
 
-      <p v-if="pointInTimeDims" class="text-[11px] text-carbon-3 italic">
-        Usage dimensions as at emit (point-in-time)
+      <p v-if="placementNote" class="text-[11px] leading-snug text-carbon-3" data-testid="notes-placement">
+        {{ PLACEMENT_NOTE }}
       </p>
 
       <p v-if="laneCaption" class="text-[11px] leading-snug text-carbon-3" data-testid="notes-lane-caption">

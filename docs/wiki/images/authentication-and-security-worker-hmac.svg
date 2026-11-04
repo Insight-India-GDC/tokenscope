@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1010 610" width="1010" height="610" role="img" aria-labelledby="t d">
   <title id="t">A worker trigger runs only with a fresh, valid HMAC signature over the exact request, and every authentication failure looks the same to the caller.</title>
-  <desc id="d">Lifelines for the cron job, the require-front-door middleware, verifyInternalRequest, the worker dispatch and the named worker. The job signs timestamp, method, path and body hash with HMAC-SHA256 and posts to the run-worker route with timestamp and signature headers. With a Front Door id set the edge check requires the matching X-Azure-FDID header. The signature check accepts a timestamp within 300 seconds and a constant-time signature match; any failure returns the same 401. Dispatch returns 404 for an unknown worker name before loading worker code, allows one run per worker at a time with 409 for a busy worker, then runs the worker and returns its result. The job exits 0 on success or a busy 409, and 1 otherwise.</desc>
+  <desc id="d">Lifelines for the cron job, the require-front-door middleware, verifyInternalRequest, the worker dispatch and the named worker. The job signs timestamp, method, path and body hash with HMAC-SHA256 and posts to the run-worker route with timestamp and signature headers. With a Front Door id set the edge check requires the matching X-Azure-FDID header. The signature check accepts a timestamp within 60 seconds and a constant-time signature match; any failure returns the same 401. Dispatch returns 404 for an unknown worker name before loading worker code, allows one run per worker at a time with 409 for a busy worker, then runs the worker and returns its result. The job exits 0 on success or a busy 409, and 1 otherwise.</desc>
   <style>
     svg {
       --bg: #ffffff; --panel: #ffffff; --fg: #1b2230; --fg2: #4d586b; --line: #c9d0db; --zone: #f3f5f8;
@@ -101,7 +101,7 @@
   <circle class="cn" cx="322" cy="228" r="10"/><text class="cnt" x="322" y="232" text-anchor="middle">4</text>
   <polyline class="e accent" points="506,244 544,244 544,266 508,266" marker-end="url(#ah-acc)"/>
   <circle class="cn accent" cx="544" cy="255" r="10"/><text class="cnt accent" x="544" y="259" text-anchor="middle">5</text>
-  <text class="s acc halo" x="562" y="253">timestamp within ±300 s</text>
+  <text class="s acc halo" x="562" y="253">timestamp within ±60 s</text>
   <text class="s acc halo" x="562" y="267">signature equal, constant time</text>
   <line class="e dashed bad" x1="500" y1="304" x2="102" y2="304" marker-end="url(#ah-bad)"/>
   <text class="lbl halo" x="290" y="289" text-anchor="middle">any failure: the same 401</text>

@@ -1,6 +1,6 @@
 /*
  * clock-pin middleware — seeds `event.context.serverClock` from `?clock=` /
- * the pin cookie, in demo-capable envs only.
+ * the pin cookie, in demo-capable envs only, on GET and HEAD only.
  *
  * The whole decision lives in `server/utils/clock-pin.ts` (pure, unit-tested);
  * this file is the h3 plumbing. It runs BEFORE every handler, so `requestClock`
@@ -21,6 +21,9 @@ export default defineEventHandler((event) => {
   // Nothing to do on the overwhelming majority of requests — check before
   // classifying the env so this costs a property read, not a string parse.
   if (query === undefined && cookie === undefined) return
+  // Writes always run on the wall clock: a pinned clock would move the
+  // tenure and cap checks they make. The cookie is left alone for the reads.
+  if (event.method !== 'GET' && event.method !== 'HEAD') return
 
   const verdict = resolveClockPin({
     demoCapable: isDemoCapableEnv(currentServerDeployEnv()),

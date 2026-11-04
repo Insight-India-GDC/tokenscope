@@ -88,7 +88,7 @@ export default defineEventHandler(async (event) => {
       regionId: project.region_id,
       mustBeActive: true,
       mustBeCostOwning: true,
-      statusMessage: 'to_cost_owning_unit_id is not an active cost-owning unit in this region',
+      statusMessage: 'to_cost_owning_unit_id is not an active Business Unit in this region',
     })
 
     const plan = await planRehome(tx, {

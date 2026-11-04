@@ -244,7 +244,7 @@ function asRow(row: Record<string, unknown>): TagRow {
       class="mb-4 p-3 rounded-md text-sm font-medium"
       :class="toast.kind === 'ok'
         ? 'bg-brand-harmony-sheer text-brand-harmony border border-brand-harmony/30'
-        : 'bg-brand-hunger/10 text-brand-hunger border border-brand-hunger/30'"
+        : 'bg-brand-hunger/10 text-brand-heart border border-brand-hunger/30'"
     >
       {{ toast.message }}
     </div>
@@ -259,7 +259,7 @@ function asRow(row: Record<string, unknown>): TagRow {
             type="text"
             maxlength="64"
             placeholder="e.g. spike"
-            class="px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none min-w-[220px]"
+            class="px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony min-w-[220px]"
             data-testid="activity-tag-new-label"
           >
         </div>
@@ -270,7 +270,7 @@ function asRow(row: Record<string, unknown>): TagRow {
             type="number"
             min="0"
             placeholder="0"
-            class="px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none w-24"
+            class="px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony w-24"
             data-testid="activity-tag-new-sort"
           >
         </div>
@@ -310,7 +310,7 @@ function asRow(row: Record<string, unknown>): TagRow {
                 v-model="editLabel"
                 type="text"
                 maxlength="64"
-                class="px-2 py-1 text-sm border border-brand-harmony rounded-md focus:outline-none"
+                class="px-2 py-1 text-sm border border-brand-harmony rounded-md"
                 :data-testid="`activity-tag-edit-input-${asRow(row).id}`"
                 @keyup.enter="saveEdit(asRow(row))"
                 @keyup.esc="cancelEdit()"
@@ -347,7 +347,7 @@ function asRow(row: Record<string, unknown>): TagRow {
               min="0"
               :value="asRow(row).sort_order"
               :disabled="mutating.has(asRow(row).id)"
-              class="w-20 px-2 py-1 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+              class="w-20 px-2 py-1 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
               :data-testid="`activity-tag-sort-${asRow(row).id}`"
               @change="setSort(asRow(row), ($event.target as HTMLInputElement).value)"
             >
@@ -379,7 +379,7 @@ function asRow(row: Record<string, unknown>): TagRow {
             <span
               v-else
               class="text-[11px] text-carbon-3 italic cursor-help"
-              title="Global standard tags can only be managed by a platform-admin."
+              title="Global standard tags can only be managed by an Admin."
               :data-testid="`activity-tag-readonly-${asRow(row).id}`"
             >
               read-only

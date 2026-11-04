@@ -308,16 +308,31 @@ describe('region derivation (mig 0068) — department + manager-chain → per-re
     return tm!
   }
 
-  it('DEPARTMENT maps → homed to that region __UNPLACED__ (no manager call needed)', async () => {
+  it('DEPARTMENT maps and the chain reaches no leader → homed to that region __UNPLACED__', async () => {
     await enqueueOwedBill(t.db, { provider: 'anthropic', actualSource: 'anthropic-analytics-api:o1', email: 'deptuser@example.com', tool: 'claude-code', date: '2026-06-12', costUsd: 3 })
     const r = await runPlacementSync(t.db, {
       lookupDirectory: enrich('EMEA Data & AI', 'CC-NONE', 'deptuser-oid'),
-      getManager: async () => { throw new Error('manager walk must not run when department maps') },
+      getManager: async () => null,
     })
     expect(r.viaAttribute).toBe(1)
     const tm = await regionOf('deptuser@example.com')
     expect(tm.region_code).toBe('emea')
     expect(tm.ou_code).toBe('__UNPLACED__')
+  })
+
+  it('a chain region LEADER outranks a matching region rule', async () => {
+    const [apac] = await t.client<{ id: string }[]>`SELECT id::text AS id FROM region WHERE code='apac'`
+    await t.client`INSERT INTO region_leader (region_id, leader_oid, leader_email, kind)
+      VALUES (${apac!.id}, 'apac-boss-oid', 'apac-boss@example.com', 'region-svp')`
+    await enqueueOwedBill(t.db, { provider: 'anthropic', actualSource: 'anthropic-analytics-api:o1', email: 'ruleleader@example.com', tool: 'claude-code', date: '2026-06-12', costUsd: 2 })
+    const r = await runPlacementSync(t.db, {
+      lookupDirectory: enrich('EMEA Data & AI', 'CC-NONE', 'ruleleader-oid'),
+      getManager: async (oid) => (oid === 'ruleleader-oid' ? { oid: 'apac-boss-oid', email: 'apac-boss@example.com' } : null),
+    })
+    expect(r.viaManager).toBe(1)
+    expect(r.viaAttribute).toBe(0)
+    expect((await regionOf('ruleleader@example.com')).region_code).toBe('apac')
+    await t.client`DELETE FROM region_leader WHERE leader_oid = 'apac-boss-oid'`
   })
 
   it('no department but MANAGER chain hits a leader → that region, via manager', async () => {

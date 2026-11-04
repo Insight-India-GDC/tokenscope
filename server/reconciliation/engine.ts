@@ -130,6 +130,8 @@ export function classifyDelta(args: {
 interface TeammateDims {
   regionId: string
   orgUnitId: string
+  /** The Business Unit of orgUnitId (v_org_unit_cost_owner); NULL when it has none. */
+  costOwningUnitId: string | null
 }
 
 /*
@@ -285,18 +287,23 @@ export async function runReconcileEngine(
     }
 
     // Resolve dimensions (teammate scope only). cost_owning_unit defaults to the
-    // teammate's org unit (the CC the charge spills to absent a project tag).
+    // teammate's Business Unit: the nearest live cost-owning ancestor of their org
+    // unit (v_org_unit_cost_owner), NULL when there is none. Never the raw unit,
+    // which is often a team node (#450); every other writer stamps the same way.
     let regionId: string | null = null
     let orgUnitId: string | null = null
     let costOwningUnitId: string | null = line.subject.kind === 'org' ? line.subject.costOwningUnitId : null
     if (teammateId) {
       let dims = dimsCache.get(teammateId)
       if (dims === undefined) {
-        const [row] = await db.execute<{ region_id: string; org_unit_id: string }>(sql`
-          SELECT region_id::text AS region_id, org_unit_id::text AS org_unit_id
-          FROM teammate WHERE id = ${teammateId}::uuid
+        const [row] = await db.execute<{ region_id: string; org_unit_id: string; cost_owning_unit_id: string | null }>(sql`
+          SELECT t.region_id::text AS region_id, t.org_unit_id::text AS org_unit_id,
+                 c.cost_owning_unit_id::text AS cost_owning_unit_id
+          FROM teammate t
+          LEFT JOIN v_org_unit_cost_owner c ON c.org_unit_id = t.org_unit_id
+          WHERE t.id = ${teammateId}::uuid
         `)
-        dims = row ? { regionId: row.region_id, orgUnitId: row.org_unit_id } : null
+        dims = row ? { regionId: row.region_id, orgUnitId: row.org_unit_id, costOwningUnitId: row.cost_owning_unit_id } : null
         dimsCache.set(teammateId, dims)
       }
       if (!dims) {
@@ -307,7 +314,7 @@ export async function runReconcileEngine(
       }
       regionId = dims.regionId
       orgUnitId = dims.orgUnitId
-      costOwningUnitId = costOwningUnitId ?? dims.orgUnitId
+      costOwningUnitId = costOwningUnitId ?? dims.costOwningUnitId
     }
 
     // Count only lines that actually produce a record (after the skip guards).

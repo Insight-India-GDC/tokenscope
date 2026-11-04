@@ -1,13 +1,16 @@
 // @vitest-environment node
 /*
  * POST /api/v1/admin/org-units/:id/move — within-region reparent. Validates the ltree subtree
- * re-path (root + descendants), the cycle + cross-region guards, top-level move, and no-op.
+ * re-path (root + descendants), the cycle + cross-region guards, and no-op. There is no top level
+ * to move to, and the region's `default` unit and holding node stay where they are
+ * (docs/design/org-setup/01-second-run-fixes.md, item 1).
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { startTestDb, stopTestDb, type TestDb } from '../helpers/db'
 import { injectTestSession } from '../../helpers/auth'
 import type { Session } from '../../../server/utils/auth'
 import handler from '../../../server/api/v1/admin/org-units/[id]/move.post'
+import { HOLDING_UNIT_TYPE, UNPLACED_UNIT_CODE } from '../../../shared/placement/holding-nodes'
 
 let t: TestDb
 let regionId = ''
@@ -53,12 +56,15 @@ afterAll(async () => { if (t) await stopTestDb(t) }, 30_000)
 beforeEach(async () => {
   await t.client`DELETE FROM org_unit WHERE region_id IN (${regionId}::uuid, ${region2Id}::uuid)`
   // mv:  bu-a → prac-1 → sub-1 ;  bu-b           |  mv2: other
-  const mk = async (region: string, parent: string | null, p: string, code: string, cou = false) => {
+  const mk = async (region: string, parent: string | null, p: string, code: string, cou = false, type = 'bu') => {
     const [row] = await t.client<{ id: string }[]>`
       INSERT INTO org_unit (region_id, parent_id, path, code, display_name, unit_type, is_cost_owning_unit)
-      VALUES (${region}::uuid, ${parent}::uuid, ${p}::ltree, ${code}, ${code}, 'bu', ${cou}) RETURNING id::text AS id`
+      VALUES (${region}::uuid, ${parent}::uuid, ${p}::ltree, ${code}, ${code}, ${type}, ${cou}) RETURNING id::text AS id`
     ids[code] = row!.id
   }
+  await mk(regionId, null, 'mv', 'default', true)
+  await mk(regionId, null, 'mv_unplaced', UNPLACED_UNIT_CODE, false, HOLDING_UNIT_TYPE)
+  await mk(regionId, ids[UNPLACED_UNIT_CODE] ?? null, 'mv_unplaced.stray', 'stray')
   await mk(regionId, null, 'mv.bu_a', 'bu-a')
   await mk(regionId, ids['bu-a'] ?? null, 'mv.bu_a.prac_1', 'prac-1', true)
   await mk(regionId, ids['prac-1'] ?? null, 'mv.bu_a.prac_1.sub_1', 'sub-1', true)
@@ -78,11 +84,45 @@ describe('org-unit move (within-region reparent)', () => {
     expect(await path('bu-a')).toBe('mv.bu_a') // the old parent's own path is untouched
   })
 
-  it('moves a unit to TOP LEVEL (new_parent_id null) under the region label', async () => {
-    await handler(ev({ session: admin(), unitId: ids['prac-1']!, body: { new_parent_id: null } }))
-    expect(await path('prac-1')).toBe('mv.prac_1')
-    expect(await path('sub-1')).toBe('mv.prac_1.sub_1')
-    expect(await parentOf('prac-1')).toBeNull()
+  it('REFUSES a move to the top level (new_parent_id null) — even for a unit already at the top (400)', async () => {
+    await expect(
+      handler(ev({ session: admin(), unitId: ids['prac-1']!, body: { new_parent_id: null } })),
+    ).rejects.toMatchObject({ statusCode: 400 })
+    await expect(
+      handler(ev({ session: admin(), unitId: ids['bu-b']!, body: { new_parent_id: null } })),
+    ).rejects.toMatchObject({ statusCode: 400 })
+    expect(await parentOf('prac-1')).toBe(ids['bu-a'])
+  })
+
+  it("moves a stray top-level unit under the region's default unit", async () => {
+    await handler(ev({ session: admin(), unitId: ids['bu-a']!, body: { new_parent_id: ids['default'] } }))
+    expect(await parentOf('bu-a')).toBe(ids['default'])
+    expect(await path('bu-a')).toBe('mv.bu_a')
+    expect(await path('sub-1')).toBe('mv.bu_a.prac_1.sub_1')
+  })
+
+  it("REFUSES moving the region's default unit or its holding node (400)", async () => {
+    // A destination outside default's subtree, so the cycle guard cannot be what refuses it.
+    const [outside] = await t.client<{ id: string }[]>`
+      INSERT INTO org_unit (region_id, parent_id, path, code, display_name, unit_type, is_cost_owning_unit)
+      VALUES (${regionId}::uuid, NULL, 'mv_outside'::ltree, 'outside', 'Outside', 'bu', false) RETURNING id::text AS id`
+    await expect(
+      handler(ev({ session: admin(), unitId: ids['default']!, body: { new_parent_id: outside!.id } })),
+    ).rejects.toMatchObject({ statusCode: 400 })
+    await expect(
+      handler(ev({ session: admin(), unitId: ids[UNPLACED_UNIT_CODE]!, body: { new_parent_id: ids['default'] } })),
+    ).rejects.toMatchObject({ statusCode: 400 })
+    expect(await parentOf('default')).toBeNull()
+    expect(await parentOf(UNPLACED_UNIT_CODE)).toBeNull()
+  })
+
+  it('REFUSES a destination at or under the holding node (400)', async () => {
+    for (const dest of [UNPLACED_UNIT_CODE, 'stray']) {
+      await expect(
+        handler(ev({ session: admin(), unitId: ids['prac-1']!, body: { new_parent_id: ids[dest] } })),
+      ).rejects.toMatchObject({ statusCode: 400 })
+    }
+    expect(await path('prac-1')).toBe('mv.bu_a.prac_1')
   })
 
   it('REJECTS a cycle — moving a unit under its own descendant (400)', async () => {

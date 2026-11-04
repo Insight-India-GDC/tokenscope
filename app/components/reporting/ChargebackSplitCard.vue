@@ -140,7 +140,7 @@ const unclassifiedUsd = computed(() => props.donut?.unclassifiedUsd ?? 0)
             {{ fmtUsd(split.copilotUsd ?? 0) }}
           </div>
           <div class="text-[12px] text-carbon-2">
-            pooled per cost-centre
+            pooled per Business Unit
             <!-- copilot-unclassified: visible + badged, NEVER chargeable (the shipped
                  FinanceCouTable convention) — it is not a donut slice and never sums. -->
             <UiBadge
@@ -161,7 +161,7 @@ const unclassifiedUsd = computed(() => props.donut?.unclassifiedUsd ?? 0)
         Anthropic only — Copilot pooled chargeback is monthly, not shown for a partial-month range.
       </template>
       <template v-else>
-        Anthropic per-teammate chargeback · Copilot is pooled per cost-centre.
+        Anthropic per-teammate chargeback · Copilot is pooled per Business Unit.
       </template>
     </p>
   </UiCard>

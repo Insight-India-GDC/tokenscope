@@ -17,7 +17,7 @@
  * bundled-secret resolution.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -79,21 +79,46 @@ const baseOpts = () => ({
   // The real reader opens the passwd home's settings file; nothing configured
   // here unless a test says so.
   configuredOrigin: () => null,
+  storeDir: join(dir, 'state'),
 })
 
 describe('isEnrolled', () => {
+  const state = () => join(dir, 'state')
   it('true only when refresh token + bearer endpoint + non-empty instance id all present', () => {
-    expect(isEnrolled(ENROLLED_ENV)).toBe(true)
+    expect(isEnrolled(ENROLLED_ENV, state())).toBe(true)
   })
   it('false when any of the three is missing', () => {
-    expect(isEnrolled({})).toBe(false)
-    expect(isEnrolled({ ...ENROLLED_ENV, TOKENSCOPE_OAUTH_REFRESH_TOKEN: '' })).toBe(false)
-    expect(isEnrolled({ ...ENROLLED_ENV, TOKENSCOPE_BEARER_ENDPOINT: '  ' })).toBe(false)
+    expect(isEnrolled({}, state())).toBe(false)
+    expect(isEnrolled({ ...ENROLLED_ENV, TOKENSCOPE_OAUTH_REFRESH_TOKEN: '' }, state())).toBe(false)
+    expect(isEnrolled({ ...ENROLLED_ENV, TOKENSCOPE_BEARER_ENDPOINT: '  ' }, state())).toBe(false)
   })
   it('false when the instance id value is empty (tokenscope.instance_id=,...)', () => {
-    expect(isEnrolled({ ...ENROLLED_ENV, OTEL_RESOURCE_ATTRIBUTES: 'tokenscope.instance_id=,tool=claude-code' })).toBe(
-      false,
+    expect(
+      isEnrolled({ ...ENROLLED_ENV, OTEL_RESOURCE_ATTRIBUTES: 'tokenscope.instance_id=,tool=claude-code' }, state()),
+    ).toBe(false)
+  })
+  it('true when the refresh token is only in the device store for the same bearer (a current redeem)', () => {
+    const iid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const bearer = `https://ts.example.com/api/v1/instances/${iid}/bearer`
+    const attrs = `tokenscope.instance_id=${iid},tool=claude-code`
+    mkdirSync(state(), { recursive: true })
+    writeFileSync(
+      join(state(), 'config.claude-code.json'),
+      JSON.stringify({
+        version: 2,
+        tool: 'claude-code',
+        instance_id: iid,
+        bearer_endpoint: bearer,
+        oauth_token_endpoint: 'https://ts.example.com/api/v1/oauth/token',
+        oauth_client_id: 'client',
+        oauth_refresh_token: 'rt_in_store',
+        otel_resource_attributes: attrs,
+      }),
     )
+    const settingsEnv = { TOKENSCOPE_BEARER_ENDPOINT: bearer, OTEL_RESOURCE_ATTRIBUTES: attrs }
+    expect(isEnrolled(settingsEnv, state())).toBe(true)
+    // A store for a different instance does not count.
+    expect(isEnrolled({ ...settingsEnv, TOKENSCOPE_BEARER_ENDPOINT: 'https://ts.example.com/api/v1/instances/other/bearer' }, state())).toBe(false)
   })
 })
 
@@ -204,8 +229,12 @@ describe('enrollIfNeeded — decision logic', () => {
     expect(writeSettings).toHaveBeenCalledTimes(1)
     const [settingsPath, helper, envBlock] = writeSettings.mock.calls[0]
     expect(settingsPath).toBe(join(dir, 'settings.json'))
-    // The default store, so a record with no state dir (buildHelperCommand).
-    expect(helper).toEqual({ record: { tool: 'claude-code', platform: 'linux' }, scriptsDir: '/plugin/scripts' })
+    // Not the default store, so the record names it: the helper must mint from
+    // the store this enrolment wrote (#449).
+    expect(helper).toEqual({
+      record: { tool: 'claude-code', platform: 'linux', stateDir: join(dir, 'state') },
+      scriptsDir: '/plugin/scripts',
+    })
     expect(envBlock.TOKENSCOPE_OAUTH_REFRESH_TOKEN).toBe('rt_provisional_secret')
     expect(envBlock.TOKENSCOPE_BEARER_ENDPOINT).toBe(FAKE_ENROLL_RESPONSE.telemetry.claude.otel_headers_helper_url)
     expect(envBlock.OTEL_RESOURCE_ATTRIBUTES).toContain('tokenscope.instance_id=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')

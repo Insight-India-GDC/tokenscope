@@ -5,9 +5,9 @@
  * `tests/integration/reports/known-outcome-validation.test.ts` proves the shared
  * helper computes the right number. That is helper correctness, and it is NOT
  * call-site coverage: it calls `completeProjectSpend` directly, so reverting the
- * project page, the /projects cards, the budget editor, the manager rollup, the
- * cost-centre card or the budget alert to `attribution_aggregate` or the raw
- * ledger leaves it GREEN and ships six surfaces quoting different money.
+ * project page, the /projects cards, the budget editor, the cost-centre card or
+ * the budget alert to `attribution_aggregate` or the raw ledger leaves it GREEN
+ * and ships five surfaces quoting different money.
  *
  * This file closes that gap statically: every producer of a project-spend figure
  * must OBTAIN it from server/usage/complete-spend.ts and must contain no second
@@ -41,7 +41,6 @@ const SEAM = 'server/usage/complete-spend.ts'
 const SANCTIONED = [
   'completeProjectSpend',
   'completeOneProjectSpend',
-  'completeProjectSpendRanked',
   'completeProjectSpendByMember',
   'completeProjectSpendByActivity',
   'completeProjectAxisSpend',
@@ -121,20 +120,6 @@ const PRODUCERS: {
     completeUsage: 0,
   },
   {
-    file: 'server/api/v1/rollups/manager.get.ts',
-    what: "the manager's per-project table",
-    // The documented remaining split: the week-over-week tile is an ORG-scoped
-    // teammate figure on the ledger, not a project one (see the file header).
-    // Two reads — this_week and prior_week. A third is a new lane split.
-    attributionRecord: 2,
-    // Per-TEAMMATE MTD, the top-project label, and the weekly velocity CTE read
-    // the lane inline. None of them publishes a project total; the per-project
-    // money comes from the seam. Pinned so a fourth inline lane read is visible.
-    completeUsage: 3,
-    attributionAggregate: 0,
-    why: 'org-scoped teammate figures, not project spend',
-  },
-  {
     file: 'server/workers/budget-alert.ts',
     what: 'the over-budget alert that pages a PM',
     attributionRecord: 0,
@@ -199,7 +184,9 @@ const PRODUCERS: {
     // `usageRollup` below. Seasonality is the ONE read left on the live view
     // (off the page's request path, design R5).
     completeUsage: 1,
-    usageRollup: 5,
+    // 5 → 4: the exceptions strip's SQL comment no longer names the table; its
+    // FROM (now v_usage_rollup_current, counted with the table) is unchanged.
+    usageRollup: 4,
     why: 'region-scoped usage figures on other axes, not project spend',
   },
   {
@@ -360,13 +347,15 @@ describe('project spend has ONE source, at every call site', () => {
         `${file}: attribution_aggregate is the OTel-only, cron-lagged rollup — ` +
           'the source every one of these surfaces was moved OFF',
       ).toBe(attributionAggregate)
+      // The current-org lens views (mig 0162) are the same lane read through the
+      // teammate's current placement, so they count as the lane they wrap.
       expect(
-        count(code, 'v_complete_usage'),
+        count(code, 'v_complete_usage') + count(code, 'v_complete_usage_current'),
         `${file}: inline lane reads${note} — a project total belongs to the seam, ` +
           'so that one definition can be changed in one place',
       ).toBe(completeUsage)
       expect(
-        count(code, 'usage_rollup_daily'),
+        count(code, 'usage_rollup_daily') + count(code, 'v_usage_rollup_current'),
         `${file}: inline §A rollup reads${note} — the rollup carries project_id ` +
           '(usage-rollup-lane.md R2), so an unpinned read is where a second ' +
           'definition of project spend would land quietly',
@@ -378,7 +367,7 @@ describe('project spend has ONE source, at every call site', () => {
     // The list is the contract. If a further surface starts publishing a project
     // figure and is not listed, nothing above covers it — so the count is
     // asserted, forcing the author of that surface through this file.
-    expect(PRODUCERS.length).toBe(11)
+    expect(PRODUCERS.length).toBe(10)
     // And each named file must exist (a rename must not silently empty the set).
     for (const p of PRODUCERS) expect(() => read(p.file)).not.toThrow()
   })

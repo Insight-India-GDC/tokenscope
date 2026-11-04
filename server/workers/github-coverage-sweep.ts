@@ -33,6 +33,7 @@ import {
   type PersistedEnterpriseCoverage,
 } from '../reconciliation/coverage-store'
 import { reconcileCoverageTransitions } from '../reconciliation/coverage-alerts'
+import { describeError } from '../utils/redact-probe-error'
 
 type Db = PostgresJsDatabase<typeof schema>
 
@@ -86,7 +87,7 @@ export async function runGithubCoverageSweep(
       // A DB read failing is OUR infrastructure, not a classified state — isolate this
       // enterprise (like copilot-pool-bill.ts does per (enterprise, month)) and move on.
       coverageComputeErrors += 1
-      consola.warn(`[github-coverage-sweep] failed to load prior coverage for '${ent.externalId}': ${err instanceof Error ? err.message : String(err)}`)
+      consola.warn(`[github-coverage-sweep] failed to load prior coverage for '${ent.externalId}': ${describeError(err)}`)
       continue
     }
     let result
@@ -94,7 +95,7 @@ export async function runGithubCoverageSweep(
       result = await computeEnterpriseCoverage(db, ent)
     } catch (err) {
       coverageComputeErrors += 1
-      consola.warn(`[github-coverage-sweep] compute failed for '${ent.externalId}': ${err instanceof Error ? err.message : String(err)}`)
+      consola.warn(`[github-coverage-sweep] compute failed for '${ent.externalId}': ${describeError(err)}`)
       continue
     }
 

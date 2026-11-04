@@ -24,6 +24,9 @@ const root = resolve(__dir, '..')
 
 const FILES = [
   { name: 'copilot-forwarder.mjs', type: 'js' },
+  // copilot-session.mjs (#475): the last-session note both senders write and the
+  // `activity` skill reads; a drifted copy would key the note differently.
+  { name: 'copilot-session.mjs', type: 'js' },
   { name: 'otlp-logs.mjs', type: 'js' },
   { name: 'copilot-redeem.mjs', type: 'js' },
   // tokenscope-project.mjs — the client-neutral resolver/hasher the forwarder

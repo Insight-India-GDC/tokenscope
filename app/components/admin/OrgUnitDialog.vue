@@ -5,11 +5,14 @@
  * aria-labelledby, Escape closes, the first field is focused on open, Tab cycles
  * within the dialog (focus trap), and the error is an aria-live alert.
  *
- * Create mode: parent (select; '(root)' = null), code, display_name, unit_type,
- * is_cost_owning_unit → POST /api/v1/admin/org-units.
- * Edit mode: display_name, unit_type, is_cost_owning_unit only — re-parent + code
- * changes are deferred server-side, so parent + code render read-only.
- * → PATCH /api/v1/admin/org-units/{id}.
+ * Create mode: parent, code, display_name, unit_type, is_cost_owning_unit →
+ * POST /api/v1/admin/org-units. The parent defaults to the region's `default`
+ * unit and there is no root option; the holding node and anything under it are
+ * not offered. A new unit defaults to a cost-owning Business Unit so it can take
+ * an owner straight away.
+ * Edit mode: code, display_name, unit_type, is_cost_owning_unit →
+ * PATCH /api/v1/admin/org-units/{id}. The parent is changed with Move; the
+ * `default` unit's and the holding node's codes are fixed.
  *
  * The inline error surfaces `err.data.data.detail` (409 dup, 422 bad parent).
  */
@@ -32,8 +35,8 @@ const emit = defineEmits<{ close: []; saved: [] }>()
 const parentId = ref<string>('')
 const code = ref('')
 const displayName = ref('')
-const unitType = ref('team')
-const isCou = ref(false)
+const unitType = ref('bu')
+const isCou = ref(true)
 const saving = ref(false)
 const error = ref<string | null>(null)
 const firstField = ref<HTMLElement | null>(null)
@@ -57,6 +60,17 @@ const isHoldingNode = computed(
   () => props.mode === 'edit' && props.node?.unit_type === HOLDING_UNIT_TYPE,
 )
 
+const isDefaultUnit = (n: OrgNode) => n.code === 'default' && !n.parent_id
+
+const codeLocked = computed(
+  () => props.mode === 'edit' && !!props.node && (isDefaultUnit(props.node) || props.node.unit_type === HOLDING_UNIT_TYPE),
+)
+
+const parentOptions = computed<OrgNode[]>(() => {
+  const holdingPaths = props.parents.filter((u) => u.unit_type === HOLDING_UNIT_TYPE).map((u) => u.path)
+  return props.parents.filter((u) => !holdingPaths.some((h) => u.path === h || u.path.startsWith(`${h}.`)))
+})
+
 function seedForm() {
   if (props.mode === 'edit' && props.node) {
     parentId.value = props.node.parent_id ?? ''
@@ -65,11 +79,11 @@ function seedForm() {
     unitType.value = props.node.unit_type
     isCou.value = props.node.is_cost_owning_unit
   } else {
-    parentId.value = ''
+    parentId.value = props.parents.find(isDefaultUnit)?.id ?? ''
     code.value = ''
     displayName.value = ''
-    unitType.value = 'team'
-    isCou.value = false
+    unitType.value = 'bu'
+    isCou.value = true
   }
   error.value = null
 }
@@ -88,7 +102,7 @@ useModalA11y({
 
 // The parent display name for the read-only line in edit mode.
 function parentLabel(): string {
-  if (!props.node?.parent_id) return '(root)'
+  if (!props.node?.parent_id) return 'The top of the region'
   const p = props.parents.find((n) => n.id === props.node?.parent_id)
   return p ? `${p.display_name} (${p.code})` : props.node.parent_id
 }
@@ -113,6 +127,7 @@ async function save() {
       await $fetch(`/api/v1/admin/org-units/${props.node.id}`, {
         method: 'PATCH',
         body: {
+          ...(code.value.trim() !== props.node.code ? { code: code.value.trim() } : {}),
           display_name: displayName.value.trim(),
           unit_type: unitType.value.trim(),
           is_cost_owning_unit: isCou.value,
@@ -162,11 +177,11 @@ async function save() {
             id="oud-parent"
             ref="firstField"
             v-model="parentId"
-            class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+            class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
             data-testid="oud-parent"
           >
-            <option value="">(root)</option>
-            <option v-for="p in parents" :key="p.id" :value="p.id">
+            <option value="" disabled>Choose a parent</option>
+            <option v-for="p in parentOptions" :key="p.id" :value="p.id">
               {{ '— '.repeat(p.depth) }}{{ p.display_name }} ({{ p.code }})
             </option>
           </select>
@@ -182,11 +197,11 @@ async function save() {
         <!-- Code -->
         <label for="oud-code" class="text-[12px] font-semibold text-carbon">Code</label>
         <input
-          v-if="mode === 'create'"
+          v-if="!codeLocked"
           id="oud-code"
           v-model="code"
           placeholder="e.g. apac-eng-platform"
-          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white font-mono focus:border-brand-harmony focus:outline-none"
+          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white font-mono focus:border-brand-harmony"
           data-testid="oud-code"
         >
         <div
@@ -204,7 +219,7 @@ async function save() {
           :ref="(el) => { if (mode === 'edit') firstField = el as HTMLElement | null }"
           v-model="displayName"
           placeholder="e.g. Platform Engineering"
-          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
           data-testid="oud-name"
         >
 
@@ -217,7 +232,7 @@ async function save() {
           v-if="!isHoldingNode"
           id="oud-type"
           v-model="unitType"
-          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
           data-testid="oud-type"
         >
           <option v-for="t in UNIT_TYPES" :key="t" :value="t">{{ t }}</option>
@@ -239,17 +254,17 @@ async function save() {
               class="w-4 h-4 accent-brand-harmony"
               data-testid="oud-cou"
             >
-            Cost-owning unit
+            Business Unit (a P&amp;L node)
           </label>
-          <p class="text-[11px] text-carbon-3 mb-2">Projects bill to the nearest cost-owning ancestor.</p>
+          <p class="text-[11px] text-carbon-3 mb-2">Projects bill to the nearest Business Unit above them.</p>
         </template>
         <div
           v-else
-          class="mt-1 mb-2 p-3 rounded-md bg-brand-vision-lite/60 border border-brand-vision/30 text-[11px] text-[#1f4ea3] leading-relaxed"
+          class="mt-1 mb-2 p-3 rounded-md bg-brand-vision-lite/60 border border-brand-vision/30 text-[11px] text-brand-vision-ink leading-relaxed"
           data-testid="oud-holding-note"
         >
           <span class="font-bold">This is the holding node for teammates with no Business Unit.</span>
-          It cannot be made cost-owning: that would home every unplaced teammate's
+          It cannot be made a Business Unit: that would home every unplaced teammate's
           spend to a bucket nobody owns, dropping the unhomed figure to zero
           without placing a single person. Place them into real Business Units from
           the Teammates tab instead.
@@ -259,7 +274,7 @@ async function save() {
 
         <div class="flex justify-end gap-2 mt-5">
           <UiButton kind="ghost" data-testid="oud-cancel" @click="emit('close')">Cancel</UiButton>
-          <UiButton kind="primary" :disabled="saving" data-testid="oud-submit" @click="save">
+          <UiButton kind="primary" :disabled="saving || (mode === 'create' && !parentId)" data-testid="oud-submit" @click="save">
             {{ saving ? 'Saving…' : mode === 'create' ? 'Create' : 'Save' }}
           </UiButton>
         </div>

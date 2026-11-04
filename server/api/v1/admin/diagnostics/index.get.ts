@@ -160,9 +160,12 @@ export default defineEventHandler(async (event) => {
   //                     (gather freshness).
   // If usage is stale but the joiner keeps running (cron healthy), the break
   // is upstream in emit/ingest — exactly the failure mode that lost ~24h of
-  // spend silently. Region admins see their own region; org-wide roles see all.
+  // spend silently. Region admins see the people who sit in their region now
+  // (current-org-lens §3.2), never the rows' stamped region; org-wide roles see all.
   const regionFilter =
-    session.role === 'admin' ? sql`WHERE region_id = ${session.regionId}::uuid` : sql``
+    session.role === 'admin'
+      ? sql`WHERE teammate_id IN (SELECT id FROM teammate WHERE region_id = ${session.regionId}::uuid)`
+      : sql``
   let pipeline: {
     lastUsageSeen: string | null
     lastLedgerWrite: string | null

@@ -14,7 +14,8 @@
  * so it can be unmounted/mounted by `v-if`.
  */
 
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { useModalA11y } from '../../composables/useModalA11y'
 import UiButton from '../ui/Button.vue'
 import UiBadge from '../ui/Badge.vue'
 import DrawerBodyOverBudget from './DrawerBodyOverBudget.vue'
@@ -23,7 +24,9 @@ import DrawerBodySyncConflict from './DrawerBodySyncConflict.vue'
 import DrawerBodyUntagged from './DrawerBodyUntagged.vue'
 import DrawerBodyPersonalSubscription from './DrawerBodyPersonalSubscription.vue'
 import DrawerBodyOverEmission from './DrawerBodyOverEmission.vue'
-import { variantForCategory, type InboxItem } from './types'
+import DrawerBodyProjectRequest from './DrawerBodyProjectRequest.vue'
+import DrawerBodyBudgetRequest from './DrawerBodyBudgetRequest.vue'
+import { categoryLabel, variantForCategory, type InboxItem } from './types'
 
 const props = defineProps<{
   item: InboxItem
@@ -38,6 +41,19 @@ const emit = defineEmits<{
 }>()
 
 const variant = computed(() => variantForCategory(props.item.category))
+
+// The drawer is mounted only while an item is open (the parent's v-if), so it
+// is open for its whole lifetime. Shared dialog contract: Escape closes, Tab is
+// trapped in the drawer, Close takes focus on open and focus returns to the
+// row that opened it when the drawer unmounts.
+const dialogEl = ref<HTMLElement | null>(null)
+const closeBtn = ref<HTMLButtonElement | null>(null)
+useModalA11y({
+  isOpen: () => true,
+  dialogEl,
+  firstField: closeBtn,
+  onClose: () => emit('close'),
+})
 
 const severityBadgeKind = computed<
   'hunger' | 'rag-red' | 'vision' | 'neutral'
@@ -56,7 +72,9 @@ const severityBadgeKind = computed<
 
 <template>
   <aside
+    ref="dialogEl"
     role="dialog"
+    aria-modal="true"
     :aria-label="`Inbox item: ${item.subject}`"
     class="fixed top-0 right-0 h-full w-full max-w-[480px] bg-white shadow-[-8px_0_32px_rgba(88,40,115,0.16)] z-50 flex flex-col"
     data-testid="inbox-drawer"
@@ -65,10 +83,11 @@ const severityBadgeKind = computed<
     <header class="px-6 py-5 border-b border-calm-2">
       <div class="flex items-start justify-between gap-3">
         <div class="flex items-center gap-2 flex-wrap">
-          <UiBadge kind="neutral">{{ item.category }}</UiBadge>
+          <UiBadge kind="neutral">{{ categoryLabel(item.category) }}</UiBadge>
           <UiBadge :kind="severityBadgeKind">{{ item.severity }}</UiBadge>
         </div>
         <button
+          ref="closeBtn"
           type="button"
           class="text-carbon-3 hover:text-carbon cursor-pointer p-1 -mr-1 rounded transition-colors"
           aria-label="Close drawer"
@@ -85,9 +104,12 @@ const severityBadgeKind = computed<
       </h2>
       <div class="mt-2 flex items-center justify-between gap-3 text-xs text-carbon-3">
         <span>Created {{ new Date(item.created_at).toLocaleString() }}</span>
+        <!-- The PROJECT page, not the budget editor: a member who is not the
+             manager can open the first and not the second. The server emits the
+             code only when this recipient can open the page. -->
         <NuxtLink
-          v-if="item.target_allocation_id"
-          :to="`/allocations/${item.target_allocation_id}`"
+          v-if="item.target_project_code"
+          :to="`/projects/${encodeURIComponent(item.target_project_code)}`"
           class="font-bold text-brand-harmony hover:underline"
           data-testid="drawer-open-project"
         >
@@ -104,6 +126,8 @@ const severityBadgeKind = computed<
       <DrawerBodyUntagged v-else-if="variant === 'untagged'" :body="item.body" />
       <DrawerBodyPersonalSubscription v-else-if="variant === 'personal-subscription'" :body="item.body" />
       <DrawerBodyOverEmission v-else-if="variant === 'over-emission'" :body="item.body" />
+      <DrawerBodyProjectRequest v-else-if="variant === 'project-request'" :category="item.category" :body="item.body" />
+      <DrawerBodyBudgetRequest v-else-if="variant === 'budget-request'" :category="item.category" :body="item.body" />
       <div v-else class="text-sm text-carbon-2 leading-relaxed">
         Details for this category aren't laid out yet. Use the
         actions below to acknowledge, resolve, or dismiss.
@@ -124,7 +148,7 @@ const severityBadgeKind = computed<
         kind="ghost"
         size="sm"
         data-testid="drawer-action-snooze"
-        title="Acknowledge clears the bell badge but keeps the item tracked. Time-windowed snooze lands in a later MVP-Final slice."
+        title="Clears the bell badge but keeps the item tracked."
         @click="emit('snooze')"
       >
         Acknowledge

@@ -193,19 +193,45 @@ param slowStatementLogMs string = '1000'
 @maxValue(5000)
 param postgresMaxConnections int = 0
 
-// ── GitHub Copilot reconciliation PATs (F2 — GATED OFF; TEMPLATE) ──
+// ── GitHub credential slots (generic) ──
+// Three PAT slots and one GitHub App key slot, each read by the app under a fixed
+// credential name: register the GitHub enterprise under that name in Admin →
+// Reconciliation. Slot N's PAT is read as NUXT_GITHUB_PAT_GITHUB_<N> (credential
+// name "github-<N>"); the App key as NUXT_GITHUB_APP_KEY_GITHUB_1 ("github-1").
+// Empty (the default) = NO-OP: no KV secret written, no container-app KV ref/env
+// var emitted. Supply the value at apply time (a redeploy) when onboarding.
+@description('GitHub credential slot 1: a manage_billing PAT, read under the credential name "github-1" (NUXT_GITHUB_PAT_GITHUB_1). Empty = NO-OP.')
+@secure()
+param githubPat1 string = ''
+
+@description('GitHub credential slot 2: a manage_billing PAT, read under the credential name "github-2" (NUXT_GITHUB_PAT_GITHUB_2). Empty = NO-OP.')
+@secure()
+param githubPat2 string = ''
+
+@description('GitHub credential slot 3: a manage_billing PAT, read under the credential name "github-3" (NUXT_GITHUB_PAT_GITHUB_3). Empty = NO-OP.')
+@secure()
+param githubPat3 string = ''
+
+@description('GitHub App private key (BASE64-encoded PEM) for slot 1, read under the credential name "github-1" (NUXT_GITHUB_APP_KEY_GITHUB_1). Pair with the enterprise\'s GitHub App id in Admin → Reconciliation. Empty = NO-OP.')
+@secure()
+param githubAppKey1 string = ''
+
+// ── GitHub credential slots (named; superseded by the generic slots above) ──
+// Kept so a deployment that already supplies these keeps working: each still
+// writes its own KV secret and env var, under its own credential name. New
+// deployments use githubPat1-3 / githubAppKey1.
 // Empty (the default) = NO-OP: no KV secret written, no container-app KV ref/env
 // var emitted, F2 stays gated off (no reconciled provider_enterprise → no lookup).
 // Supply the value at apply time (a redeploy) when onboarding that enterprise.
-@description('GitHub manage_billing PAT for the NFR/internal enterprise (credential_secret_name "partner-demo"). Empty = NO-OP.')
+@description('Superseded by githubPat1. GitHub manage_billing PAT for the NFR/internal enterprise (credential_secret_name "partner-demo"). Empty = NO-OP.')
 @secure()
 param githubPatPartnerDemo string = ''
 
-@description('GitHub manage_billing PAT for the production client enterprise (TEMPLATE — rename to the real credential_secret_name). Empty = NO-OP.')
+@description('Superseded by githubPat2. GitHub manage_billing PAT for the production client enterprise (TEMPLATE — rename to the real credential_secret_name). Empty = NO-OP.')
 @secure()
 param githubPatProduction string = ''
 
-@description('GitHub manage_billing PAT for the APAC NFR/internal enterprise (credential_secret_name "enterprise-nfr", read as NUXT_GITHUB_PAT_ENTERPRISE_NFR). Supply as a GitHub Actions secret at apply time — the deploy CREATES the github-pat-enterprise-nfr KV secret from this value and the container app references it (hasGithubPatApacNfr derives from non-empty). Empty = NO-OP.')
+@description('Superseded by githubPat3. GitHub manage_billing PAT for the APAC NFR/internal enterprise (credential_secret_name "enterprise-nfr", read as NUXT_GITHUB_PAT_ENTERPRISE_NFR). Supply as a GitHub Actions secret at apply time — the deploy CREATES the github-pat-enterprise-nfr KV secret from this value and the container app references it (hasGithubPatApacNfr derives from non-empty). Empty = NO-OP.')
 @secure()
 param githubPatApacNfr string = ''
 
@@ -214,7 +240,7 @@ param githubPatApacNfr string = ''
 // CRITICAL: the value is the App private key (multi-line PEM) BASE64-ENCODED — raw
 // newlines don't survive the GH-secret → bicep → KV → container-env pipeline. Supplied
 // at apply time (e.g. from a CI secret such as GH_APP_KEY_PARTNER_DEMO). Empty = NO-OP.
-@description('GitHub App private key (BASE64-encoded PEM) for the partner-demo enterprise App-credential path (credential_secret_name "partner-demo", read as NUXT_GITHUB_APP_KEY_PARTNER_DEMO). Pair with provider_enterprise.github_app_id via onboarding. Empty = NO-OP.')
+@description('Superseded by githubAppKey1. GitHub App private key (BASE64-encoded PEM) for the partner-demo enterprise App-credential path (credential_secret_name "partner-demo", read as NUXT_GITHUB_APP_KEY_PARTNER_DEMO). Pair with provider_enterprise.github_app_id via onboarding. Empty = NO-OP.')
 @secure()
 param githubAppKeyPartnerDemo string = ''
 
@@ -625,7 +651,12 @@ module kvSecrets 'modules/keyvault-secrets.bicep' = {
     hmacSessionKey: hmacSessionKey
     internalWorkerHmacKey: internalWorkerHmacKey
     anthropicApiKey: anthropicApiKey
-    // F2 GitHub Copilot reconciliation PATs (GATED OFF; empty = NO-OP).
+    // GitHub credential slots (generic; empty = NO-OP).
+    githubPat1: githubPat1
+    githubPat2: githubPat2
+    githubPat3: githubPat3
+    githubAppKey1: githubAppKey1
+    // F2 GitHub Copilot reconciliation PATs, named slots (superseded; empty = NO-OP).
     githubPatPartnerDemo: githubPatPartnerDemo
     githubPatProduction: githubPatProduction
     githubPatApacNfr: githubPatApacNfr
@@ -692,7 +723,12 @@ module containerApp 'modules/container-app.bicep' = {
     // The telemetry workspace's daily cap, for the telemetry-cap ops alert.
     telemetryDailyCapGb: monitoring.outputs.telemetryDailyCapGb
     hasAnthropicKey: hasAnthropicKey || !empty(anthropicApiKey)
-    // F2 GitHub Copilot reconciliation PATs (GATED OFF; flags false until provided).
+    // GitHub credential slots (generic; flags false until provided).
+    hasGithubPat1: !empty(githubPat1)
+    hasGithubPat2: !empty(githubPat2)
+    hasGithubPat3: !empty(githubPat3)
+    hasGithubAppKey1: !empty(githubAppKey1)
+    // F2 GitHub Copilot reconciliation PATs, named slots (superseded; flags false until provided).
     hasGithubPatPartnerDemo: !empty(githubPatPartnerDemo)
     hasGithubPatProduction: !empty(githubPatProduction)
     hasGithubPatApacNfr: !empty(githubPatApacNfr)

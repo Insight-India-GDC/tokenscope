@@ -34,6 +34,9 @@ import { tmpdir } from 'node:os'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 
+// Windows (#430): skipped on win32 because this file assumes tmpdir() is outside the home and HOME steers homedir(); on Windows tmpdir() is inside the profile and homedir() follows USERPROFILE.
+const POSIX_ONLY = process.platform === 'win32'
+
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-ignore — mjs import resolved by Vitest
 const { assertAllowedApiBase, acceptApiBaseArg, assertConfinedPath, flagValue, assertKnownFlag } =
@@ -66,7 +69,7 @@ afterAll(() => {
   }
 })
 
-describe('assertAllowedApiBase — argv may select a known origin, never introduce one', () => {
+describe.skipIf(POSIX_ONLY)('assertAllowedApiBase — argv may select a known origin, never introduce one', () => {
   const allowed = [PACKAGED, DISCOVERED]
 
   it('accepts the packaged default and the discovered MCP origin', () => {
@@ -142,7 +145,7 @@ describe('assertAllowedApiBase — argv may select a known origin, never introdu
   })
 })
 
-describe('acceptApiBaseArg — a rejected flag warns and is dropped, never fatal', () => {
+describe.skipIf(POSIX_ONLY)('acceptApiBaseArg — a rejected flag warns and is dropped, never fatal', () => {
   it('returns the canonical origin for an accepted value, and warns about nothing', () => {
     const warnings: string[] = []
     expect(
@@ -168,7 +171,7 @@ describe('acceptApiBaseArg — a rejected flag warns and is dropped, never fatal
   })
 })
 
-describe('assertConfinedPath — a path flag cannot leave the home it is anchored to', () => {
+describe.skipIf(POSIX_ONLY)('assertConfinedPath — a path flag cannot leave the home it is anchored to', () => {
   it('accepts a path inside the account home', () => {
     const p = join(homeTmp, 'settings.json')
     expect(assertConfinedPath(p, { flag: '--settings-path', allowedBasenames: ['settings.json'] })).toBe(p)
@@ -308,7 +311,7 @@ describe('assertConfinedPath — a path flag cannot leave the home it is anchore
   })
 })
 
-describe('flagValue / assertKnownFlag', () => {
+describe.skipIf(POSIX_ONLY)('flagValue / assertKnownFlag', () => {
   it('refuses a flag whose value is missing or is the next flag', () => {
     expect(() => flagValue(['--api-base'], 1, '--api-base')).toThrow(/requires a value/)
     expect(() => flagValue(['--api-base', '--settings-path'], 1, '--api-base')).toThrow(/requires a value/)
@@ -333,7 +336,7 @@ describe('flagValue / assertKnownFlag', () => {
   })
 })
 
-describe('claude-redeem parseArgs', () => {
+describe.skipIf(POSIX_ONLY)('claude-redeem parseArgs', () => {
   it('refuses --redeem-url outright — the flag is gone, not silently ignored', () => {
     expect(() => parseClaudeArgs(['--handoff-code', 'h', '--redeem-url', EVIL])).toThrow(
       /unknown flag/,
@@ -365,7 +368,7 @@ describe('claude-redeem parseArgs', () => {
   })
 })
 
-describe('copilot-redeem parseArgs', () => {
+describe.skipIf(POSIX_ONLY)('copilot-redeem parseArgs', () => {
   it('refuses --redeem-url outright', () => {
     expect(() => parseCopilotArgs(['--handoff-code', 'h', '--redeem-url', EVIL])).toThrow(
       /unknown flag/,
@@ -396,7 +399,7 @@ describe('copilot-redeem parseArgs', () => {
  * loopback, and assert on what the server RECEIVED — the only place a redirect
  * would be visible.
  */
-describe('claude-redeem main() — no flag can redirect the handoff POST', () => {
+describe.skipIf(POSIX_ONLY)('claude-redeem main() — no flag can redirect the handoff POST', () => {
   const HELPER = join(process.cwd(), 'plugin/scripts/claude-redeem.mjs')
   let server: ReturnType<typeof createServer>
   let baseUrl: string
@@ -523,7 +526,7 @@ describe('claude-redeem main() — no flag can redirect the handoff POST', () =>
   })
 })
 
-describe('copilot-redeem main() — --shell-rc cannot name a file outside the home', () => {
+describe.skipIf(POSIX_ONLY)('copilot-redeem main() — --shell-rc cannot name a file outside the home', () => {
   const HELPER = join(process.cwd(), 'plugin/scripts/copilot-redeem.mjs')
   let dir: string
 
@@ -569,7 +572,7 @@ describe('copilot-redeem main() — --shell-rc cannot name a file outside the ho
   })
 })
 
-describe('the repository refusal survives a symlinked home', () => {
+describe.skipIf(POSIX_ONLY)('the repository refusal survives a symlinked home', () => {
   it('canonicalises the stop root, so a symlinked home does not skip the repo check', () => {
     /*
      * The candidate arrives already realpath'd. If the confinement ROOT is only
@@ -604,7 +607,7 @@ describe('the repository refusal survives a symlinked home', () => {
   })
 })
 
-describe('--state-dir is confined (the flag added for tests must not be a sink)', () => {
+describe.skipIf(POSIX_ONLY)('--state-dir is confined (the flag added for tests must not be a sink)', () => {
   /*
    * This flag exists so the suite can redirect the credential store after
    * trustedStateDir() stopped honouring TOKENSCOPE_STATE_DIR. Unconfined it

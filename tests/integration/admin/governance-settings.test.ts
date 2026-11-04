@@ -211,6 +211,36 @@ describe('PUT validation + scope authority', () => {
   })
 })
 
+describe('projects.pm_own_region_only — a platform-only switch (A4)', () => {
+  const KEY = 'projects.pm_own_region_only'
+
+  it('is seeded at 0 and accepts exactly 0 or 1', async () => {
+    expect(await resolveGovernanceSetting(t.db, KEY)).toBe(0)
+    await expect(
+      adminPut(ev({ method: 'PUT', body: { key: KEY, scope_type: 'platform', value: 0.5 }, session: finops() })),
+    ).rejects.toMatchObject({ statusCode: 400 })
+    await adminPut(ev({ method: 'PUT', body: { key: KEY, scope_type: 'platform', value: 1 }, session: finops() }))
+    expect(await resolveGovernanceSetting(t.db, KEY)).toBe(1)
+    await adminPut(ev({ method: 'PUT', body: { key: KEY, scope_type: 'platform', value: 0 }, session: finops() }))
+  })
+
+  it('refuses a region override, even from platform-admin', async () => {
+    for (const session of [finops(), admin()]) {
+      await expect(
+        adminPut(ev({ method: 'PUT', body: { key: KEY, scope_type: 'region', region_id: regionId, value: 1 }, session })),
+      ).rejects.toMatchObject({ statusCode: 400 })
+    }
+    const rows = await t.client`SELECT 1 FROM governance_setting WHERE key = ${KEY} AND scope_type = 'region'`
+    expect(rows.length).toBe(0)
+  })
+
+  it('the admin GET marks it as a platform-only switch', async () => {
+    const got = (await adminGet(ev({ method: 'GET', session: finops() }))) as { switch_keys: string[]; platform_only_keys: string[] }
+    expect(got.switch_keys).toEqual([KEY])
+    expect(got.platform_only_keys).toEqual([KEY])
+  })
+})
+
 describe('read endpoints', () => {
   it('resolved GET serves any authenticated user their region-effective dials + override keys', async () => {
     const got = (await resolvedGet(ev({ method: 'GET', session: dev() }))) as {

@@ -16,7 +16,10 @@
  * full audit. The filter is explicit SQL on top of the RLS policy
  * (which is admin-broad, not region-scoped).
  *
- * Filters: eventType / actorTeammateId / subjectKind / since / until.
+ * Filters: eventType / actorTeammateId / actorSystem / subjectKind / since /
+ * until. `actorSystem` selects events with no teammate actor written by that
+ * system (the Actor column shows the system name for those rows). The filter
+ * options come from ./facets.get.ts.
  * Pagination: limit (default 50, max 200) + offset.
  */
 import { defineEventHandler } from 'h3'
@@ -25,12 +28,14 @@ import { sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { requireRole } from '../../../../auth/rbac'
 import { withRequestRls } from '../../../../db/request-rls'
+import { auditRegionScopeClause } from '../../../../utils/audit-scope'
 
 const Query = z.object({
   limit: z.coerce.number().int().positive().max(200).default(50),
   offset: z.coerce.number().int().nonnegative().default(0),
   eventType: z.string().max(120).optional(),
   actorTeammateId: z.string().uuid().optional(),
+  actorSystem: z.string().max(120).optional(),
   subjectKind: z.string().max(60).optional(),
   since: z.string().datetime().optional(),
   until: z.string().datetime().optional(),
@@ -59,6 +64,11 @@ export default defineEventHandler(async (event) => {
   const actorClause = query.actorTeammateId
     ? sql`AND ae.actor_teammate_id = ${query.actorTeammateId}::uuid`
     : sql``
+  // A system actor is one with no teammate: the Actor column shows
+  // actor_system only when there is no actor email, so the filter matches that.
+  const actorSystemClause = query.actorSystem
+    ? sql`AND ae.actor_teammate_id IS NULL AND ae.actor_system = ${query.actorSystem}`
+    : sql``
   const subjectKindClause = query.subjectKind
     ? sql`AND ae.subject_kind = ${query.subjectKind}`
     : sql``
@@ -68,29 +78,9 @@ export default defineEventHandler(async (event) => {
   const untilClause = query.until
     ? sql`AND ae.ts_recorded < ${query.until}::timestamptz`
     : sql``
-  // admin → region scope; platform-admin → full audit. The check uses
-  // the caller's home region (session.regionId) so a region-A admin
-  // never sees region-B's mutation trail even though the RLS policy
-  // would let them. The OR-by-subject branch keeps role-change events
-  // visible to the admin whose subject is in their region even if the
-  // actor was a platform-admin (cross-region steward).
-  const regionScopeClause =
-    session.role === 'admin'
-      ? sql`AND (
-            EXISTS (
-              SELECT 1 FROM teammate ta
-              WHERE ta.id = ae.actor_teammate_id
-                AND ta.region_id = ${session.regionId}::uuid
-            )
-            OR (
-              ae.subject_kind = 'teammate' AND EXISTS (
-                SELECT 1 FROM teammate ts
-                WHERE ts.id = ae.subject_id
-                  AND ts.region_id = ${session.regionId}::uuid
-              )
-            )
-          )`
-      : sql``
+  // admin → their region's footprint; platform-admin → the full audit
+  // (server/utils/audit-scope.ts, shared with the filter facets).
+  const regionScopeClause = auditRegionScopeClause(session)
 
   // R2 F1: run data + COUNT inside ONE withRequestRls tx — avoids the
   // race between two separate GUC setups (a teammate.region_id change
@@ -113,6 +103,7 @@ export default defineEventHandler(async (event) => {
       WHERE TRUE
         ${eventTypeClause}
         ${actorClause}
+        ${actorSystemClause}
         ${subjectKindClause}
         ${sinceClause}
         ${untilClause}
@@ -126,6 +117,7 @@ export default defineEventHandler(async (event) => {
       WHERE TRUE
         ${eventTypeClause}
         ${actorClause}
+        ${actorSystemClause}
         ${subjectKindClause}
         ${sinceClause}
         ${untilClause}

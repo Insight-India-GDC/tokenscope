@@ -21,7 +21,7 @@ import { decodeExportLogsServiceRequest } from './otlp-protobuf.js'
 
 const port = Number(process.env.PORT || 8080)
 
-/** @typedef {{tokens:number, tokenType:string, model:string, tsEvent:string, sourceRunId?:string, organizationId?:string, projectCodeHash?:string, claudeSessionId?:string, nanoAiu?:number, querySource?:string, lawCostUsd?:number}} UsageRecord */
+/** @typedef {{tokens:number, tokenType:string, model:string, tsEvent:string, sourceRunId?:string, organizationId?:string, projectCodeHash?:string, activity?:string, claudeSessionId?:string, nanoAiu?:number, querySource?:string, lawCostUsd?:number}} UsageRecord */
 /** @type {Map<string, UsageRecord[]>} */
 const usageBySession = new Map()
 // CONVERSATION KEY (Claude's session.id, falling back to the instance id when a
@@ -88,6 +88,9 @@ function ingestOtlpLogs(payload) {
     // ADR-0004 "B′": project.code_hash is a per-RESOURCE attribute (one per repo).
     // The same DEVICE_SID may appear across resourceLogs carrying different hashes.
     const projectCodeHash = resource['project.code_hash']
+    // The folder's default activity (#475): raw here, like the LAW column; the
+    // joiner keeps it only when it names an active activity_type.
+    const activity = resource['tokenscope.activity'] || undefined
     for (const sl of rl.scopeLogs ?? []) {
       for (const lr of sl.logRecords ?? []) {
         const a = attrsToObject(lr.attributes)
@@ -141,6 +144,7 @@ function ingestOtlpLogs(payload) {
             sourceRunId: runId,
             organizationId: a['organization.id'],
             projectCodeHash,
+            activity,
             claudeSessionId: a['session.id'],
             nanoAiu,
             querySource,

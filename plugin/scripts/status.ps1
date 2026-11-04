@@ -42,6 +42,9 @@ $ProgressPreference = 'SilentlyContinue'
 
 $Dash = [string][char]0x2014
 
+# The install's config folder and state folder (#449), shared with claude-redeem.ps1.
+. ([IO.Path]::Combine($PSScriptRoot, 'claude-config-dir.ps1'))
+
 # -- small JSON readers (StrictMode-safe) ----------------------------------------
 function Get-Prop($Obj, [string]$Name) {
   if ($null -eq $Obj -or -not ($Obj -is [Management.Automation.PSCustomObject])) { return $null }
@@ -137,7 +140,7 @@ function Get-EmissionVerdict($Status, [bool]$HasAuth, $Sentinel, $Degraded, [lon
     return [ordered]@{
       emitting     = $true
       probe_status = 200
-      message      = 'OK: this computer can send usage to TokenScope. This checks the credential only; it cannot see whether your usage has arrived.'
+      message      = 'OK: this computer can send usage to TokenScope.'
     }
   }
   if ($Status -eq 0 -and $null -ne $Status) {
@@ -261,25 +264,277 @@ function Invoke-EmitHelper([string]$Helper, [string]$StateDir, [string]$Tool, $G
   return @{ status = $proc.ExitCode; hasAuth = $hasAuth }
 }
 
+# -- #475: what the work is tagged with (the twin of workReport in status.mjs) --
+# The folder's own sources only: this lane has no local note of a tag set with
+# /tokenscope:activity (that step needs Node), so "set this session" never shows.
+$TsSafeCode = '^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$'
+$TsSafeActivity = '^[A-Za-z0-9][A-Za-z0-9 _&/.()+-]{0,63}$'
+
+# A regular file only (not a link, FIFO or directory), as tokenscope-project.mjs.
+function Test-TsRegularFile([string]$Path) {
+  try {
+    $i = New-Object IO.FileInfo $Path
+    return $i.Exists -and -not ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)
+  } catch { return $false }
+}
+
+# The project code of the nearest `.tokenscope` walking up from $Dir: the
+# `project:` block's `code:`, or a file whose only line is the code (#485).
+function Get-TsProjectCode([string]$Dir) {
+  $d = $Dir
+  while (-not [string]::IsNullOrEmpty($d)) {
+    $f = [IO.Path]::Combine($d, '.tokenscope')
+    if (Test-TsRegularFile $f) {
+      $lines = @()
+      try { $lines = [IO.File]::ReadAllLines($f) } catch { return $null }
+      $inProject = $false
+      $code = $null
+      $meaningful = New-Object System.Collections.ArrayList
+      foreach ($raw in $lines) {
+        $line = ($raw -replace '#.*$', '').TrimEnd()
+        if ($line.Trim() -eq '') { continue }
+        [void]$meaningful.Add($line.Trim())
+        if ($line -match '^[A-Za-z][A-Za-z0-9_-]*:\s*$') { $inProject = ($line -match '^project:'); continue }
+        if ($line -match '^(\s+)code:\s*"?([^"]*?)"?\s*$' -and $inProject) { $code = $Matches[2]; continue }
+        if ($line -match '^\S') { $inProject = $false }
+      }
+      if ($null -eq $code -and $meaningful.Count -eq 1 -and -not $meaningful[0].Contains(':')) { $code = $meaningful[0] }
+      if ($code -and $code -cmatch $TsSafeCode) { return $code }
+      return $null
+    }
+    $parent = [IO.Path]::GetDirectoryName($d)
+    if ($parent -eq $d) { break }
+    $d = $parent
+  }
+  return $null
+}
+
+# The repo root (the nearest folder with a .git entry) walking up from $Dir, or
+# $Dir itself: where the Claude SessionStart hook reads the folder's settings.
+function Get-TsRepoRoot([string]$Dir) {
+  $d = $Dir
+  while (-not [string]::IsNullOrEmpty($d)) {
+    if ([IO.Directory]::Exists([IO.Path]::Combine($d, '.git')) -or [IO.File]::Exists([IO.Path]::Combine($d, '.git'))) { return $d }
+    $parent = [IO.Path]::GetDirectoryName($d)
+    if ($parent -eq $d) { break }
+    $d = $parent
+  }
+  return $Dir
+}
+
+function Get-TsWork([string]$Dir) {
+  $project = [ordered]@{ code = $null; source = $null }
+  $activity = [ordered]@{ label = $null; source = $null }
+  try {
+    $code = Get-TsProjectCode $Dir
+    if ($code) {
+      $project = [ordered]@{ code = $code; source = 'from .tokenscope' }
+    } else {
+      $shared = Read-JsonOrNull ([IO.Path]::Combine((Get-TsRepoRoot $Dir), '.claude', 'settings.json'))
+      $attrs = [string](Get-Prop (Get-Prop $shared 'env') 'OTEL_RESOURCE_ATTRIBUTES')
+      if ($attrs -match '(?:^|,)project\.code_hash=([0-9a-f]{64})(?=,|$)') {
+        $project = [ordered]@{ code = $null; code_hash = $Matches[1]; source = 'from .claude/settings.json' }
+      }
+    }
+    $localFile = [IO.Path]::Combine((Get-TsRepoRoot $Dir), '.claude', 'settings.local.json')
+    if (Test-TsRegularFile $localFile) {
+      $label = Get-Prop (Get-Prop (Read-JsonOrNull $localFile) 'tokenscope') 'activity'
+      if ($label -is [string] -and $label.Trim() -cmatch $TsSafeActivity) {
+        $activity = [ordered]@{ label = $label.Trim(); source = 'folder default'; note = "applies from the next session, and only if it is one of your region's activity types" }
+      }
+    }
+  } catch { }
+  return [ordered]@{ project = $project; activity = $activity }
+}
+
+# -- Project tag billability (#503; project-check.mjs and status.mjs projectBlock) --
+# The Node path's decision: the hash this folder emits with (the repo tag's
+# OTEL_RESOURCE_ATTRIBUTES: settings.local.json, else the committed
+# settings.json, else this install's own), else the committed .tokenscope's
+# hash, checked against /project-resolve with this install's own endpoint and
+# its bound access token. Endpoints and the token never come from the repo.
+# Comparisons are case-sensitive, as in JS.
+$LeftQuote = [string][char]0x201C
+$RightQuote = [string][char]0x201D
+
+function Get-TsSha256Hex([string]$Text) {
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    return -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text)) | ForEach-Object { $_.ToString('x2') })
+  } finally { $sha.Dispose() }
+}
+
+# https, or plain http to a loopback host (endpoint-guard.mjs, allowLoopback).
+function Test-TsSafeEndpoint([string]$Url) {
+  if ([string]::IsNullOrWhiteSpace($Url) -or $Url.Trim().StartsWith('-')) { return $false }
+  $u = $null
+  if (-not [Uri]::TryCreate($Url.Trim(), [UriKind]::Absolute, [ref]$u)) { return $false }
+  if ($u.Scheme -eq 'https') { return $true }
+  return ($u.Scheme -eq 'http' -and ($u.IsLoopback -or $u.Host -eq 'localhost'))
+}
+
+# One GET with the bearer: never follows a redirect (the guard checked only this
+# URL), bounded. Status 0 = no HTTP response.
+function Invoke-TsAuthedGet([string]$Uri, [string]$Token, [int]$TimeoutMs = 4000) {
+  Microsoft.PowerShell.Utility\Add-Type -AssemblyName System.Net.Http
+  # As otel-headers-helper.ps1: OR TLS 1.2 in (5.1 may not offer it; assigning
+  # would switch TLS 1.3 off), and no Expect: 100-continue.
+  [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  [Net.ServicePointManager]::Expect100Continue = $false
+  $r = @{ Status = 0; Body = '' }
+  $handler = $null; $client = $null; $req = $null; $resp = $null
+  try {
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $false
+    $handler.UseCookies = $false
+    $client = New-Object System.Net.Http.HttpClient($handler)
+    $client.Timeout = [TimeSpan]::FromMilliseconds($TimeoutMs)
+    $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, $Uri)
+    $req.Headers.ExpectContinue = $false
+    [void]$req.Headers.TryAddWithoutValidation('Authorization', 'Bearer ' + $Token)
+    [void]$req.Headers.TryAddWithoutValidation('User-Agent', 'TokenScope-PowerShell/' + $PSVersionTable.PSVersion.Major + '.' + $PSVersionTable.PSVersion.Minor)
+    $send = $client.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseContentRead)
+    if (-not $send.Wait($TimeoutMs)) { return $r }
+    $resp = $send.Result
+    $read = $resp.Content.ReadAsByteArrayAsync()
+    if (-not $read.Wait($TimeoutMs)) { return $r }
+    $r.Body = [Text.Encoding]::UTF8.GetString($read.Result)
+    $r.Status = [int]$resp.StatusCode
+  } catch {
+    $r = @{ Status = 0; Body = '' }
+  } finally {
+    foreach ($d in @($resp, $req, $client, $handler)) { if ($null -ne $d) { try { $d.Dispose() } catch { } } }
+  }
+  return $r
+}
+
+# The repo tag's resource attributes: settings.local.json, else settings.json,
+# else this install's own. Repo files over 1 MiB are not read (the Node path's
+# readRegularFileBounded bound): a repository chooses their size.
+function Get-TsRepoTagAttrs([string]$Dir, [string]$InstallAttrs = '') {
+  $root = Get-TsRepoRoot $Dir
+  foreach ($name in @('settings.local.json', 'settings.json')) {
+    $f = [IO.Path]::Combine($root, '.claude', $name)
+    if (-not (Test-TsRegularFile $f)) { continue }
+    try { if ((New-Object IO.FileInfo $f).Length -gt 1048576) { continue } } catch { continue }
+    $a = Get-Prop (Get-Prop (Read-JsonOrNull $f) 'env') 'OTEL_RESOURCE_ATTRIBUTES'
+    if ($a -is [string] -and $a) { return $a }
+  }
+  return $InstallAttrs
+}
+
+# project-check.mjs checkRepoProjectBillable, for this install's endpoint and
+# device store folder.
+function Get-TsProjectCheck([string]$Dir, [string]$Endpoint, [string]$StateDir, [string]$InstallAttrs = '', [int]$TimeoutMs = 4000) {
+  $attrs = Get-TsRepoTagAttrs $Dir $InstallAttrs
+  $emitting = $null
+  if ($attrs -cmatch 'project\.code_hash=([^,]+)') { $emitting = $Matches[1] }
+  $code = Get-TsProjectCode $Dir
+  $committed = if ($code) { Get-TsSha256Hex $code } else { $null }
+  if (-not $emitting -and -not $committed) { return @{ status = 'no-tag' } }
+  $hash = if ($emitting) { $emitting } else { $committed }
+  if ([string]::IsNullOrWhiteSpace($Endpoint)) { return @{ status = 'unverifiable'; reason = 'not-configured' } }
+  if ($Endpoint -cnotmatch '/bearer$') { return @{ status = 'unverifiable'; reason = 'bad-endpoint' } }
+  $url = ($Endpoint -creplace '/bearer$', '/project-resolve') + '?code_hash=' + [Uri]::EscapeDataString($hash)
+  if (-not (Test-TsSafeEndpoint $url)) { return @{ status = 'unverifiable'; reason = 'bad-endpoint' } }
+  # Only a cache bound to this destination may be presented.
+  $cache = Read-JsonOrNull ([IO.Path]::Combine($StateDir, 'oauth-access.claude-code.json'))
+  $token = [string](Get-Prop $cache 'access_token')
+  if (-not $token -or [string](Get-Prop $cache 'bearer_endpoint') -cne $Endpoint) {
+    return @{ status = 'unverifiable'; reason = 'no-token' }
+  }
+  $res = Invoke-TsAuthedGet $url $token $TimeoutMs
+  # A redirect is not followed; Node's fetch (redirect: 'error') reads it as a
+  # failed request, so it is one here too.
+  if ($res.Status -eq 0 -or ($res.Status -ge 300 -and $res.Status -le 399)) { return @{ status = 'unverifiable'; reason = 'fetch-failed' } }
+  if ($res.Status -lt 200 -or $res.Status -gt 299) { return @{ status = 'unverifiable'; reason = "http-$($res.Status)" } }
+  $body = $null
+  try { $body = ConvertFrom-JsonText $res.Body } catch { $body = $null }
+  if ($null -eq $body) { return @{ status = 'unverifiable'; reason = 'bad-json' } }
+  # The code only when it is what was checked (a frozen session's old tag has a
+  # hash but no code here).
+  $reported = if ($hash -ceq $committed) { $code } else { $null }
+  $billable = Get-Prop $body 'billable'
+  if ($billable -is [bool] -and $billable) { return @{ status = 'ok'; code = $reported } }
+  if ($billable -is [bool] -and -not $billable) {
+    $projects = @()
+    foreach ($p in @(Get-Prop $body 'your_projects')) {
+      $c = Get-Prop $p 'code'
+      if ($c -is [string] -and $c) { $projects += $c }
+    }
+    return @{ status = 'not-billable'; code = $reported; projects = $projects }
+  }
+  return @{ status = 'unverifiable'; reason = 'unexpected-shape' }
+}
+
+# status.mjs projectBlock and unverifiedMessage, word for word (a test pins it).
+function Get-TsProjectBlock($Check) {
+  $s = [string]$Check['status']
+  $c = $Check['code']
+  $named = if ($c) { " $LeftQuote$c$RightQuote" } else { '' }
+  if ($s -eq 'ok') {
+    return [ordered]@{ code = $c; billable = $true; message = "Project tag$named is billable on this environment." }
+  }
+  if ($s -eq 'not-billable') {
+    $hint = if (@($Check['projects']).Count -gt 0) { ' Your budgets: ' + (@($Check['projects']) -join ', ') + '.' } else { '' }
+    return [ordered]@{ code = $c; billable = $false; message = "Wrong-env tag:$named is NOT billable here $Dash spend is landing UNTAGGED. Re-tag via /tokenscope:project.$hint" }
+  }
+  if ($s -eq 'no-tag') {
+    return [ordered]@{ code = $null; billable = $null; message = "No project tag (.tokenscope) in this repo $Dash spend is untagged by default." }
+  }
+  $reason = $Check['reason']
+  $lead = 'Could not check whether the project tag is billable:'
+  $msg = switch ([string]$reason) {
+    'not-configured' { "$lead this device is not set up to send usage. Run /tokenscope:setup." }
+    'no-token' { "$lead this device has no current sign-in to TokenScope yet. It signs in when Claude Code next sends usage; if this stays, run /tokenscope:setup." }
+    'fetch-failed' { "$lead TokenScope could not be reached (offline, or a network block)." }
+    'http-401' { "$lead TokenScope refused this device's sign-in. Run /tokenscope:setup." }
+    'http-403' { "$lead TokenScope refused this device's sign-in. Run /tokenscope:setup." }
+    default { "$lead TokenScope answered unexpectedly ($(if ($reason) { $reason } else { 'unknown' }))." }
+  }
+  return [ordered]@{ code = $null; billable = $null; reason = $reason; message = $msg }
+}
+
 function Invoke-Status {
   $profileDir = [Environment]::GetFolderPath('UserProfile')
   $result = [ordered]@{
     emitting     = $false
     probe        = [ordered]@{ status = $null; message = '' }
     project      = $null
+    work         = (Get-TsWork ([IO.Directory]::GetCurrentDirectory()))
     last_failure = $null
     mcp_authed   = $false
     runtime      = 'powershell'
-    needs_node   = @('status line', 'backfill', 'repo project pin and check')
+    needs_node   = @('status line', 'backfill', 'repo project pin')
   }
   if ([string]::IsNullOrEmpty($profileDir)) {
     $result.probe.message = 'This account has no profile directory; TokenScope cannot run here.'
     return $result
   }
-  $stateDir = [IO.Path]::Combine($profileDir, '.tokenscope')
+  $profileRoot = [IO.Path]::GetFullPath($profileDir).TrimEnd([IO.Path]::DirectorySeparatorChar)
+  # #449: the install this session belongs to (Claude Desktop's own
+  # CLAUDE_CONFIG_DIR, else <profile>\.claude), and the device store its helper
+  # reads (the helper's --state-dir, else the folder's own).
+  $cfg = Resolve-TsClaudeConfigDir $profileRoot
+  $settingsFile = [IO.Path]::Combine($cfg.Dir, 'settings.json')
+  $result['settings_file'] = $settingsFile
+  if ($cfg.Refused) { $result['config_dir_refused'] = "CLAUDE_CONFIG_DIR is set but was not used ($($cfg.Refused))." }
+  $settings = Read-JsonOrNull $settingsFile
+  # #494: which device this install reports as, shortened as the Account page
+  # shows it (status.mjs deviceBlock): the instance its own endpoint addresses,
+  # else the one its own resource attributes name.
+  $sEnv = Get-Prop $settings 'env'
+  $devId = ''
+  if ([string](Get-Prop $sEnv 'TOKENSCOPE_BEARER_ENDPOINT') -match '/instances/([0-9a-fA-F-]{36})/bearer$') { $devId = $Matches[1] }
+  elseif ([string](Get-Prop $sEnv 'OTEL_RESOURCE_ATTRIBUTES') -match '(?:^|,)tokenscope\.instance_id=([^,]+)') { $devId = $Matches[1] }
+  if ($devId) {
+    $short = $devId.Substring(0, [Math]::Min(8, $devId.Length))
+    $result['device'] = [ordered]@{ instance = $short; message = "This install is device $short, as listed on your Account page." }
+  }
+  $stateDir = Get-TsHelperStateDir ([string](Get-Prop $settings 'otelHeadersHelper')) $cfg.Dir $profileRoot
+  $trustedStateDir = [IO.Path]::Combine($profileRoot, '.tokenscope')
   $tool = 'claude-code'
   $store = [IO.Path]::Combine($stateDir, "config.$tool.json")
-  $settings = Read-JsonOrNull ([IO.Path]::Combine($profileDir, '.claude', 'settings.json'))
   $settingsRt = Get-Prop (Get-Prop $settings 'env') 'TOKENSCOPE_OAUTH_REFRESH_TOKEN'
   $helper = [IO.Path]::Combine($PSScriptRoot, 'otel-headers-helper.ps1')
 
@@ -305,18 +560,26 @@ function Invoke-Status {
   $result.probe.status = $verdict.probe_status
   $result.probe.message = $verdict.message
   $result.last_failure = Read-JsonOrNull ([IO.Path]::Combine($stateDir, "emit-failure.$tool.json"))
-  $other = Read-JsonOrNull ([IO.Path]::Combine($stateDir, 'emit-failure.copilot-cli.json'))
+  $other = Read-JsonOrNull ([IO.Path]::Combine($trustedStateDir, 'emit-failure.copilot-cli.json'))
   if ($null -ne $other) {
     $o = [ordered]@{}
     foreach ($p in $other.PSObject.Properties) { $o[$p.Name] = $p.Value }
     $o['fix'] = 'Run TokenScope setup in a Copilot CLI session.'
     $result['copilot_lane_failure'] = $o
   }
-  $creds = Read-JsonOrNull ([IO.Path]::Combine($profileDir, '.claude', '.credentials.json'))
+  # #503: this install's own endpoint and attributes, from its settings (as
+  # status.mjs reads them).
+  $endpoint = [string](Get-Prop $sEnv 'TOKENSCOPE_BEARER_ENDPOINT')
+  try {
+    $result.project = Get-TsProjectBlock (Get-TsProjectCheck ([IO.Directory]::GetCurrentDirectory()) $endpoint $stateDir ([string](Get-Prop $sEnv 'OTEL_RESOURCE_ATTRIBUTES')))
+  } catch {
+    $result.project = [ordered]@{ code = $null; billable = $null; message = 'Project-tag check unavailable.' }
+  }
+  $creds = Read-JsonOrNull ([IO.Path]::Combine($cfg.Dir, '.credentials.json'))
   $result.mcp_authed = Test-McpAuthed $creds
   # Claude Desktop only (desktop-env.mjs): its sessions are attributed through the
   # user environment, so check it carries this device.
-  if (Test-TsTrustedDesktop ([IO.Path]::Combine($profileDir, '.claude', 'settings.json'))) {
+  if (Test-TsTrustedDesktop $settingsFile) {
     $attrs = [string](Get-Prop (Get-Prop $settings 'env') 'OTEL_RESOURCE_ATTRIBUTES')
     $mine = if ($attrs -match '(?:^|,)tokenscope\.instance_id=([^,]+)') { $Matches[1] } else { '' }
     $login = [string][Environment]::GetEnvironmentVariable('OTEL_RESOURCE_ATTRIBUTES', 'User')

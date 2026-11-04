@@ -649,7 +649,7 @@ const sumbackSpan = computed(
               v-if="r.scopeShareUsd === 0"
               class="block text-[11px] font-normal text-carbon-3 italic"
               :data-testid="`drivers-scope-share-none-${r.key}`"
-            >none of it is stamped to this {{ BU_LABEL_LOWER }} — spend keeps the {{ BU_LABEL_LOWER }} it had when it was recorded</span>
+            >none of it counts toward this {{ BU_LABEL_LOWER }} — usage tagged to a project counts toward that project's {{ BU_LABEL_LOWER }}</span>
           </td>
           <!-- Consumption against this row's OWN budget, not a share of the scope.
                The three-state truth table (number / "no budget set" / n/a) lives
@@ -680,7 +680,7 @@ const sumbackSpan = computed(
           :data-mismatch="mismatch"
         >
           <td :colspan="sumbackSpan" class="py-2.5 font-semibold">
-            Σ drivers
+            Sum of drivers
             <span v-if="mismatch" class="ml-1 text-[11px] font-bold">
               ≠ {{ sumbackLabel }} — does not reconcile
             </span>

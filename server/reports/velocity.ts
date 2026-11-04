@@ -3,10 +3,8 @@
  * (reporting-consolidation D-Q7, docs/design/reporting-consolidation/
  * 02-owner-decisions.md; build-design §8 Q7). The governance dial
  * (`velocity.spike_threshold`, mig 0049) is THE definition. The old practice-page
- * `FLAG_MULT = 2` literal (a second, hard-coded threshold) is retired — Wave 6
- * deletes that page and its orphan `GET /rollups/practice/{ouId}/velocity` endpoint.
- * This module lands the canonical resolver the reporting endpoints call so there is
- * exactly one source of truth; it does NOT delete pages (that is Wave 6).
+ * `FLAG_MULT = 2` literal is a second, hard-coded threshold still used by the
+ * practice page. This module is the canonical resolver the reporting endpoints call.
  *
  * The dial is a FRACTIONAL delta (platform default 0.25 = "25% over baseline"),
  * resolved most-specific-wins (region overrides platform), fail-loud on an absent

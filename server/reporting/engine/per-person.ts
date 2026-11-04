@@ -69,9 +69,9 @@ interface CohortRow extends Record<string, unknown> {
  * deliberately — the tile says "half of N are below this" over the N beside it,
  * so the two must be one definition rather than two queries that agree today.
  *
- * The lane is UNALIASED, so a clamp must address bare `region_id` / `org_unit_id`
+ * The lane is UNALIASED, so a clamp must address bare columns (`teammate_id`, `cost_owning_unit_id`)
  * — the same addressing `fetchKpiCore`'s §A totals query takes, and what
- * `RegionalScope.usageScope('region_id', 'org_unit_id')` builds.
+ * `RegionalScope.usageScope('teammate_id')` builds.
  */
 async function fetchCohort(tx: Tx, scope: UsageScope, window: UsageWindow) {
   // usage_rollup_daily, not the live view (usage-rollup-lane.md R5): teammate_id
@@ -80,7 +80,7 @@ async function fetchCohort(tx: Tx, scope: UsageScope, window: UsageWindow) {
   const rows = await tx.execute<CohortRow>(sql`
     SELECT COALESCE(SUM(cost_usd), 0)::text AS cost,
            bool_or(usage_provenance = 'otel-emitted') AS emitting
-    FROM usage_rollup_daily
+    FROM v_usage_rollup_current
     WHERE ${scopeSql(scope)}
       AND day >= ${window.startIso.slice(0, 10)}::date
       AND day <  ${window.endIso.slice(0, 10)}::date

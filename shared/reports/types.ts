@@ -1294,12 +1294,6 @@ export interface ReportMeta {
   coverage?: ReportCoverageMeta
   scope: ReportScope
   /**
-   * true when the response's org dims are point-in-time "as at emit" (usage lane,
-   * historical months); false when re-homed to current org structure (build-design
-   * §5 disclosure copy).
-   */
-  pointInTimeDims: boolean
-  /**
    * Present ONLY when the active window is a custom `from`/`to` date range (both
    * `YYYY-MM-DD`, inclusive `to`). Absent in the default month mode. When present,
    * `month`/`monthFloor` are the window's start-month representative and the

@@ -904,23 +904,23 @@ const AB_TERM_LABELS: Record<AbDecompositionTermName, string> = {
   unreconciledApiStale: 'Stale reconciliation',
 }
 const AB_TERM_HINTS: Record<AbDecompositionTermName, string> = {
-  nonCodeSurfaces: 'Billed by Anthropic, absent from both §A arms — the design expects this to dominate.',
-  licenceLanes: 'Copilot seat SKUs. A pure sum: an idle licensed seat has no §A counterpart.',
+  nonCodeSurfaces: 'Billed by Anthropic, absent from both attributed-usage arms — the design expects this to dominate.',
+  licenceLanes: 'Copilot seat SKUs. A pure sum: an idle licensed seat has no attributed-usage counterpart.',
   copilotAgentUsage:
     'Coding-agent spend, billed inside the pooled Copilot invoice but invisible to the usage rollups by design: it emits no telemetry and is never taggable. A genuine completeness hole rather than a measurement artefact, so it is named here instead of being folded into the line below.',
   copilotUsageGap:
-    'What remains of the pooled enterprise invoice once the coding-agent lane above is named, measured against per-user usage. Mostly the pooled-vs-per-user grain difference, but not only that: a Copilot user with no teammate mapping is skipped before any usage row is written, so their spend is billed here and invisible to §A. That amount cannot be computed from stored data (it exists only in the live provider roster) — see Unresolved Copilot users for it.',
+    'What remains of the pooled enterprise invoice once the coding-agent lane above is named, measured against per-user usage. Mostly the pooled-vs-per-user grain difference, but not only that: a Copilot user with no teammate mapping is skipped before any usage row is written, so their spend is billed here and invisible to attributed usage. That amount cannot be computed from stored data (it exists only in the live provider roster) — see Unresolved Copilot users for it.',
   quarantine:
-    'Spend a developer disowned. Always zero here, but not by being absent from both sides: where the provider API corroborates the same day, reconciliation returns the amount to §A and §B bills it, so it cancels; where nothing corroborates it, it enters neither. The amount is shown below.',
-  floor: 'Where OTel over-reads the API, the floor keeps §A high. Negative by construction.',
+    'Spend a developer disowned. Always zero here, but not by being absent from both sides: where the provider API corroborates the same day, reconciliation returns the amount to attributed usage and chargeback bills it, so it cancels; where nothing corroborates it, it enters neither. The amount is shown below.',
+  floor: 'Where OTel over-reads the API, the floor keeps attributed usage high. Negative by construction.',
   chargebackExemptUsage:
-    'Spend flagged chargeback-exempt. Every chargeable lane filters it out of §B, but nothing filters it out of §A, so it is genuine usage that is deliberately not billed. Negative by construction. Not a fault — governance working as configured.',
+    'Spend flagged chargeback-exempt. Every chargeable lane filters it out of chargeback, but nothing filters it out of attributed usage, so it is genuine usage that is deliberately not billed. Negative by construction. Not a fault — governance working as configured.',
   populationDifference: 'Spend whose teammate no longer resolves. Structurally zero today.',
   homingLoss: 'Zero at estate level by construction — see the unhomed figure below, which is not.',
   unreconciledApiLag:
-    'Billed spend the reconciliation worker has not folded into §A yet, so §B carries it and §A does not. Self-healing while the day is still inside the worker\'s trailing 35-day window; an older month needs a backfill before it clears.',
+    'Billed spend the reconciliation worker has not folded into attributed usage yet, so chargeback carries it and attributed usage does not. Self-healing while the day is still inside the worker\'s trailing 35-day window; an older month needs a backfill before it clears.',
   unreconciledApiStale:
-    'The opposite direction: §A already carries more than the API now reports, typically late telemetry arriving after a day was reconciled. Shown separately from the lag above because the two cancel if summed, and they call for different responses.',
+    'The opposite direction: attributed usage already carries more than the API now reports, typically late telemetry arriving after a day was reconciled. Shown separately from the lag above because the two cancel if summed, and they call for different responses.',
 }
 
 function abUsd(v: string | undefined): string {
@@ -939,21 +939,21 @@ function abUsd(v: string | undefined): string {
 const UNHOMED_LABELS: Record<UnhomedCause, string> = {
   'no-region': 'Teammate has no region',
   'region-no-unit': 'Teammate is in a region but not in a unit',
-  'no-cost-owning-ancestor': 'Unit has no cost-owning ancestor',
+  'no-cost-owning-ancestor': 'Unit has no Business Unit above it',
   // NAMED FOR WHAT IT MEASURES. The bucket reads the Copilot pooled bill and its
   // overage allocation and nothing else; calling it "pooled provider" promised a
   // generality the query has never had (see shared/usage/unhomed-causes.ts).
-  'pooled-copilot': 'Pooled Copilot spend with no cost-owning unit',
+  'pooled-copilot': 'Pooled Copilot spend with no Business Unit',
 }
 const UNHOMED_HINTS: Record<UnhomedCause, string> = {
   'no-region':
     'The platform could not place these people in any region at all: no directory match, no manager chain, no billing region. They sit in the system-wide holding region, so their spend reaches no region’s report and no Business Unit.',
   'region-no-unit':
-    'The region is known; the unit is not. They sit on their region’s holding node, which is deliberately not cost-owning, so their spend reaches the region and stops there.',
+    'The region is known; the unit is not. They sit on their region’s holding node, which is deliberately not a Business Unit, so their spend reaches the region and stops there.',
   'no-cost-owning-ancestor':
-    'These people are in a real unit, but neither it nor anything above it at any depth is both cost-owning and active. The tree is fine; the ownership flag is missing, or the unit that carried it has been retired.',
+    'These people are in a real unit, but neither it nor anything above it at any depth is both a Business Unit and active. The tree is fine; the Business Unit flag is missing, or the unit that carried it has been retired.',
   'pooled-copilot':
-    'COPILOT invoice lines billed to the enterprise as a pool rather than to a person, whose provider organisation is not homed to a cost-owning unit. This is not a placement failure and placing people will not move it — the organisation is what needs homing. Copilot is the only pooled provider this bucket covers: another one would not appear here, it would land in the residual and suppress this whole breakdown.',
+    'COPILOT invoice lines billed to the enterprise as a pool rather than to a person, whose provider organisation is not homed to a Business Unit. This is not a placement failure and placing people will not move it — the organisation is what needs homing. Copilot is the only pooled provider this bucket covers: another one would not appear here, it would land in the residual and suppress this whole breakdown.',
 }
 /*
  * ROLE NAMES COME FROM THE SHARED PERSONA LIST, never re-typed here. The scope
@@ -967,39 +967,28 @@ const PERSONA_LABEL = Object.fromEntries(
   REPORT_VISIBILITY_PERSONAS.map((p) => [p.key, p.label]),
 ) as Record<(typeof REPORT_VISIBILITY_PERSONAS)[number]['key'], string>
 
-/** The role that owns a region-scoped fix — and cannot read this page. */
-const REGION_ADMIN_LABEL = PERSONA_LABEL.admin
-/** The role that owns an estate-wide fix, and is reading this page. */
+/** The one admin role owns every fix here, and is the one reading this page. */
 const ORG_WIDE_LABEL = PERSONA_LABEL['platform-admin']
 
-/*
- * Each cause names its ACTION and its OWNER. Two of the four owners cannot read
- * this page (it is platform-admin only, for a sound reason — see the endpoint),
- * so the panel says the work must be handed over rather than implying the reader
- * can fix everything.
- */
-const UNHOMED_ACTIONS: Record<UnhomedCause, { action: string; owner: string; handover: boolean }> = {
+/* Each cause names its ACTION and its OWNER. */
+const UNHOMED_ACTIONS: Record<UnhomedCause, { action: string; owner: string }> = {
   'no-region': {
     action:
       'Give the person a region, or add a directory region rule / region leader so the re-enrichment worker heals the whole population in bulk.',
     owner: ORG_WIDE_LABEL,
-    handover: false,
   },
   'region-no-unit': {
-    action: 'Place the person into a cost-owning unit in their own region.',
-    owner: `${REGION_ADMIN_LABEL} for that region`,
-    handover: true,
+    action: 'Place the person into a Business Unit in their own region.',
+    owner: ORG_WIDE_LABEL,
   },
   'no-cost-owning-ancestor': {
     action:
-      'Mark a unit in that ancestry cost-owning, or un-retire the unit that carried it. (Setting a unit’s directory cost-centre code has no admin surface today — see the counters below.)',
-    owner: `${REGION_ADMIN_LABEL} for that region`,
-    handover: true,
+      'Mark a unit in that ancestry as a Business Unit, or un-retire the unit that carried it. (Setting a unit’s directory cost-centre code has no admin surface today — see the counters below.)',
+    owner: ORG_WIDE_LABEL,
   },
   'pooled-copilot': {
-    action: 'Home the provider organisation to a cost-owning unit, on the reconciliation surface.',
-    owner: `${REGION_ADMIN_LABEL}, escalating to ${ORG_WIDE_LABEL} for an organisation in no region`,
-    handover: true,
+    action: 'Home the provider organisation to a Business Unit, on the reconciliation surface.',
+    owner: ORG_WIDE_LABEL,
   },
 }
 const UNHOMED_COUNT_NOUNS: Record<UnhomedCauseRow['countKind'], [string, string]> = {
@@ -1172,7 +1161,7 @@ function telemetryVerdictBadge(verdict: string): { kind: 'rag-green' | 'rag-ambe
       // so it must NOT read as the joiner's amber.
       return { kind: 'rag-red', label: 'Client side (no usage events)' }
     case 'ingested-not-attributed':
-      return { kind: 'rag-amber', label: 'Our side (joiner)' }
+      return { kind: 'rag-amber', label: 'Our side (telemetry join)' }
     case 'attributed':
       return { kind: 'rag-green', label: 'Healthy window' }
     case 'attributed-beyond-ingest-window':
@@ -1491,7 +1480,7 @@ function pretty(obj: unknown): string {
     <UiPageHead
       eyebrow="Administration"
       title="Diagnostics"
-      sub="Health probes, plus the audited operator actions that follow from them (worker on/off, telemetry recovery)."
+      sub="Health probes, plus the audited operator actions that follow from them, such as telemetry recovery. Workers are turned on and off on Worker controls."
     >
       <template #actions>
         <UiButton
@@ -1586,7 +1575,7 @@ function pretty(obj: unknown): string {
             particular, this is NOT "nothing has run".
           </p>
         </div>
-        <ul v-else-if="data.workers?.length" class="divide-y divide-carbon-6">
+        <ul v-else-if="data.workers?.length" class="divide-y divide-calm-2">
           <li
             v-for="w in data.workers"
             :key="w.worker"
@@ -1722,7 +1711,7 @@ function pretty(obj: unknown): string {
               <div class="text-[11px] font-bold uppercase tracking-[1.2px] text-carbon-3 mb-1">
                 Models falling back
               </div>
-              <ul class="divide-y divide-carbon-6">
+              <ul class="divide-y divide-calm-2">
                 <li
                   v-for="m in costingData.costingRungs.fallbackModels"
                   :key="m.model"
@@ -1794,7 +1783,7 @@ function pretty(obj: unknown): string {
           <UiBadge :kind="driftBadge.kind" data-testid="admin-diag-drift-badge">{{ driftBadge.label }}</UiBadge>
         </div>
         <p v-if="driftScopedOut" class="text-sm text-carbon-3" data-testid="admin-diag-drift-scoped">
-          Scoped out — cost drift is estate-wide (it has no region), so only platform-admin can
+          Scoped out — cost drift is estate-wide (it has no region), so only an Admin can
           read it. Nothing is wrong; the costing-rung card above still covers your region.
         </p>
         <template v-else-if="driftUnavailable">
@@ -1921,7 +1910,7 @@ function pretty(obj: unknown): string {
           data-testid="admin-diag-db-performance-scoped"
         >
           Scoped out — this probe names every table, index and server setting in the
-          estate, so it is platform-admin only. The rest of this page is unaffected.
+          estate, so it is Admin only. The rest of this page is unaffected.
         </p>
         <!-- Wrapped rather than testid'd directly: a fallthrough `data-testid`
              would REPLACE the banner's own `fetch-error-banner` marker. -->
@@ -1983,7 +1972,7 @@ function pretty(obj: unknown): string {
                 </p>
                 <ul
                   v-if="dbPerfData.statements.rows.length"
-                  class="divide-y divide-carbon-6"
+                  class="divide-y divide-calm-2"
                   data-testid="admin-diag-db-performance-statements"
                 >
                   <li v-for="(s, i) in dbPerfData.statements.rows" :key="i" class="py-2">
@@ -2029,7 +2018,7 @@ function pretty(obj: unknown): string {
               </p>
               <ul
                 v-if="dbPerfData.sequentialScans.length"
-                class="divide-y divide-carbon-6"
+                class="divide-y divide-calm-2"
                 data-testid="admin-diag-db-performance-seq"
               >
                 <li
@@ -2068,7 +2057,7 @@ function pretty(obj: unknown): string {
             </p>
             <ul
               v-else-if="dbPerfData.cache.length"
-              class="divide-y divide-carbon-6"
+              class="divide-y divide-calm-2"
               data-testid="admin-diag-db-performance-cache"
             >
               <li
@@ -2115,7 +2104,7 @@ function pretty(obj: unknown): string {
               </p>
               <ul
                 v-if="dbPerfData.unusedIndexes.rows.length"
-                class="divide-y divide-carbon-6"
+                class="divide-y divide-calm-2"
                 data-testid="admin-diag-db-performance-unused"
               >
                 <li
@@ -2146,7 +2135,7 @@ function pretty(obj: unknown): string {
             </p>
             <ul
               v-else-if="dbPerfData.sizes.length"
-              class="divide-y divide-carbon-6"
+              class="divide-y divide-calm-2"
               data-testid="admin-diag-db-performance-sizes"
             >
               <li
@@ -2179,7 +2168,7 @@ function pretty(obj: unknown): string {
             </p>
             <ul
               v-else-if="dbPerfData.settings.length"
-              class="divide-y divide-carbon-6"
+              class="divide-y divide-calm-2"
               data-testid="admin-diag-db-performance-settings"
             >
               <li
@@ -2219,7 +2208,7 @@ function pretty(obj: unknown): string {
         <p class="text-xs text-carbon-3 mt-1">
           TCP reachability of each provisioned PE — the same probe run at boot. <span class="text-brand-hunger">*</span> = boot-critical.
         </p>
-        <ul v-if="probesData.services?.length" class="mt-3 divide-y divide-carbon-6">
+        <ul v-if="probesData.services?.length" class="mt-3 divide-y divide-calm-2">
           <li
             v-for="s in probesData.services"
             :key="s.name"
@@ -2363,8 +2352,8 @@ function pretty(obj: unknown): string {
           </div>
         </div>
         <p class="text-xs text-carbon-3 mb-3">
-          Requires <strong>platform-admin</strong> — region admins will see a 403
-          here. Resolves every private-link host the app depends on, and TCP-dials
+          Requires <strong>Admin</strong>.
+          Resolves every private-link host the app depends on, and TCP-dials
           the ones it actually calls — the other AMPLS members share that private
           endpoint, so their DNS answer is the evidence, not a dial.
         </p>
@@ -2374,7 +2363,7 @@ function pretty(obj: unknown): string {
              render it as a calm scoped-out note, not an alarming error.
              Genuine failures (500 / network) keep the red treatment. -->
         <p v-if="netError && netError.statusCode === 403" class="text-sm text-carbon-3" data-testid="admin-diag-network-scoped">
-          Scoped out — this probe is platform-admin only, so your role can't read private-link/DNS
+          Scoped out — this probe is Admin only, so your role can't read private-link/DNS
           validation. Nothing is wrong; every other card above still applies to your region.
         </p>
         <UiFetchErrorBanner
@@ -2467,7 +2456,7 @@ function pretty(obj: unknown): string {
           </UiButton>
         </div>
         <p class="text-xs text-carbon-3 mb-3">
-          Requires <strong>platform-admin</strong> — region admins will see a 403 here. Probes the
+          Requires <strong>Admin</strong>. Probes the
           Log Analytics query path the worker reads telemetry from.
         </p>
 
@@ -2475,7 +2464,7 @@ function pretty(obj: unknown): string {
              probe) — render it as a calm scoped-out note, not an alarming
              error. Genuine failures (500 / network) keep the red treatment. -->
         <p v-if="otelError && otelError.statusCode === 403" class="text-sm text-carbon-3" data-testid="admin-diag-otel-scoped">
-          Scoped out — this probe is platform-admin only, so your role can't read the Log Analytics
+          Scoped out — this probe is Admin only, so your role can't read the Log Analytics
           query path. Nothing is wrong; every other card above still applies to your region.
         </p>
         <UiFetchErrorBanner
@@ -2583,7 +2572,7 @@ function pretty(obj: unknown): string {
                       <span v-if="q.error?.code" class="font-mono">code: {{ q.error.code }}</span>
                       <span v-if="q.error?.statusCode" class="font-mono ml-2">status: {{ q.error.statusCode }}</span>
                     </p>
-                    <pre class="text-[10px] text-brand-hunger font-mono whitespace-pre-wrap break-all bg-brand-hunger-lite/40 rounded-md p-2">{{ pretty(q.error ?? q.partialError) }}</pre>
+                    <pre class="text-[10px] text-brand-heart font-mono whitespace-pre-wrap break-all bg-brand-hunger-lite/40 rounded-md p-2">{{ pretty(q.error ?? q.partialError) }}</pre>
                   </div>
                 </div>
               </li>
@@ -2592,7 +2581,7 @@ function pretty(obj: unknown): string {
 
           <!-- top-level client / fatal error packets -->
           <div v-if="otelData.clientError || otelData.fatalError" class="mt-3">
-            <pre class="text-[10px] text-brand-hunger font-mono whitespace-pre-wrap break-all bg-brand-hunger-lite/40 rounded-md p-2">{{ pretty(otelData.fatalError ?? otelData.clientError) }}</pre>
+            <pre class="text-[10px] text-brand-heart font-mono whitespace-pre-wrap break-all bg-brand-hunger-lite/40 rounded-md p-2">{{ pretty(otelData.fatalError ?? otelData.clientError) }}</pre>
           </div>
         </template>
         <AdminPageSkeleton v-else :rows="3" :toolbar="false" />
@@ -2617,12 +2606,12 @@ function pretty(obj: unknown): string {
           </UiButton>
         </div>
         <p class="text-xs text-carbon-3 mb-3">
-          Requires <strong>platform-admin</strong> — region admins will see a 403
-          here. Read-only: catalog queries only — no role is created and no table is changed.
+          Requires <strong>Admin</strong>.
+          Read-only: catalog queries only — no role is created and no table is changed.
         </p>
 
         <p v-if="rlsError && rlsError.statusCode === 403" class="text-sm text-carbon-3" data-testid="admin-diag-rls-scoped">
-          Scoped out — this probe is platform-admin only, so your role can't read database-role
+          Scoped out — this probe is Admin only, so your role can't read database-role
           capability. Nothing is wrong; every other card above still applies to your region.
         </p>
         <UiFetchErrorBanner
@@ -2788,7 +2777,7 @@ function pretty(obj: unknown): string {
       >
         <div class="flex items-start justify-between gap-4 mb-3">
           <div>
-            <h2 class="text-sm font-bold text-carbon">Chargeable vs attributed (§B − §A)</h2>
+            <h2 class="text-sm font-bold text-carbon">Chargeable vs attributed</h2>
             <p class="text-xs text-carbon-3 mt-0.5">
               Why billed spend does not equal attributed spend, decomposed into named terms. The
               residual is the part no term explains — it should be zero.
@@ -2798,7 +2787,7 @@ function pretty(obj: unknown): string {
             <input
               v-model="abMonth"
               type="month"
-              class="text-xs border border-carbon-6 rounded px-2 py-1 bg-white"
+              class="text-xs border border-calm rounded px-2 py-1 bg-white"
               data-testid="admin-diag-ab-month"
             >
             <UiButton kind="secondary" size="sm" :disabled="abPending" @click="refreshAb()">
@@ -2815,13 +2804,13 @@ function pretty(obj: unknown): string {
           <template v-else>
             <div class="flex flex-wrap gap-6 mb-3">
               <div>
-                <p class="text-xs text-carbon-3">Attributed (§A)</p>
+                <p class="text-xs text-carbon-3">Attributed</p>
                 <p class="text-sm font-bold text-carbon" data-testid="admin-diag-ab-section-a">
                   {{ abUsd(abData.sectionA) }}
                 </p>
               </div>
               <div>
-                <p class="text-xs text-carbon-3">Chargeable (§B)</p>
+                <p class="text-xs text-carbon-3">Chargeable</p>
                 <p class="text-sm font-bold text-carbon" data-testid="admin-diag-ab-section-b">
                   {{ abUsd(abData.sectionB) }}
                 </p>
@@ -2846,14 +2835,14 @@ function pretty(obj: unknown): string {
                 <tr
                   v-for="term in abData.termOrder"
                   :key="term"
-                  class="border-t border-carbon-6"
+                  class="border-t border-calm-2"
                   :data-testid="`admin-diag-ab-term-${term}`"
                 >
                   <td class="py-1 pr-3">{{ AB_TERM_LABELS[term] ?? term }}</td>
                   <td class="py-1 pr-3 text-right font-mono">{{ abUsd(abData.terms[term]) }}</td>
                   <td class="py-1 text-carbon-3">{{ AB_TERM_HINTS[term] }}</td>
                 </tr>
-                <tr class="border-t-2 border-carbon-5 font-bold">
+                <tr class="border-t-2 border-calm font-bold">
                   <td class="py-1 pr-3">Residual (unexplained)</td>
                   <td
                     class="py-1 pr-3 text-right font-mono"
@@ -2928,27 +2917,27 @@ function pretty(obj: unknown): string {
               <template v-if="Number(abData.diagnostics.quarantinedOtelUsd) !== 0">
                 {{ abUsd(abData.diagnostics.quarantinedOtelUsd) }} of telemetry was quarantined as
                 uncorroborated. It changes neither side of the gap: where the provider confirms
-                the same day it returns to §A through reconciliation and §B bills it, and where
+                the same day it returns to attributed usage through reconciliation and chargeback bills it, and where
                 nothing confirms it, it enters neither. But a large figure means devices are
                 emitting spend the provider will not confirm.
               </template>
               <template v-else>
                 No telemetry was quarantined in this window: nothing was disowned as
-                uncorroborated, so no attributed spend was dropped from §A.
+                uncorroborated, so no attributed spend was dropped.
               </template>
             </p>
 
             <p class="text-xs text-carbon-3 mt-2" data-testid="admin-diag-ab-coding-agent">
               <template v-if="Number(abData.diagnostics.codingAgentInSectionAUsd) !== 0">
                 {{ abUsd(abData.diagnostics.codingAgentInSectionAUsd) }} of coding-agent spend is
-                now visible to §A. The coding-agent term above is a pure sum of the provider
+                now visible to attributed usage. The coding-agent term above is a pure sum of the provider
                 figure and does not net this off, so that money is being counted twice. The
                 residual will NOT show it: the usage grain gap below is computed as a remainder,
                 so it falls by the same amount and the two offset. This line is the only signal
                 that fires, and it needs a code change, not an operator action.
               </template>
               <template v-else>
-                Coding-agent spend remains invisible to §A, as designed, so the coding-agent term
+                Coding-agent spend remains invisible to attributed usage, as designed, so the coding-agent term
                 above counts it once. This line turns into a warning if that ever changes.
               </template>
             </p>
@@ -2963,12 +2952,12 @@ function pretty(obj: unknown): string {
             <p class="text-xs text-carbon-3 mt-2" data-testid="admin-diag-ab-unhomed">
               <template v-if="Number(abData.diagnostics.unhomedChargeUsd) !== 0">
                 {{ abUsd(abData.diagnostics.unhomedChargeUsd) }} of chargeable spend has no
-                cost-owning unit. It is inside the §B total above, so it does not affect the
+                Business Unit. It is inside the chargeable total above, so it does not affect the
                 residual, but it disappears from every per-Business Unit view.
               </template>
               <template v-else>
-                No chargeable spend is unhomed: every billed dollar resolves to a cost-owning unit,
-                so the per-Business Unit views account for all of §B.
+                No chargeable spend is unhomed: every billed dollar resolves to a Business Unit,
+                so the per-Business Unit views account for all of chargeback.
               </template>
             </p>
 
@@ -2989,10 +2978,10 @@ function pretty(obj: unknown): string {
               non-zero residual suppresses the breakdown rather than presenting
               four plausible numbers that do not add up.
             -->
-            <div class="mt-4 pt-3 border-t border-carbon-6" data-testid="admin-diag-unhomed-causes">
-              <h3 class="text-sm font-bold text-carbon">Why this spend has no cost-owning unit</h3>
+            <div class="mt-4 pt-3 border-t border-calm-2" data-testid="admin-diag-unhomed-causes">
+              <h3 class="text-sm font-bold text-carbon">Why this spend has no Business Unit</h3>
               <p class="text-xs text-carbon-3 mt-0.5 mb-2">
-                The figure above, split by the reason the money could not reach a cost-owning unit.
+                The figure above, split by the reason the money could not reach a Business Unit.
                 Every unhomed dollar is in exactly one cause. The causes must add back to the total
                 the split itself measured; whatever they do not explain is the residual, and it
                 should be zero. The line above is the same definition read a moment earlier, in a
@@ -3062,7 +3051,7 @@ function pretty(obj: unknown): string {
                       <tr
                         v-for="c in unhomedProbe.causes.filter((x) => x.placementFailure)"
                         :key="c.cause"
-                        class="border-t border-carbon-6"
+                        class="border-t border-calm-2"
                         :data-state="Number(c.usd) === 0 ? 'zero' : 'measured'"
                         :data-testid="`admin-diag-unhomed-cause-${c.cause}`"
                       >
@@ -3094,7 +3083,7 @@ function pretty(obj: unknown): string {
                       placement campaign against money no amount of placing can
                       move. It still counts toward the same reconciled total.
                     -->
-                    <tbody class="border-t-2 border-carbon-5">
+                    <tbody class="border-t-2 border-calm">
                       <tr
                         v-for="c in unhomedProbe.causes.filter((x) => !x.placementFailure)"
                         :key="c.cause"
@@ -3131,7 +3120,7 @@ function pretty(obj: unknown): string {
                           </template>
                         </td>
                       </tr>
-                      <tr class="border-t-2 border-carbon-5 font-bold">
+                      <tr class="border-t-2 border-calm font-bold">
                         <td class="py-1 pr-3">Unexplained (residual)</td>
                         <td
                           class="py-1 pr-3 text-right font-mono text-brand-harmony"
@@ -3205,7 +3194,7 @@ function pretty(obj: unknown): string {
                         <tr
                           v-for="(row, i) in w.rows"
                           :key="`${w.cause}-${i}`"
-                          class="border-t border-carbon-6"
+                          class="border-t border-calm-2"
                         >
                           <td class="py-1 pr-3">
                             {{ row.label }}
@@ -3232,7 +3221,7 @@ function pretty(obj: unknown): string {
                 -->
                 <p class="text-[11px] text-carbon-3 mb-3" data-testid="admin-diag-unhomed-scope">
                   This figure covers CHARGEABLE spend only. Unclassified provider bill lines and
-                  chargeback-exempt spend can also carry no cost-owning unit; both are outside this
+                  chargeback-exempt spend can also carry no Business Unit; both are outside this
                   number by design and are reported elsewhere.
                 </p>
 
@@ -3255,16 +3244,16 @@ function pretty(obj: unknown): string {
                       data-testid="admin-diag-unhomed-config-codes"
                     >
                       <template v-if="unhomedProbe.placementConfig.activeCostOwningUnits === 0">
-                        <strong>No active cost-owning units exist at all.</strong> Nothing can be
+                        <strong>No active Business Units exist at all.</strong> Nothing can be
                         placed, so no NEW spend can home. Existing rows are not necessarily
-                        unhomed: a row keeps whichever cost-owning unit it was stamped with, and a
+                        unhomed: a row keeps whichever Business Unit it was stamped with, and a
                         unit that has since been retired still counts as homed here. Read the
                         figure above rather than inferring it from this line.
                       </template>
                       <template v-else-if="unhomedProbe.placementConfig.unitsWithCostCentreCode === 0">
                         <strong>None of the
                           {{ unhomedProbe.placementConfig.activeCostOwningUnits }} active
-                          cost-owning units carries a directory cost-centre code</strong>, so
+                          Business Units carries a directory cost-centre code</strong>, so
                         the DIRECT match on that code can never fire. That is one of two automatic
                         routes: the manager-chain walk below needs no codes and may still place
                         people. If both are unavailable, every bill-driven person lands on a
@@ -3273,7 +3262,7 @@ function pretty(obj: unknown): string {
                       <template v-else>
                         <strong>{{ unhomedProbe.placementConfig.unitsWithCostCentreCode }} of
                           {{ unhomedProbe.placementConfig.activeCostOwningUnits }} active
-                          cost-owning units carry a directory cost-centre code.</strong>
+                          Business Units carry a directory cost-centre code.</strong>
                         A person is placed automatically only when their directory cost centre
                         matches one of these codes — a unit without a code can never be matched,
                         however correct the rest of the tree is.
@@ -3322,7 +3311,7 @@ function pretty(obj: unknown): string {
                       <tr
                         v-for="p in abData.visibility.personas"
                         :key="p.key"
-                        class="border-t border-carbon-6"
+                        class="border-t border-calm-2"
                       >
                         <td class="py-1 pr-3 w-40">{{ p.label }}</td>
                         <td class="py-1 text-carbon-3">
@@ -3349,7 +3338,7 @@ function pretty(obj: unknown): string {
                     month. The series is <strong>half live, half snapshot</strong>. Per-teammate
                     spend is re-homed from today’s org tree on every read, so placing someone moves
                     their whole history at once, closed months included. Pooled provider spend is
-                    not: each bill row carries the cost-owning unit it was stamped with when that
+                    not: each bill row carries the Business Unit it was stamped with when that
                     month was pulled, so re-pointing a provider organisation changes nothing here
                     until that month is re-pulled. A step in this trend can therefore be a
                     placement change, a re-pull, or a real event — the three are not
@@ -3360,7 +3349,7 @@ function pretty(obj: unknown): string {
                       <tr
                         v-for="h in unhomedProbe.history"
                         :key="h.month"
-                        class="border-t border-carbon-6"
+                        class="border-t border-calm-2"
                         :class="h.selected ? 'font-bold' : ''"
                         :data-state="h.state"
                         :data-testid="`admin-diag-unhomed-history-${h.month}`"
@@ -3409,22 +3398,6 @@ function pretty(obj: unknown): string {
                     {{ snapshotConsequence.unknown }}
                   </p>
                 </div>
-
-                <!--
-                  PB-1, said out loud rather than left for the reader to
-                  discover: this is a whole-estate finance view, and two of the
-                  four fixes belong to a Region admin who cannot open this page.
-                  The endpoint is platform-admin-only because a region filter would
-                  drop the pooled lanes from §B and blow the residual for an
-                  artefact reason — so the worklist is something to HAND OVER, not
-                  a reason to widen who reads it.
-                -->
-                <p class="text-[11px] text-carbon-3 mt-3" data-testid="admin-diag-unhomed-handover">
-                  This is a whole-estate finance view. Placing a person into a unit, and marking a
-                  unit cost-owning, are region-scoped actions that belong to the
-                  <strong>{{ REGION_ADMIN_LABEL }}</strong> for the region concerned — who cannot
-                  see this page. Those rows are work to hand over, not work to do here.
-                </p>
               </template>
             </div>
           </template>
@@ -3462,7 +3435,7 @@ function pretty(obj: unknown): string {
               <thead>
                 <tr class="text-carbon-3 text-left">
                   <th class="py-1 pr-3 font-medium">Teammate</th>
-                  <th class="py-1 pr-3 font-medium">Instance</th>
+                  <th class="py-1 pr-3 font-medium">Device</th>
                   <th class="py-1 pr-3 font-medium">Last emitted</th>
                   <th class="py-1 pr-3 font-medium">Last attributed</th>
                   <th class="py-1 pr-3 font-medium">Behind by</th>
@@ -3471,7 +3444,7 @@ function pretty(obj: unknown): string {
               </thead>
               <tbody>
                 <template v-for="i in gapsData.instances" :key="i.instanceId">
-                  <tr class="border-t border-carbon-6">
+                  <tr class="border-t border-calm-2">
                     <td class="py-1 pr-3">{{ i.email ?? '—' }}</td>
                     <td class="py-1 pr-3 font-mono">{{ i.instanceId.slice(0, 8) }}</td>
                     <td class="py-1 pr-3">{{ i.lastBearerAt?.slice(0, 16) }}</td>
@@ -3495,7 +3468,7 @@ function pretty(obj: unknown): string {
                     Rendered under the row it belongs to so the evidence and the
                     verdict are never read apart.
                   -->
-                  <tr v-if="diagnosis[i.instanceId]" class="border-t border-carbon-6 bg-calm-1/40">
+                  <tr v-if="diagnosis[i.instanceId]" class="border-t border-calm-2 bg-calm-1/40">
                     <td colspan="6" class="py-2 px-2">
                       <template v-if="'failed' in diagnosis[i.instanceId]!">
                         <p class="text-xs text-brand-hunger">
@@ -3561,7 +3534,7 @@ function pretty(obj: unknown): string {
               older than a week was unrecoverable from the product. Enqueue-only:
               a 90-day read cannot be served inside the ~120s worker gateway.
             -->
-            <div class="mt-4 pt-3 border-t border-carbon-6" data-testid="admin-diag-recovery">
+            <div class="mt-4 pt-3 border-t border-calm-2" data-testid="admin-diag-recovery">
               <div v-if="canRecover" class="flex flex-wrap items-center gap-3">
                 <div>
                   <label class="text-xs text-carbon-3 mr-2" for="recovery-lookback">Re-read window (days)</label>
@@ -3571,7 +3544,7 @@ function pretty(obj: unknown): string {
                     type="number"
                     min="1"
                     max="90"
-                    class="w-20 text-xs border border-carbon-6 rounded px-2 py-1"
+                    class="w-20 text-xs border border-calm rounded px-2 py-1"
                   >
                 </div>
                 <UiButton
@@ -3589,13 +3562,13 @@ function pretty(obj: unknown): string {
                 </p>
               </div>
               <p v-else class="text-xs text-carbon-3">
-                Requesting a re-read needs the platform-admin role — it is not region-bounded and
+                Requesting a re-read needs the Admin role — it is not region-bounded and
                 it spends Log Analytics query budget. Diagnose above is available to you; the
                 progress below is read-only.
               </p>
               <p class="text-[11px] text-carbon-3 mt-2">
                 Re-reads the listed devices at a wider ingest window with a full re-scan, so
-                already-ingested spend older than the joiner's 7-day default can be joined.
+                already-ingested spend older than the usual 7-day window can be joined.
                 Queued and drained in slices — <strong>accepted is not recovered</strong>; the
                 progress below is what says whether anything was actually written.
               </p>
@@ -3620,7 +3593,7 @@ function pretty(obj: unknown): string {
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="r in recoveryData.requests" :key="r.id" class="border-t border-carbon-6">
+                    <tr v-for="r in recoveryData.requests" :key="r.id" class="border-t border-calm-2">
                       <td class="py-1 pr-3">{{ r.requestedAt?.slice(0, 16) }}</td>
                       <td class="py-1 pr-3">{{ r.lookbackDays }}d<span v-if="r.kind === 'scheduled'"> · daily pass</span></td>
                       <td class="py-1 pr-3">{{ r.status }}<span v-if="r.error"> — {{ r.error }}</span></td>
@@ -3677,7 +3650,7 @@ function pretty(obj: unknown): string {
         </div>
 
         <p class="text-xs text-carbon-3 mb-3">
-          Requires <strong>platform-admin</strong>. Reports the <strong>shape</strong> of provider
+          Requires <strong>Admin</strong>. Reports the <strong>shape</strong> of provider
           payloads — key paths, types and how often each key is present. A successful response body
           is never shown, stored or logged.
           <strong>Scan stored payloads</strong> reads what the pollers already saved: no provider
@@ -3690,7 +3663,7 @@ function pretty(obj: unknown): string {
           class="text-sm text-carbon-3"
           data-testid="admin-diag-wire-scoped"
         >
-          Scoped out — this probe is platform-admin only. Nothing is wrong; every other card on this
+          Scoped out — this probe is Admin only. Nothing is wrong; every other card on this
           page still applies to your role.
         </p>
 

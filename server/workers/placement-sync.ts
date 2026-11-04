@@ -33,6 +33,7 @@ import {
   type DirectoryUser,
   type GraphCallOptions,
 } from '../azure/directory'
+import { describeError } from '../utils/redact-probe-error'
 
 type Db = PostgresJsDatabase<typeof schema>
 
@@ -175,7 +176,7 @@ export async function runPlacementSync(
       // Isolate a single bad identity — retried next tick. A Graph throttle / outage
       // throws from the lookup or the chain walk, before provisionAndPlace writes.
       result.errors += 1
-      console.warn(`[placement-sync] ${email}: ${err instanceof Error ? err.message : String(err)}`)
+      console.warn(`[placement-sync] ${email}: ${describeError(err)}`)
     }
   }
   return result

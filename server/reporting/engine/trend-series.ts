@@ -69,7 +69,7 @@ export async function fetchSpendTrend(
            COALESCE(SUM(u.cost_usd) FILTER (WHERE u.tool = ${COPILOT_CLI_TOOL}), 0)::text AS copilot,
            COALESCE(SUM(u.cost_usd) FILTER (WHERE u.tool = ${COPILOT_AGENT_TOOL}), 0)::text AS agent,
            COALESCE(SUM(u.cost_usd) FILTER (WHERE u.tool NOT IN (${laneListSql(SECTION_A_USAGE_TOOLS)}) OR u.tool IS NULL), 0)::text AS other
-    FROM usage_rollup_daily u
+    FROM v_usage_rollup_current u
     WHERE ${scopeSql(scope)}
       AND u.day >= ${range.startIso.slice(0, 10)}::date
       AND u.day <  ${range.endIso.slice(0, 10)}::date
@@ -114,7 +114,7 @@ export async function fetchActiveTrend(
     SELECT to_char(u.day, 'YYYY-MM-DD') AS day,
            COUNT(DISTINCT u.teammate_id) FILTER (WHERE u.tool = ${CLAUDE_CODE_TOOL})::int AS claude,
            COUNT(DISTINCT u.teammate_id) FILTER (WHERE u.tool = ${COPILOT_CLI_TOOL})::int AS copilot
-    FROM usage_rollup_daily u
+    FROM v_usage_rollup_current u
     WHERE ${scopeSql(scope)}
       AND u.day >= ${window.startIso.slice(0, 10)}::date
       AND u.day <  ${window.endIso.slice(0, 10)}::date

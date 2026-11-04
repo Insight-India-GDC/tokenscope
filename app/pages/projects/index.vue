@@ -18,6 +18,7 @@ import { computed } from 'vue'
 import ReportSkeleton from '../../components/reporting/ReportSkeleton.vue'
 import InfoDot from '../../components/ui/InfoDot.vue'
 import MonthSpark from '../../components/charts/MonthSpark.vue'
+import ProjectRequestsPanel from '../../components/projects/ProjectRequestsPanel.vue'
 import {
   budgetPace,
   budgetPaceKind,
@@ -36,6 +37,17 @@ import type { ProjectCard } from '#shared/schemas/usage'
 
 const { session, ensure } = useSession()
 await ensure()
+
+/*
+ * Set by /projects/new when a Project Manager created a project for someone
+ * else: they are not a member, so the project page would 404 and the project
+ * is not in this list. Say which project was created and where it lives.
+ */
+const route = useRoute()
+const createdCode = computed(() => {
+  const c = route.query.created
+  return typeof c === 'string' && c !== '' ? c : null
+})
 
 interface ProjectsSummary {
   projects: ProjectCard[]
@@ -230,13 +242,25 @@ const neverRolledUp = computed(() => data.value?.page_freshness?.projects_never_
       :crumbs="['My projects']"
     />
 
+    <div
+      v-if="createdCode"
+      class="mb-4 px-4 py-3 rounded-md bg-brand-harmony-sheer border border-brand-harmony/40 text-sm text-carbon-2"
+      role="status"
+      data-testid="projects-created-notice"
+    >
+      Project <span class="font-mono font-bold">{{ createdCode }}</span> was created. You are not a member,
+      so it does not appear in this list: its project manager runs it from their My projects.
+    </div>
+
+    <ProjectRequestsPanel />
+
     <!-- §A once, with the prose behind (i) (fix 6 / D12) — no lane toggle. -->
     <div class="flex items-center gap-2 mb-3">
-      <UiBadge kind="neutral" data-testid="projects-lane-pill">§A · month to date</UiBadge>
+      <UiBadge kind="neutral" data-testid="projects-lane-pill">Attributed usage · month to date</UiBadge>
       <InfoDot label="About these figures">
-        Indicative attributed usage (§A), the lens budgets read, so there is no lane toggle
+        Indicative attributed usage, the lens budgets read, so there is no lane toggle
         here; each project's own page has a Chargeback lens. Month-to-date burn and your contribution are
-        live off the §A lane; the velocity flag comes from the
+        live off attributed usage; the velocity flag comes from the
         rollup<template v-if="aggregateAge">, last refreshed {{ aggregateAge }} ago for the least
           recently updated project</template>.<template v-if="neverRolledUp > 0">
           {{ neverRolledUp }} project<template v-if="neverRolledUp > 1">s have</template><template v-else> has</template>

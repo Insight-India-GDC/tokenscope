@@ -131,37 +131,38 @@ async function toggleWorker(w: WorkerEnablementRow) {
 </script>
 
 <template>
-  <div class="flex flex-col gap-4" data-admin-page="/admin/workers">
-    <header class="flex items-start justify-between gap-4">
-      <div>
-        <h1 class="text-lg font-bold text-carbon m-0">Worker controls</h1>
-        <p class="text-xs text-carbon-3 mt-1 max-w-2xl">
-          Turn a scheduled worker off without a deploy — it takes effect on its next tick.
-          Disabling is audited and needs a reason. A disabled worker still records a
-          <span class="font-mono">skipped</span> run, so it never looks like a silent gap.
-          To see whether the workers are actually succeeding, use
-          <NuxtLink to="/admin/diagnostics" class="text-brand-harmony underline">Diagnostics</NuxtLink>.
-          <span class="font-bold">Recent runs</span> on a row opens that worker's run history and
-          what each run recorded.
-        </p>
-      </div>
-      <UiButton
-        kind="secondary"
-        size="sm"
-        :disabled="enablementPending"
-        data-testid="worker-controls-refresh"
-        @click="refreshAll()"
-      >
-        {{ enablementPending ? 'Loading…' : 'Refresh' }}
-      </UiButton>
-    </header>
+  <div class="max-w-[1600px] mx-auto px-10 py-8 pb-20 flex flex-col gap-4" data-admin-page="/admin/workers">
+    <!-- The admin page frame every other admin page uses: page padding and the
+         shared page head (it had neither, so it ran to the right edge). -->
+    <UiPageHead eyebrow="Administration" title="Worker controls">
+      <template #actions>
+        <UiButton
+          kind="secondary"
+          size="sm"
+          :disabled="enablementPending"
+          data-testid="worker-controls-refresh"
+          @click="refreshAll()"
+        >
+          {{ enablementPending ? 'Loading…' : 'Refresh' }}
+        </UiButton>
+      </template>
+    </UiPageHead>
+    <p class="-mt-4 text-xs text-carbon-3 max-w-2xl">
+      Turn a scheduled worker off without a deploy — it takes effect on its next tick.
+      Disabling is audited and needs a reason. A disabled worker still records a
+      <span class="font-mono">skipped</span> run, so it never looks like a silent gap.
+      To see whether the workers are actually succeeding, use
+      <NuxtLink to="/admin/diagnostics" class="text-brand-harmony underline">Diagnostics</NuxtLink>.
+      <span class="font-bold">Recent runs</span> on a row opens that worker's run history and
+      what each run recorded.
+    </p>
 
     <UiCard accent="vision" data-testid="admin-worker-enablement">
       <!-- A failed summary fetch must be DISTINGUISHABLE from "no completed
            runs" (r3-M4): silent em-dashes would read as a healthy idle fleet. -->
       <p
         v-if="summaryError"
-        class="mb-2 text-xs text-amber-600"
+        class="mb-2 text-xs text-rag-amber"
         data-testid="worker-summary-error"
       >
         24 h run summary unavailable ({{ summaryError.statusCode ?? 'fetch failed' }}) — the
@@ -169,7 +170,7 @@ async function toggleWorker(w: WorkerEnablementRow) {
       </p>
       <UiFetchErrorBanner v-if="enablementError" :error="enablementError" label="worker controls" @retry="refreshEnablement" />
       <AdminPageSkeleton v-else-if="enablementData == null" :rows="6" :toolbar="false" />
-      <ul v-else-if="enablementData.workers.length" class="divide-y divide-carbon-6">
+      <ul v-else-if="enablementData.workers.length" class="divide-y divide-calm-2">
         <AdminWorkerControlRow
           v-for="w in enablementData.workers"
           :key="w.name"

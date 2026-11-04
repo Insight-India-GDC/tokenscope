@@ -213,8 +213,8 @@ describe('CcProjectTable — one row per PROJECT, with its budget position', () 
      */
     const equation = rec.text().replace(/\s+/g, ' ').trim()
     expect(equation).toContain(
-      "Projects $150.00 + $40.00 provider usage with no session to tag + $10.00 on another centre's projects " +
-        "− $25.00 on this centre's projects, homed elsewhere = $175.00 cost-centre burn.",
+      "Projects $150.00 + $40.00 provider usage with no session to tag + $10.00 on another business unit's projects " +
+        "− $25.00 on this business unit's projects, homed elsewhere = $175.00 business unit burn.",
     )
     // And it actually holds: 150 + 40 + 10 − 25 = 175.
     expect(150 + 40 + 10 - 25).toBe(175)
@@ -231,7 +231,7 @@ describe('CcProjectTable — one row per PROJECT, with its budget position', () 
     // different cost centre. "reconciled usage with no emit home" named only the
     // first half and sent an owner hunting reconciliation for cross-centre emits.
     const rec = mountTable().find('[data-testid="cc-projects-reconciliation-ENG"]')
-    expect(rec.text()).toContain("on this centre's projects, homed elsewhere")
+    expect(rec.text()).toContain("on this business unit's projects, homed elsewhere")
     expect(rec.text()).not.toContain('reconciled usage with no emit home')
   })
 
@@ -295,12 +295,11 @@ const meta = {
   providerStates: [],
   coverage: null,
   scope: 'cost-centre' as const,
-  pointInTimeDims: true,
 }
 
 const report: CostCentreReport = {
   meta,
-  laneNote: 'Per-cost-centre burn is the project cost-owning-unit usage axis.',
+  laneNote: 'Business Unit burn is usage on the projects each Business Unit leads.',
   cards: [
     {
       id: 'cc1', code: 'ENG', displayName: 'Engineering', regionCode: 'apac',

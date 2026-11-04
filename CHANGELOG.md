@@ -7,6 +7,272 @@ the publish tooling stamps the heading and a pre-PR gate reminds you to add
 the line — see the internal `tools/publish/README.md`, which is not part of
 the public mirror.)
 
+## v1.0.5 — 2026-11-03 (snapshot b497e515)
+
+- Security: node-forge is updated to 1.4.1, which is outside the affected
+  range of all 12 published node-forge advisories (6 high). node-forge is used
+  only by the local development server (`nuxt dev`) to make its self-signed
+  certificate. The deployed app never loads it, so no running deployment was
+  exposed.
+- Updated dependencies: Nuxt 4.6.3, nuxt-security 2.7.0 and the MCP SDK
+  1.32.2. Nothing changes in how you deploy or use TokenScope.
+
+## v1.0.4 — 2026-11-01 (snapshot 41782ff9)
+
+- **Before upgrading:**
+  - Region admin can no longer be granted; Admin is the one admin role. People
+    who are Region admins today keep that role and still administer their own
+    region; nobody gains or loses access in the upgrade.
+  - The per-person report access "revoke" is removed, and existing revocations
+    are deleted in the upgrade: anyone whose access was revoked sees reports
+    again as their role and grants allow.
+  - For anyone scripting against the API: the placement API now refuses a
+    request that still sends `rehome` (400);
+    `POST /api/v1/admin/users/{id}/placement-span` and the rollup endpoints
+    `GET /api/v1/rollups/manager`, `GET /api/v1/rollups/org-tree` and
+    `GET /api/v1/rollups/practice/{ouId}/velocity` are removed.
+  - GitHub credentials have generic slots: secrets `GH_PAT_1`, `GH_PAT_2`,
+    `GH_PAT_3` and `GH_APP_KEY_1`, read under the credential names `github-1`,
+    `github-2`, `github-3` (and `github-1` for the App key). Nothing breaks if
+    you do nothing: the earlier secrets (`GH_PAT_PARTNER_DEMO`,
+    `GH_PAT_PRODUCTION`, `GH_PAT_ENTERPRISE_NFR`, `GH_APP_KEY_PARTNER_DEMO`) are still
+    read, under their old credential names (`partner-demo`, `production`,
+    `enterprise-nfr`). To move each enterprise without a gap: add the new secret
+    next to the old one in your secrets file or GitHub environment, with the
+    same value (`GH_PAT_PARTNER_DEMO` becomes `GH_PAT_1`, `GH_PAT_PRODUCTION`
+    becomes `GH_PAT_2`, `GH_PAT_ENTERPRISE_NFR` becomes `GH_PAT_3`,
+    `GH_APP_KEY_PARTNER_DEMO` becomes `GH_APP_KEY_1`); apply the infrastructure;
+    change the enterprise's credential name under Admin, Reconciliation
+    (`partner-demo` to `github-1`, `production` to `github-2`, `enterprise-nfr` to
+    `github-3`); then delete the old secret and apply again. The old secret
+    names are read in this release and at least the next; the release that
+    stops reading them will say so here first.
+- The `project` prompt now writes `.tokenscope` in the documented
+  `project:` / `code:` form, and the setup and usage prompts name only commands
+  that exist in the client reading them. Tagging a session by id says where the
+  full id is (the session detail on My usage), and the device-limit message
+  names the My account page. (Copilot plugin 0.1.29: the project skill's note
+  on one-line files is corrected. Claude plugin 0.1.54: `/tokenscope:backfill`
+  says plainly why the server refused a payload format.)
+- The example deploy workflow rolls the Container App to the registry the app
+  pulls from, not the first registry the resource group lists, and stops with
+  a clear error when the group holds more than one Container App. A failed
+  first deploy, with no earlier working build, no longer fails a second time
+  trying to roll back. The manual steps in `docs/DEPLOY-AZURE.md` match.
+- When an infrastructure apply fails, the example infra workflow now prints
+  each failed resource and Azure's reason for it, not only the name of the
+  module that failed.
+- The example infra workflow applies again, up to twice, when an apply fails
+  only on Azure's side (an `InternalError`, a timeout, a conflict) or Front
+  Door Premium is not yet routing to the app 30 minutes after it deployed. An
+  error that names the template or your parameters still fails at once.
+- A project's Manage and Request more budget are now buttons at the top of its
+  page, opening a side panel; Manage shows how many budget requests are
+  waiting. A project's managers no longer see Request more budget.
+- Sending a project request again, unchanged, after a lost connection no longer
+  files it twice.
+- `/tokenscope:activity research` tags the session you are in with an activity,
+  with no session id to find (the Copilot plugin has an `activity` skill). The
+  status line and `/tokenscope:status` show the project and activity a session
+  is tagged with, and where each came from.
+- Plugins (Claude 0.1.52, Copilot 0.1.28): `/tokenscope:status` now says when
+  usage from this computer last arrived, not only that the credential works.
+- The Claude and Copilot plugins on one computer no longer overwrite each
+  other's "last arrived" record, so the status line stops flipping to unknown.
+- A repo tagged with a one-line `.tokenscope` (just the project code, as the
+  project prompt wrote it) is now tagged; it used to be read as untagged.
+- The Copilot skills find a plugin installed straight from a folder, not only
+  one installed from a marketplace.
+- Setup stops, before using its one-time code, when the session started before
+  a plugin update; restart Claude Code and run it again.
+- Where one `~/.claude` is shared with containers, sessions on each side no
+  longer break the other side's telemetry; the side the path does not suit says
+  so and how to fix it. A plugin set up from a local checkout moves to the
+  installed copy at the next session start.
+- On Windows without Node, setup and `/tokenscope:status` now use the Claude
+  app's own settings folder when it has one, so the app and the command-line
+  Claude Code no longer share one TokenScope device.
+- When telemetry is refused because the device store is missing, the message
+  now says so and names the files it found.
+- Plugin (Claude 0.1.53): when the Claude app and the Claude Code CLI on one
+  computer work in the same tagged folder, a session is counted under the
+  device it ran on, not whichever one tagged the folder last, once its session
+  start has reached TokenScope (usage recorded before that stays where it
+  was, and Windows without Node is not covered).
+  `/tokenscope:status` names this install's device as the Account page shows
+  it.
+- `/tokenscope:status` checks whether the folder's project tag is billable on
+  a computer that is online and signed in (it used to say "unverified"), and
+  when it cannot check, it says why.
+- A project tag set while that session's usage is arriving now applies to all
+  of it; some rows could stay on the old project.
+- A folder's default activity is applied to new sessions from it (only
+  standard activity names count; anything else is ignored), and a tag made
+  while that session's usage is still arriving is no longer lost.
+
+- A project manager removed from a project while one of their changes was
+  waiting can no longer complete it: removing or changing the role of a
+  member, editing the budget and adding a top-up now check that they are
+  still a manager after the wait, and a member removed meanwhile is no longer
+  given a new role on their ended membership.
+- Anyone can request a new project from My projects: name, type, Business
+  Unit, budget, a suggested code and a proposed project manager. Admins approve
+  (setting the final code) or decline it under Admin → Project requests, and the
+  requester sees the outcome in their inbox and on My projects.
+- Admins can put people on the Project managers list (Admin → Project
+  managers). People on it create projects in any region without approval and
+  manage them. A governance setting can limit them to their own region.
+- A project's manager now runs that project whatever their role: they see its
+  spend and who is spending, change or add to its budget, move its end date,
+  and add or remove members. Only an admin can remove or demote a project's
+  last open-ended manager. A manager assignment given an end date still lapses
+  on that date.
+- Project members can ask their manager for more budget from the project page.
+  The manager approves (for the requested or a different amount) or declines,
+  and approval adds to the project's budget. Budgets still block nothing.
+- Projects that give each developer their own cap no longer count their budget
+  twice in project and Business Unit totals.
+- The admin devices list and an admin's force-end of a device follow the region
+  the device's owner sits in now, not the region it was enrolled in, so a region
+  admin sees and can end the devices of the people in their region.
+- Every report now groups a person's usage, history included, by where they sit
+  today: move someone to another region or Business Unit and their past usage
+  moves with them within a minute. On Business Unit pages, usage tagged to a
+  project still counts toward the project's Business Unit, and only
+  provider-reported usage follows the person. A closed month's figures are the
+  ones in the finance export.
+- Finance figures keep a person in the region they sit in even when their unit
+  has no Business Unit above it; they used to drop out of that region.
+- Moving a person to another Business Unit no longer offers to move their
+  recorded usage: reports follow where people sit now, so there is nothing to
+  carry across. The "Repair history" button, the history checkbox and From
+  date, and the "Check what would move" preview are gone from the Users page,
+  Place teammates and the move confirmation.
+- The placement API refuses a request that still sends `rehome` (400) instead
+  of ignoring it, and `POST /api/v1/admin/users/{id}/placement-span` is removed.
+  Bulk placement no longer reports a `historyRepaired` count.
+- The practice page counts each person's usage, history included, under the
+  practice and region they sit in now, in every panel: spend, people, top models,
+  share of region, the 14-week trend and the sibling comparison.
+- Admin diagnostics (pipeline freshness, costing rungs, attribution gaps, device
+  diagnosis and telemetry recoveries) and escalated over-emission notices follow
+  the region each person sits in now, not the region recorded when their usage
+  or device was first seen.
+- The Copilot overage split goes to the Business Unit each person sits in when
+  it is computed. The current and previous month follow a restructure on the
+  next daily run; an older month keeps its split until it is re-pulled from the
+  Provider governance page, which now says so.
+- Org setup now finds the top person in TokenScope when their account was first
+  seen on a provider bill and they have not signed in yet (matched by directory
+  email), instead of saying they are not a TokenScope user.
+- Org setup's "Create a Business Unit" card now asks for the name first
+  (prefilled with the manager's department, or "<name>'s team") and says which
+  unit the new one will sit inside; nothing is created until you press Create.
+- Org setup no longer says the person at the top of the organisation has no
+  region, and no longer counts people an Admin placed by hand as having none.
+  The overview shows where the top person sits in TokenScope today, with a link
+  to change it on the Users page.
+- Org setup flags someone who is above two or more of one region's leaders and
+  has no leader above them, such as a newly hired head of that region, and opens
+  the Regions step at them.
+- A region card in Org setup names at most three leaders; a longer list folds
+  behind "Show all".
+- A new Business Unit always sits inside its region: one created with no parent
+  goes under the region's default unit, and the Move dialog no longer offers
+  "Top level" or the Unplaced holding node. The region's default unit and its
+  Unplaced node cannot be moved.
+- A Business Unit's code can now be changed from its Edit dialog. Projects,
+  owners and directory rules follow the unit.
+- The create dialog on a region page now defaults to a cost-owning Business
+  Unit under the region's default unit, so the new unit can take an owner
+  straight away.
+- Redeploying no longer renames, re-marks or brings back Business Units in a
+  region that has been set up; the built-in structure is only added to a region
+  that has no units of its own yet.
+- An empty region can now be deleted from its page (Admin → Regions → the
+  region → Delete). A region with any people, projects, Business Units, leaders,
+  rules or recorded spend cannot be deleted.
+- Org setup no longer lists people nobody reports to on the Business Units step,
+  and once everything has been moved the last step offers only the way back to
+  the overview.
+- Checkboxes no longer render as solid black squares when the computer is set
+  to dark mode.
+- The account menu says "Admin" for admins, and the Admin home talks about the
+  organisation rather than "your region".
+- A new Org setup page (Admin → Organisation → Org setup) places the whole
+  organisation from a few decisions about managers. Pick the person at the top,
+  read the directory, choose a region for each of their direct reports, tick the
+  managers who should own a Business Unit, then review exactly who moves before
+  moving them. Every count of what a choice changes comes from the directory
+  read, and nobody moves until you confirm the last step. Afterwards the page
+  lists what needs deciding (moves waiting, new teams, owners or leaders who
+  left, people the directory cannot place), and the Admin home shows a card
+  while anything does.
+- There is one admin role, Admin; Region admin can no longer be granted.
+- Once the top of the organisation is set in Org setup, TokenScope re-reads the
+  directory automatically, monthly by default or weekly if you choose, and checks
+  that every Business Unit owner and region leader is still in it.
+- A new Placement check page for Admins shows everyone whose region or
+  Business Unit differs from what the directory says today. Each row says why:
+  the rule that decided it, or the manager chain with the owner or leader it
+  reached. People with no unit owner above them are grouped by manager, and you
+  can apply the proposed moves in bulk. Region rules have a Preview that lists
+  who a rule would move before you save it.
+- On the Placement check page, Read directory now reads everyone in one go,
+  with a running count and a Stop button. Each pass is short enough to finish
+  within Azure Front Door's request time-out (it returned 504 before).
+- When a directory region rule and a person's manager chain disagree, the
+  manager chain now wins, and the chain is followed up to 12 managers (was 5).
+- A person's first sign-in now places them from the directory instead of in the
+  first region alphabetically, falling back to that region only if the
+  directory does not answer within 3 seconds.
+- Security fixes from a full audit. Highlights:
+  - A self-linked GitHub login no longer moves any of a billed Copilot
+    overage onto a Business Unit until an admin confirms the binding. Shares
+    now land on the Business Unit rather than the teammate's team node.
+  - Only an Admin can set a region's leader.
+  - Only an Admin can make someone who is not yet a teammate a
+    Business Unit owner.
+  - The Front Door Private Link approval script approves a request only when
+    it is the only one, and otherwise stops and lists them for you to decide.
+  - Removing your own GitHub link no longer removes bindings an admin or the
+    directory made.
+  - An authorisation code issued before an admin signed someone out no longer
+    works, and the token revoke endpoint now revokes access tokens too.
+- The per-person report access "revoke" option is removed. Report access
+  follows the role and the operational and finance grants.
+- The manager, org-tree and practice velocity rollup endpoints, which no page
+  used, are removed.
+- Back-dated budget top-ups now count towards the per-project top-up cap, and
+  per-developer caps can be changed only through the split.
+- The plugin keeps its refresh token out of the shared Claude Code settings
+  file and removes copies an older version left there. It also warns when the
+  server URL is not https.
+- Claude Desktop and the CLI on one machine now keep separate TokenScope
+  enrolments when setup runs with Node; re-run setup once in each to separate
+  an existing install.
+- A repository tagged to a project now holds only its project tag. When Claude
+  Desktop and the CLI both open it, each authenticates with its own credential
+  and both record usage under the device id in the tag, so opening it in both no
+  longer warns about a superseded device enrolment.
+- Impossible dates such as 2026-02-31 are rejected with a clear error instead
+  of failing.
+- The Front Door Private Link approval script approves only requests from
+  Front Door's own private endpoint carrying the deployment's own message, and
+  never re-approves a connection an operator rejected.
+- The Reconciliation records ledger now shows each record's Business Unit, not
+  the person's team.
+- The GitHub connection check's seats line counts only logins bound by
+  directory sync or an admin as matched, and shows logins claimed only by the
+  teammate as a separate number.
+- Signing an MCP client in from a container or over SSH no longer leaves a
+  browser error page in front: the sign-in is handed over in a small popup that
+  closes by itself, and when the client cannot be reached the consent page says
+  to copy the URL and paste it at the client's prompt (Claude Code's `URL >`).
+- A sign-in made while an admin changes your role or region, or ends your
+  sessions, now has to sign in again like every other session, instead of
+  keeping its token.
+
 ## v1.0.3 — 2026-10-14 (snapshot d358530b)
 
 - Dependency updates within their current versions, including Nuxt 4.6.1,

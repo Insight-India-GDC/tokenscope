@@ -81,7 +81,7 @@ const showSelector = computed(() => options.value.length > 1)
     <!-- A REAL CHOICE: a control. -->
     <select
       v-if="showSelector"
-      class="text-[13px] font-semibold text-carbon-1 bg-white border border-calm-2 rounded-md px-2 py-1 hover:border-brand-harmony focus:outline-none focus-visible:border-brand-harmony"
+      class="text-[13px] font-semibold text-carbon-1 bg-white border border-calm-2 rounded-md px-2 py-1 hover:border-brand-harmony focus-visible:border-brand-harmony"
       :aria-label="BU_LABEL"
       data-testid="cc-scope-selector"
       :value="selected?.id ?? props.scope?.defaultCcId ?? ''"

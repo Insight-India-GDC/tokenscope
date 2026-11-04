@@ -1050,7 +1050,7 @@ const softCapTickPct = computed(() =>
                   </span>
                   <span
                     v-if="bucket.is_active_now"
-                    class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold bg-brand-zeal-lite text-[#0b7290]"
+                    class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold bg-brand-zeal-lite text-brand-zeal-ink"
                     data-testid="active-now-badge"
                   >
                     <span class="inline-block w-1.5 h-1.5 rounded-full bg-brand-zeal animate-pulse" aria-hidden="true" />

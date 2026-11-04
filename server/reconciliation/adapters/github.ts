@@ -218,8 +218,10 @@ export function normaliseMetricsCreditLine(args: {
  * Shared roster reader: login (lowercased) → teammateId, from the directory-seeded
  * identity map for ONE github enterprise. Extracted from GithubAdapter.resolveRoster
  * so the health probe (github-health.ts) reuses the EXACT same login→teammate mapping
- * the reconciliation adapter uses — a health verdict of "roster matched N" is then the
- * same N the reconciler would attribute, never a re-implemented (and drifting) query.
+ * the reconciliation adapter uses, never a re-implemented (and drifting) query. The
+ * probe splits its count: logins found only through the self lane
+ * (resolveGithubSelfOnlyLogins) are reported as selfClaimed, not rosterMatched, and
+ * count as unmatched in the verdict; the reconciler attributes both.
  *
  * CANONICAL CASING (P1-7 / mig 0062): enterprise_slug is written lowercase by the
  * directory-sync UPSERT; the lower()=lower() match is the consistent read-side lookup
@@ -236,12 +238,11 @@ export function normaliseMetricsCreditLine(args: {
  * can only ever ADD a login, never OVERRIDE the authoritative teammate. DISTINCT ON dedups per
  * login; `(enterprise_slug IS NULL) ASC` sorts the NOT-NULL (enterprise) row FIRST → it wins.
  *
- * §A/§B CAVEAT (owner-flagged, identity-tail): the self lane is ESTATE-GLOBAL — a `source='self'`
- * link (unverified, `verified_at` NULL, no enterprise-membership check) makes that login
- * attributable in ANY enterprise, not just the teammate's own. That is deliberate for §A
- * usage/showback ("trust the developer"; Copilot is `indicative` today, out of chargeback), but
- * MUST be reconfirmed before F2 promotes Copilot to §B chargeable — an unverified self-claim would
- * then attribute real money across enterprises. Revisit against ADR-0010 / the §A/§B model at F2.
+ * §A ONLY: the self lane is ESTATE-GLOBAL and unverified — a `source='self'` link makes that
+ * login attributable as the claimant's usage in ANY enterprise. That is deliberate for §A ("trust
+ * the developer"). It does not reach the billed overage split: copilot-overage-allocation.ts homes
+ * a weight on a Business Unit only through an enterprise-lane binding, and sends self-only usage
+ * to Unallocated until an admin binds the login (map.post).
  */
 export async function resolveGithubRoster(
   // Widened db (the credentials.ts convention): this reader uses only db.execute(sql`…`), so
@@ -261,6 +262,29 @@ export async function resolveGithubRoster(
   const map = new Map<string, string>()
   for (const r of rows) map.set(r.login, r.teammate_id)
   return map
+}
+
+/*
+ * Logins this enterprise's roster resolves ONLY through the self lane (no directory-sync or admin
+ * binding for this enterprise), lowercased → the claimant's email. The admin "Unresolved Copilot
+ * users" queue lists them, because their billed overage stays Unallocated until an admin binds them.
+ */
+export async function resolveGithubSelfOnlyLogins(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  enterpriseRef: string,
+): Promise<Map<string, string>> {
+  const rows = await db.execute<{ login: string; email: string }>(sql`
+    SELECT DISTINCT ON (lower(s.identifier)) lower(s.identifier) AS login, t.email
+    FROM teammate_identity_map s
+    JOIN teammate t ON t.id = s.teammate_id
+    WHERE s.system = 'github' AND s.enterprise_slug IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM teammate_identity_map e
+        WHERE e.system = 'github' AND lower(e.enterprise_slug) = lower(${enterpriseRef})
+          AND lower(e.identifier) = lower(s.identifier))
+    ORDER BY lower(s.identifier), s.id
+  `)
+  return new Map(rows.map((r) => [r.login, r.email]))
 }
 
 /*

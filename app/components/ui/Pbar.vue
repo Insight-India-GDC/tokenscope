@@ -2,7 +2,8 @@
 /*
  * UiPbar — progress bar.
  *
- * Threshold colouring per design-notes.md §Screen 2 hero progress bar:
+ * Threshold colouring per the prototype's design notes
+ * (docs/archive/ux-pilot/tokenscope-pilot-design/project/design-notes.md §Screen 2) hero progress bar:
  * green default (Vision → Harmony gradient), amber at ≥75 %, red at ≥90 %.
  * Threshold rules live in `useRagState.ts::ragOf()` so every consumer
  * shares one source of truth.

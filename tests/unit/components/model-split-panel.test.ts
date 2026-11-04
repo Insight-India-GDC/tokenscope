@@ -292,7 +292,7 @@ describe('the lane note names the billed denominator on the billed lane, and onl
       .find('[data-testid="model-split-lane-note"]')
       .text()
     expect(note.replace(/\s+/g, ' ').trim()).toBe(
-      "Σ billed $1,234.50 — the provider's bill, so it need not match the attributed headline above.",
+      "Total billed $1,234.50 — the provider's bill, so it need not match the attributed headline above.",
     )
   })
 

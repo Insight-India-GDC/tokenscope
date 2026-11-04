@@ -33,6 +33,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+// Windows (#430): skipped on win32 because this file drives the POSIX .sh helper, which Windows does not run; the PowerShell twin is covered by otel-helper-conformance, claude-redeem-ps1 and status-ps1.
+const POSIX_ONLY = process.platform === 'win32'
+
 const HELPER = resolve(__dirname, '../../../plugin/scripts/otel-headers-helper.sh')
 
 /*
@@ -111,7 +114,7 @@ function run(args: string[], env: Record<string, string> = {}) {
 
 const sentinel = (dir: string) => join(dir, 'emit-failure.claude-code.json')
 
-describe('the state dir comes from argv', () => {
+describe.skipIf(POSIX_ONLY)('the state dir comes from argv', () => {
   it('--state-dir places the sentinel and token cache', () => {
     run(['--state-dir', argDir])
     expect(existsSync(sentinel(argDir))).toBe(true)
@@ -148,7 +151,7 @@ describe('the state dir comes from argv', () => {
   })
 })
 
-describe('the tools the refresh token is handed to are not repo-selectable', () => {
+describe.skipIf(POSIX_ONLY)('the tools the refresh token is handed to are not repo-selectable', () => {
   it('does NOT run a `curl` planted on a hostile PATH', () => {
     // The capture showed PATH is repo-settable and reaches this script, which
     // Claude Code invokes directly holding TOKENSCOPE_OAUTH_REFRESH_TOKEN. A
@@ -192,7 +195,7 @@ describe('the tools the refresh token is handed to are not repo-selectable', () 
   })
 })
 
-describe('argv is validated, not merely read', () => {
+describe.skipIf(POSIX_ONLY)('argv is validated, not merely read', () => {
   it('refuses an unknown argument rather than ignoring it', () => {
     // Same rule argv-guard.mjs applies to the redeem helpers: a flag this script
     // does not implement is argv nobody in the product wrote. Tolerating it is

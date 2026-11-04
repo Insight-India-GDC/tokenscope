@@ -61,6 +61,10 @@ export const oauthAuthCode = pgTable('oauth_auth_code', {
   // Set only when the exchange issued a token (mig 0145); consumed_at is also
   // set by a failed exchange.
   tokenIssuedAt: timestamp('token_issued_at', { withTimezone: true }),
+  // Mint time of the cookie session that approved the consent (mig 0168, #431).
+  // The exchange refuses the code if teammate.revoked_at is later. NULL only
+  // for codes minted before 0168.
+  sessionIssuedAt: timestamp('session_issued_at', { withTimezone: true }),
 })
 
 export const oauthToken = pgTable('oauth_token', {

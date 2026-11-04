@@ -102,6 +102,27 @@ param anthropicApiKey string = ''
 // PAT scopes: manage_billing:enterprise + read:org + per-org SAML SSO authorization.
 // Onboarding a credential is a
 // DEPLOYMENT change (provision the value + redeploy), by design.
+// GENERIC SLOTS (main.bicep githubPat1-3 / githubAppKey1): credential names
+// 'github-1'..'github-3' -> kv secrets 'github-pat-github-<n>' (and
+// 'github-app-key-github-1') -> env NUXT_GITHUB_PAT_GITHUB_<n> /
+// NUXT_GITHUB_APP_KEY_GITHUB_1. The named slots below are superseded by these
+// and kept so a deployment that supplies them keeps working.
+@description('GitHub credential slot 1 PAT (credential_secret_name "github-1"). Empty = NO-OP.')
+@secure()
+param githubPat1 string = ''
+
+@description('GitHub credential slot 2 PAT (credential_secret_name "github-2"). Empty = NO-OP.')
+@secure()
+param githubPat2 string = ''
+
+@description('GitHub credential slot 3 PAT (credential_secret_name "github-3"). Empty = NO-OP.')
+@secure()
+param githubPat3 string = ''
+
+@description('GitHub App private key (BASE64-encoded PEM) for slot 1 (credential_secret_name "github-1"). Empty = NO-OP.')
+@secure()
+param githubAppKey1 string = ''
+
 @description('GitHub manage_billing PAT for the NFR/internal enterprise (credential_secret_name "partner-demo"). Empty = NO-OP (F2 stays gated off).')
 @secure()
 param githubPatPartnerDemo string = ''
@@ -287,7 +308,40 @@ resource secretAnthropicApiKey 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = 
   }
 }
 
-// GitHub Copilot reconciliation PATs (F2 — GATED OFF; empty = NO-OP, see param block).
+// GitHub credential slots (generic; empty = NO-OP, never clobbers an existing value).
+resource secretGithubPat1 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = if (!empty(githubPat1)) {
+  parent: keyVault
+  name: 'github-pat-github-1'
+  properties: {
+    value: githubPat1
+  }
+}
+
+resource secretGithubPat2 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = if (!empty(githubPat2)) {
+  parent: keyVault
+  name: 'github-pat-github-2'
+  properties: {
+    value: githubPat2
+  }
+}
+
+resource secretGithubPat3 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = if (!empty(githubPat3)) {
+  parent: keyVault
+  name: 'github-pat-github-3'
+  properties: {
+    value: githubPat3
+  }
+}
+
+resource secretGithubAppKey1 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = if (!empty(githubAppKey1)) {
+  parent: keyVault
+  name: 'github-app-key-github-1'
+  properties: {
+    value: githubAppKey1
+  }
+}
+
+// GitHub Copilot reconciliation PATs, named slots (F2 — GATED OFF; empty = NO-OP, see param block).
 resource secretGithubPatPartnerDemo 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = if (!empty(githubPatPartnerDemo)) {
   parent: keyVault
   name: 'github-pat-partner-demo'

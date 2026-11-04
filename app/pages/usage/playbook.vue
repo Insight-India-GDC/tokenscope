@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /*
- * Optimisation playbook (brief §4.1.8) — the six levers as long-form
+ * Optimisation playbook (brief §4.1.8) — the eight levers as long-form
  * education, separate from the dashboard (AEUF's token-optimization page
  * pattern: education is a linked resource, never a pop-up). Lever content
  * adapted from Insight-Services-APAC/agentic-engineering-usage-forecast
@@ -26,7 +26,7 @@ const LEVERS: Lever[] = [
     id: 'R1',
     title: 'Model routing — frontier only where it earns its keep',
     group: 'Tool mastery',
-    savings: 'typically the single largest lever (≈30% in AEUF field data)',
+    savings: 'typically the single largest lever (≈30% in field data)',
     summary:
       'Frontier-tier models (Fable, Opus) cost several times a workhorse-tier model per token. Many routine tasks — renames, test scaffolding, mechanical refactors, doc edits — produce the same outcome on Sonnet-class models. Keep frontier for genuinely hard reasoning.',
     how: [
@@ -39,7 +39,7 @@ const LEVERS: Lever[] = [
     id: 'R2',
     title: 'Context discipline + /compact',
     group: 'Context management',
-    savings: '≈15% in AEUF field data',
+    savings: '≈15% in field data',
     summary:
       'Everything in context is re-read (and re-billed) on every turn. Big build outputs, vendored dirs, and stale file dumps inflate every subsequent message — and shrink your cache hit ratio.',
     how: [
@@ -52,7 +52,7 @@ const LEVERS: Lever[] = [
     id: 'R3',
     title: 'Cache-TTL awareness',
     group: 'Context management',
-    savings: '≈10% in AEUF field data',
+    savings: '≈10% in field data',
     summary:
       'The prompt cache expires after ~5 minutes of inactivity. Bursty work that returns just past the TTL re-writes the whole context at full price — your cache-write lane grows while cache-read stays flat.',
     how: [
@@ -64,7 +64,7 @@ const LEVERS: Lever[] = [
     id: 'R4',
     title: 'Output filtering',
     group: 'Tool mastery',
-    savings: '≈7% in AEUF field data',
+    savings: '≈7% in field data',
     summary:
       'Tool output is model input: a 10k-line log dumped into the session is paid for on every later turn. Auxiliary harness lanes amplify this.',
     how: [
@@ -76,7 +76,7 @@ const LEVERS: Lever[] = [
     id: 'R5',
     title: 'Effort + thinking discipline',
     group: 'Tool mastery',
-    savings: '≈7% in AEUF field data',
+    savings: '≈7% in field data',
     summary:
       'Extended thinking and high effort settings multiply output tokens. Routine work rarely benefits; hard problems genuinely do. Match the dial to the task.',
     how: [
@@ -88,7 +88,7 @@ const LEVERS: Lever[] = [
     id: 'R6',
     title: '/clear between unrelated tasks',
     group: 'Session hygiene',
-    savings: '≈5% in AEUF field data',
+    savings: '≈5% in field data',
     summary:
       'Carrying one task\'s context into the next means paying to cache and re-read material the new task never needed — the classic cause of a cache-write-heavy, cache-read-light profile.',
     how: [
@@ -170,7 +170,7 @@ const observedLevers = computed(() => {
         <p class="text-sm text-carbon-2 mt-2">{{ l.summary }}</p>
         <ul class="mt-3 space-y-1.5">
           <li v-for="(h, i) in l.how" :key="i" class="text-[13px] text-carbon-2 flex gap-2">
-            <span class="text-brand-zeal font-bold shrink-0">→</span><span>{{ h }}</span>
+            <span class="text-brand-zeal-ink font-bold shrink-0">→</span><span>{{ h }}</span>
           </li>
         </ul>
         <p class="text-[11px] text-carbon-3 mt-3">{{ l.savings }} — savings compound multiplicatively, not additively.</p>
@@ -178,8 +178,8 @@ const observedLevers = computed(() => {
     </div>
 
     <p class="text-[11px] text-carbon-3 mt-6">
-      Levers R1–R6 adapted from the AEUF internal study (agentic-engineering-usage-forecast); R7–R8
-      from GitHub + Anthropic token-efficiency guidance. Estimates on your dashboard are computed from
+      Levers R1–R6 adapted from an Insight study of agentic engineering usage; R7–R8 from GitHub
+      and Anthropic token-efficiency guidance. Estimates on your dashboard are computed from
       your own usage and the live rate card — not these field ranges.
     </p>
   </div>

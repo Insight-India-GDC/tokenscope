@@ -375,23 +375,13 @@ describe('C5 — a unit rule is the region rule mechanism, retargeted', () => {
   })
 
   it('retiring a unit rule\'s target cannot turn it into a region rule', async () => {
-    // The escalation path, end to end. If the loader degraded a dead unit target
-    // to its region, retiring the unit would convert a unit rule into a region
-    // rule — and an attribute REGION rule outranks a chain region
-    // leader, so it would start deciding the region of people whose own chain says
-    // otherwise. The victim below is such a person: in region B by their chain.
+    // A loader that degraded a dead unit target to its region would place this
+    // person, whose chain reaches nobody, in region A by the rule.
     const doomed = await mkUnit({ regionId: regionAId, path: 'prra.esc', code: 'prra-esc', name: 'A Escalation', parentId: rootAId })
     await call(rulesPost, ev({
       session: finops(), body: { attribute: 'department', match_value: 'Escalate', org_unit_id: doomed },
     }))
     await t.client`UPDATE org_unit SET retired_at = now() WHERE id = ${doomed}::uuid`
-
-    const [nadia] = await t.db.insert(schema.teammate).values({
-      entraOid: 'oid-esc-leader-b', email: 'esc.leader.b@x.test', regionId: regionBId, orgUnitId: couBId,
-    }).returning()
-    await t.db.insert(schema.regionLeader).values({
-      regionId: regionBId, leaderOid: 'oid-esc-leader-b', leaderEmail: 'esc.leader.b@x.test',
-    })
 
     const store = makePlacementStore(t.db)
     const der = await derivePlacement(
@@ -404,16 +394,12 @@ describe('C5 — a unit rule is the region rule mechanism, retargeted', () => {
         rules: await store.loadDirectoryRegionRules(),
         unitOwnerMap: await store.loadActiveUnitOwners(),
         leaderMap: await store.loadActiveRegionLeaders(),
-        getManager: async (oid) => (oid === 'esc-oid' ? { oid: 'oid-esc-leader-b', email: null } : null),
+        getManager: async () => null,
         caches: makeChainCaches(),
       },
     )
-    // Their own chain decides: region B. NOT region A, which is what a degraded
-    // rule would have imposed on them.
-    expect(der).toMatchObject({ via: 'manager', regionId: regionBId })
-
-    await t.client`DELETE FROM region_leader WHERE leader_oid = 'oid-esc-leader-b'`
-    await t.client`DELETE FROM teammate WHERE id = ${nadia!.id}::uuid`
+    expect(der.via).toBeNull()
+    expect(der.regionId).toBeUndefined()
   })
 
   it('delete: a region admin removes their own unit rule, and cannot remove another region\'s or an org-wide one', async () => {
@@ -701,6 +687,28 @@ describe('C7 — re-resolve: the derivation, its scope and its safety predicate'
     // region admin's action must not, or an owner they cannot see reads as an
     // owner who does not exist.
     expect(await homeOf(tm)).toBe(couA2Id)
+    await t.client`DELETE FROM teammate WHERE id = ${tm}::uuid`
+  })
+
+  it('a chain leader in another region outranks a region rule: counted out-of-region, nobody moves', async () => {
+    await t.client`INSERT INTO directory_region_rule (attribute, match_mode, match_value, match_value_raw, region_id)
+      VALUES ('department', 'exact', 'a dept', 'A Dept', ${regionAId}::uuid)`
+    await t.client`INSERT INTO region_leader (region_id, leader_oid, leader_email)
+      VALUES (${regionBId}::uuid, 'oid-b-leader', 'b-leader@x.test')`
+    const tm = await mkBillTeammate({ email: 'ruleleader@x.test', regionId: regionAId, orgUnitId: holdingAId })
+
+    const res = await runRegionReresolve(t.db, {
+      regionId: regionAId,
+      lookupDirectory: lookup({ 'ruleleader@x.test': dirFor({ oid: 'rl-oid', email: 'ruleleader@x.test', department: 'A Dept' }) }),
+      getManager: chain({ 'rl-oid': { oid: 'oid-b-leader', email: null } }),
+    })
+    expect(res.unresolved).toBe(0)
+    expect(res.outOfRegion).toBe(1)
+    expect(res.moved).toBe(0)
+    expect(await homeOf(tm)).toBe(holdingAId)
+
+    await t.client`DELETE FROM region_leader WHERE leader_oid = 'oid-b-leader'`
+    await clearRules()
     await t.client`DELETE FROM teammate WHERE id = ${tm}::uuid`
   })
 

@@ -19,6 +19,8 @@
  *     returned (or the last error thrown) exactly as when the retries run out;
  *     when it passes during a wait, the drained response cannot be returned and
  *     DeadlinePassedError is thrown instead.
+ *   - Optional caller `signal`: aborts the attempt in flight and any wait, and
+ *     starts nothing further; the call rejects with the signal's reason.
  *
  * Returns the final Response (ok or not) — callers keep their own `res.ok`
  * handling. Throws only when every attempt failed at the network layer, or
@@ -39,6 +41,8 @@ export interface ResilientFetchOptions {
    * wait that would end at or past it is not started. Absent → no deadline.
    */
   deadline?: number
+  /** Cancels the call outright: the attempt in flight, any wait, and every retry. */
+  signal?: AbortSignal
 }
 
 /** Thrown when the deadline stops the call with no network error to rethrow:
@@ -56,8 +60,23 @@ const DEFAULT_BACKOFF_MS = 1_000
 // Cap any single wait (incl. retry-after) — a worker tick must not park for hours.
 const MAX_WAIT_MS = 30_000
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(abortReason(signal))
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(abortReason(signal!))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+export function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('The operation was aborted.', 'AbortError')
 }
 
 /** Parse a retry-after header (delta-seconds or HTTP-date) to ms; null when absent/garbage. */
@@ -86,9 +105,11 @@ export async function resilientFetch(
   const retries = opts.retries ?? DEFAULT_RETRIES
   const backoffMs = opts.backoffMs ?? DEFAULT_BACKOFF_MS
   const deadline = opts.deadline
+  const signal = opts.signal
 
   let lastError: unknown = null
   for (let attempt = 0; attempt <= retries; attempt++) {
+    if (signal?.aborted) throw abortReason(signal)
     let attemptTimeoutMs = timeoutMs
     if (deadline !== undefined) {
       const remaining = deadline - Date.now()
@@ -102,8 +123,10 @@ export async function resilientFetch(
     }
     let res: Response | null = null
     try {
-      res = await fetch(url, { ...init, signal: AbortSignal.timeout(attemptTimeoutMs) })
+      const timeout = AbortSignal.timeout(attemptTimeoutMs)
+      res = await fetch(url, { ...init, signal: signal ? AbortSignal.any([timeout, signal]) : timeout })
     } catch (err) {
+      if (signal?.aborted) throw abortReason(signal)
       // Network error / timeout — retryable.
       lastError = err
     }
@@ -122,7 +145,7 @@ export async function resilientFetch(
     }
     // Drain the body so the retried connection can be reused (undici keep-alive).
     if (res) await res.arrayBuffer().catch(() => undefined)
-    await sleep(waitMs)
+    await sleep(waitMs, signal)
   }
   throw lastError instanceof Error
     ? lastError

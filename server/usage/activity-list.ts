@@ -39,11 +39,12 @@ import { z } from 'zod'
 import { conversationKeyExpr } from '../db/conversation-key'
 import { endedProjectExpr } from '../db/project-predicates'
 import { breakdownFields, fetchBreakdownCells, groupCells } from './breakdowns'
-import type {
-  ActivityFilters,
-  ActivityProviderDayRow,
-  ActivityRow,
-  ActivitySessionRow,
+import {
+  isRealUtcDay,
+  type ActivityFilters,
+  type ActivityProviderDayRow,
+  type ActivityRow,
+  type ActivitySessionRow,
 } from '../../shared/schemas/activity'
 
 type Tx = PostgresJsDatabase<Record<string, unknown>>
@@ -73,7 +74,7 @@ export interface ActivityCursor {
 }
 
 const CursorTuple = z.tuple([
-  z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(isRealUtcDay),
   z.number().int().min(0).max(1),
   z.string().max(64),
   z.string().max(256),

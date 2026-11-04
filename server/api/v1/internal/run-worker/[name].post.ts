@@ -73,5 +73,7 @@ export default defineEventHandler(async (event) => {
   // dispatchWorker core (identical to the admin UI trigger). A concurrent
   // dispatch (scheduler overlap/retry, or an HMAC replay in the ±300 s window)
   // gets the 409 no-op from there.
-  return dispatchWorker(db, entry, opts)
+  // `scheduled` marks a scheduler dispatch for workers that also run from an admin
+  // page (placement-check); it is set here, never read from the body.
+  return dispatchWorker(db, entry, { ...opts, scheduled: true })
 })

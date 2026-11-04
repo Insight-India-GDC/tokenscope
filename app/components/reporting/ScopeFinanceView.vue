@@ -56,6 +56,8 @@ const props = withDefaults(
     /** THE DRILL CONTRACT (D29/D30) — from the container; fail-closed defaults. */
     drillGrants?: DrillGrants
     drillWindow?: Omit<DrillFrame, 'src'>
+    /** Admin-only "Fix org homing →" — from the container's session; fail-closed. */
+    canFixHoming?: boolean
   }>(),
   {
     error: undefined,
@@ -63,6 +65,7 @@ const props = withDefaults(
     ledgerMonthOnly: false,
     drillGrants: () => NO_DRILL_GRANTS,
     drillWindow: () => ({}),
+    canFixHoming: false,
   },
 )
 
@@ -140,7 +143,7 @@ const unclassifiedWarning = computed(() => props.report?.copilot.unclassifiedWar
       <UiFetchErrorBanner v-else-if="drillErr" :error="drillError" />
       <ReportEmpty
         v-else-if="drillEmpty"
-        headline="No chargeback rows for this cost-owning unit and month yet."
+        headline="No chargeback rows for this Business Unit and month yet."
         sub="As the month's bills land and reconcile, the per-teammate and pooled charges fill in."
       />
       <FinanceDrill
@@ -190,6 +193,7 @@ const unclassifiedWarning = computed(() => props.report?.copilot.unclassifiedWar
         <FinanceCouTable
           :cous="report.cous"
           :copilot-pending="copilotPending"
+          :can-fix-homing="props.canFixHoming"
           @drill="emit('drill', $event)"
         />
 

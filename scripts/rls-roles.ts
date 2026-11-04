@@ -124,6 +124,8 @@ export const RLS_CUTOVER_SWEEP_VERSION = 1
 export const RLS_PROVISION_LOCK_CLASS = 100
 export const RLS_PROVISION_LOCK_KEY = 1
 export const RLS_CUTOVER_SWEEP_LOCK_KEY = 2
+/** drizzle/migrate.ts: replicas booting together apply each migration once. */
+export const MIGRATE_LOCK_KEY = 3
 
 /**
  * The roles this connection could `SET ROLE` to in order to borrow a

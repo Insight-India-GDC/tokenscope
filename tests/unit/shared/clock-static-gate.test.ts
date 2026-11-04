@@ -50,6 +50,10 @@ const WINDOWING_PATHS = [
   'app/components/reporting/ScopeAcrossRegions.vue',
   // The money-shaped one: `dayOfMonth` is every card's pace divisor.
   'app/pages/projects/index.vue',
+  // The default budget period on the project create and request forms.
+  'app/composables/useProjectFormOptions.ts',
+  'app/pages/projects/new.vue',
+  'app/pages/projects/request.vue',
   // The §A / §B day-series SQL — where `CURRENT_DATE` was the third clock.
   'server/reporting/engine/usage-series.ts',
   'server/reporting/engine/chargeback-series.ts',
@@ -57,6 +61,11 @@ const WINDOWING_PATHS = [
   // how their SQL `now()` came to be read afresh: a NEW file starts outside
   // this list, so the gate that would have caught it never looked.
   'server/api/v1/admin/diagnostics/costing.get.ts',
+  // The practice page's weekly buckets and the drill frame's default month
+  // (issue 491): `date_trunc('week', NOW())` and a browser `new Date()`.
+  'server/api/v1/rollups/practice/[ouId].get.ts',
+  'app/components/reporting/drill-contract.ts',
+  'app/composables/useDrillContract.ts',
 ] as const
 
 /** `new Date()` / `Date.now()` — a clock read with no argument to anchor it. */

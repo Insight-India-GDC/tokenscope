@@ -117,6 +117,15 @@ describe('verifyInternalRequest', () => {
     await expect(verifyInternalRequest(event)).rejects.toThrow(/Unauthorized/)
   })
 
+  it('replay window is one minute: two minutes old is rejected, thirty seconds old is accepted', async () => {
+    const path = '/api/v1/internal/run-worker/reconciliation'
+    const signed = (ts: number) =>
+      makeEvent({ path, timestamp: ts, signature: signInternalRequest({ timestamp: ts, method: 'POST', path, body: '' }) })
+    const now = Math.floor(Date.now() / 1000)
+    await expect(verifyInternalRequest(signed(now - 120))).rejects.toThrow(/Unauthorized/)
+    await expect(verifyInternalRequest(signed(now - 30))).resolves.toBeUndefined()
+  })
+
   it('rejects a signature for a different path', async () => {
     const ts = Math.floor(Date.now() / 1000)
     const sig = signInternalRequest({

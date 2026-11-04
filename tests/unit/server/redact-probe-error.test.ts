@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { consola } from 'consola'
-import { classifyProbeError } from '../../../server/utils/redact-probe-error'
+import { classifyProbeError, describeError } from '../../../server/utils/redact-probe-error'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -138,5 +138,27 @@ describe('classifyProbeError — redaction', () => {
     const a = classifyProbeError(err, 'x')
     const b = classifyProbeError(err, 'x')
     expect(a.correlationId).not.toBe(b.correlationId)
+  })
+})
+
+describe('describeError', () => {
+  it('keeps the cause chain undici hides behind "fetch failed"', () => {
+    const tls = Object.assign(new Error('unable to verify the first certificate'), { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' })
+    const line = describeError(new TypeError('fetch failed', { cause: tls }))
+    expect(line).toContain('fetch failed')
+    expect(line).toContain('UNABLE_TO_VERIFY_LEAF_SIGNATURE')
+    expect(line).toContain('unable to verify the first certificate')
+  })
+
+  it('drops URL query strings, where a signed link carries its signature', () => {
+    const line = describeError(new Error('GET https://blob.example/r.csv?sv=1&sig=SECRETSIG failed'))
+    expect(line).toContain('https://blob.example/r.csv')
+    expect(line).not.toContain('SECRETSIG')
+  })
+
+  it('stops on a cyclic cause', () => {
+    const a: Error & { cause?: unknown } = new Error('a')
+    a.cause = a
+    expect(describeError(a).split('caused by').length).toBeLessThanOrEqual(5)
   })
 })

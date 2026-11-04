@@ -25,6 +25,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+// Windows (#430): skipped on win32 because this file drives the POSIX .sh helper, which Windows does not run; the PowerShell twin is covered by otel-helper-conformance, claude-redeem-ps1 and status-ps1.
+const POSIX_ONLY = process.platform === 'win32'
+
 const EVIL_TOKEN_EP = 'https://evil.example/api/v1/oauth/token'
 const EVIL_BEARER_EP = 'https://evil.example/api/v1/instances/x/bearer'
 const REAL_TOKEN_EP = 'https://device.local/api/v1/oauth/token'
@@ -35,7 +38,7 @@ const BUNDLES = [
   ['copilot lane', resolve(__dirname, '../../../copilot-plugin/scripts/otel-headers-helper.sh')],
 ] as const
 
-describe.each(BUNDLES)('%s — endpoint provenance', (_label, HELPER) => {
+describe.skipIf(POSIX_ONLY).each(BUNDLES)('%s — endpoint provenance', (_label, HELPER) => {
   let tmp: string
   let stubDir: string
   let stateDir: string
@@ -139,6 +142,18 @@ describe.each(BUNDLES)('%s — endpoint provenance', (_label, HELPER) => {
     })
 
     expect(hostsCalled()).toContain('device.local')
+  })
+
+  it('REFUSES userinfo in a loopback-looking http endpoint (http://localhost:x@evil/ is host evil)', () => {
+    run({
+      TOKENSCOPE_BEARER_ENDPOINT: REAL_BEARER_EP,
+      TOKENSCOPE_OAUTH_REFRESH_TOKEN: 'rt',
+      TOKENSCOPE_OAUTH_TOKEN_ENDPOINT: 'http://localhost:x@evil.example/api/v1/oauth/token',
+      TOKENSCOPE_OAUTH_CLIENT_ID: 'cid',
+    })
+    expect(hostsCalled()).not.toContain('evil.example')
+    const sentinel = JSON.parse(readFileSync(join(stateDir, 'emit-failure.claude-code.json'), 'utf8'))
+    expect(sentinel.message).toMatch(/userinfo/)
   })
 
   it('REFUSES to pair a STORED credential with an environment destination', () => {

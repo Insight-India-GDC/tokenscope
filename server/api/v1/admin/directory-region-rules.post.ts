@@ -30,51 +30,17 @@
  * people somewhere their spend still reaches no cost centre, which is the exact
  * illusion this whole slice exists to remove.
  */
-import { defineEventHandler, createError, getRequestIP, getHeader } from 'h3'
+import { defineEventHandler, getRequestIP, getHeader } from 'h3'
 import { readValidated } from '../../../utils/validated-body'
 import { sql } from 'drizzle-orm'
-import { z } from 'zod'
 import { requireRole } from '../../../auth/rbac'
 import { assertSameOrigin } from '../../../auth/csrf'
 import { withRequestRls } from '../../../db/request-rls'
 import { recordAuditEvent } from '../../../db/audit'
 import { advisoryXactLock } from '../../../db/advisory-lock'
-import { assertCostOwningTarget } from '../../../db/place-teammate'
-import {
-  isRegionAttributeKey,
-  isMatchMode,
-  normalizeMatchValue,
-} from '../../../../shared/placement/region-attributes'
-
-const Body = z
-  .object({
-    attribute: z.string().refine(isRegionAttributeKey, 'unknown region attribute'),
-    match_mode: z.string().refine(isMatchMode, "match_mode must be 'exact' or 'prefix'").default('exact'),
-    match_value: z.string().trim().min(1).max(200),
-    region_id: z.string().uuid().optional(),
-    /** A cost-owning unit. Its region becomes the rule's region — never both. */
-    org_unit_id: z.string().uuid().optional(),
-  })
-  .refine(
-    (b) => Boolean(b.region_id) !== Boolean(b.org_unit_id),
-    'supply exactly one of region_id (a region rule) or org_unit_id (a unit rule)',
-  )
-
-function refuse(status: number, detail: string): never {
-  throw createError({
-    statusCode: status,
-    statusMessage: detail,
-    data: {
-      type:
-        status === 403
-          ? 'https://tokenscope.example.com/errors/forbidden'
-          : 'https://tokenscope.example.com/errors/unprocessable',
-      title: status === 403 ? 'Forbidden' : 'Unprocessable',
-      status,
-      detail,
-    },
-  })
-}
+import { resolveDirectoryRuleTarget } from '../../../reconciliation/directory-rule-target'
+import { normalizeMatchValue } from '../../../../shared/placement/region-attributes'
+import { DirectoryRegionRuleBody as Body } from '../../../../shared/schemas/directory-region-rule'
 
 export default defineEventHandler(async (event) => {
   const caller = await requireRole(event, 'platform-admin')
@@ -96,33 +62,11 @@ export default defineEventHandler(async (event) => {
     await tx.execute(advisoryXactLock('directoryRule', `${body.attribute}:${matchValue}`))
 
     /*
-     * Resolve the TARGET first: a unit rule's region is the unit's own, so it is
-     * read rather than supplied (and the mig-0112 composite FK stops the stored
-     * pair drifting apart afterwards). FOR SHARE, so the unit cannot be retired
-     * or un-flagged between the assert below and the insert — the same lock, for
-     * the same reason, as the placement write.
+     * The TARGET: a unit rule's region is the unit's own, held to it by the
+     * mig-0112 composite FK. The unit is locked FOR SHARE so it cannot be retired
+     * or un-flagged before the insert.
      */
-    let regionId: string
-    let orgUnitId: string | null = null
-    if (body.org_unit_id) {
-      const unitRows = await tx.execute<{ region_id: string; display_name: string }>(sql`
-        SELECT region_id::text AS region_id, display_name
-        FROM org_unit WHERE id = ${body.org_unit_id}::uuid LIMIT 1 FOR SHARE
-      `)
-      const unit = [...unitRows][0]
-      if (!unit) refuse(422, 'org_unit_id must reference an org unit that exists.')
-      await assertCostOwningTarget(tx, body.org_unit_id)
-      regionId = unit.region_id
-      orgUnitId = body.org_unit_id
-    } else {
-      regionId = body.region_id!
-    }
-
-    const regionRows = await tx.execute<{ id: string; code: string }>(sql`
-      SELECT id::text AS id, code FROM region WHERE id = ${regionId}::uuid LIMIT 1
-    `)
-    const regionRow = [...regionRows][0]
-    if (!regionRow) refuse(422, 'Region not found')
+    const { regionId, regionCode, orgUnitId } = await resolveDirectoryRuleTarget(tx, body)
 
     /* The row this upsert would REPLACE, read for the audit trail. */
     const existingRows = await tx.execute<{ id: string; region_id: string; org_unit_id: string | null }>(sql`
@@ -155,7 +99,7 @@ export default defineEventHandler(async (event) => {
         match_mode: body.match_mode,
         match_value: matchValue,
         region_id: regionId,
-        region_code: regionRow.code,
+        region_code: regionCode,
         org_unit_id: orgUnitId,
         // What it replaced, so an overwrite is legible as one in the trail.
         previous_region_id: existing?.region_id ?? null,
@@ -172,7 +116,7 @@ export default defineEventHandler(async (event) => {
       match_value: matchValue,
       match_value_raw: body.match_value.trim(),
       region_id: regionId,
-      region_code: regionRow.code,
+      region_code: regionCode,
       org_unit_id: orgUnitId,
     }
   })

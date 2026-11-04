@@ -14,7 +14,7 @@ Four caller classes, four authentication mechanisms — each carries a different
 
 | Caller | Mechanism | Notes |
 |---|---|---|
-| **Browser users** (developer / manager / region admin / platform admin) | Entra OIDC cookie (`nuxt-oidc-auth`) + per-request DB enrichment | Only path that can read "my projects"/consumption or change attribution |
+| **Browser users** (developer / manager / Admin) | Entra OIDC cookie (`nuxt-oidc-auth`) + per-request DB enrichment | Only path that can read "my projects"/consumption or change attribution |
 | **MCP / CLI clients** (Claude Code) | **OAuth 2.1** (PKCE) — `tokenscope.read`+`tag` for the MCP tools; `tokenscope.emit` for ingest | One browser consent grants read+tag; device emit is provisioned via a secret-isolating handoff (`provision_emit` → `/setup/redeem`). |
 | **Internal schedulers / workers** | **HMAC-SHA256** request signature | Key separate from the user-session HMAC key |
 | **Telemetry → Azure** | App-level **Managed Identity** bearer, `monitor.azure.com/.default` | Write-only, narrow-scope, same token every session — Azure never sees a TokenScope token |
@@ -65,10 +65,21 @@ resolved by `requireReportScope`.
 
 ### Revocation and deactivation
 
-**Two axes, and they are not the same shape.** `revoked_at` is a *session anchor*:
-it is overloaded (a benign role change or region move bumps it, as do the
-explicit revoke endpoints), so it only clears sessions minted **before** it — the
-same person can sign in again a second later and hold a valid session.
+**Two axes, and they are not the same shape.** `revoked_at` is a *session anchor*,
+and nothing else: a benign role change or region move bumps it, as do the
+explicit revoke endpoints, so it only clears sessions minted **before** it — the
+same person can sign in again a second later and hold a valid session. It is never
+an eligibility or offboarding flag; that is `is_active`.
+
+An authorization code is judged by the session that approved it, not only by when
+the code was created: the code stores that session's mint time and the exchange
+refuses it if `revoked_at` is later than either. The exchange also locks the
+teammate row before it consumes the code, so it serialises with a role change,
+region move or revoke-sessions that is still committing: a sign-in whose session
+predates the change either finishes first and has its token revoked by it, or
+waits and is refused. A session minted while the change was committing is newer
+than the change's `revoked_at` (the transaction's start) and is kept; it reads
+the new role and region on every request anyway.
 `is_active = false` is **deactivation**: a durable state that denies every
 credential for that teammate, existing or newly minted, because there is no
 "after" to be on the right side of. Both tests fail closed — a missing teammate
@@ -140,10 +151,10 @@ keep refreshing a fresh access token indefinitely.
 |---|---|---|
 | `developer` | Developer | Own data |
 | `manager` | Manager | Own org subtree (allocations within the org path) |
-| `admin` | **Region admin** | A single home region (region-scoped) |
+| `admin` | **Region admin (retired)** | **Can no longer be granted**: there is one admin role, Admin. `canAssignRole` refuses it and it is not in `SELECTABLE_ROLES`. A remaining holder administers a single home region (region-scoped). |
 | `finance` | **Finance (retired)** | **Unassignable** — in the `ROLES` enum only for exhaustiveness and old rows; **excluded from `SELECTABLE_ROLES`**, never offered in role dropdowns and assigned to no one. Region-scoped finance is served by `admin`; org-wide finance by `platform-admin`. |
 | `global-finops` | **Global finance (retired)** | **Unassignable.** In **no** capability set; in the enum for old rows only. Company-wide report access is a per-teammate `report_access_grant` (mig 0129) and needs no role. |
-| `platform-admin` | Platform admin | Cross-region super-admin — satisfies every gate. The **only** org-wide role. |
+| `platform-admin` | **Admin** | The one admin role. Cross-region; satisfies every gate. The **only** org-wide role. |
 
 > **Two vocabularies, one spelling.** The string `global-finops` also appears as
 > the value of the `app.user_role` GUC (`server/db/rls.ts`, `worker-db.ts`, and
@@ -153,10 +164,10 @@ keep refreshing a fresh access token indefinitely.
 > every worker.
 
 Canonical human-facing labels come from `ROLE_LABELS` (`shared/auth/roles.ts`) —
-`admin` = "Region admin" and `platform-admin` = "Platform admin". Both retired
-members label themselves as such — `finance` = "Finance (retired)",
-`global-finops` = "Global finance (retired)" — so an old row never reads as a
-live role.
+`platform-admin` = "Admin". The roles that can no longer be granted label
+themselves as such — `admin` = "Region admin (retired)", `finance` = "Finance
+(retired)", `global-finops` = "Global finance (retired)" — so an old row never
+reads as a live role.
 
 - `requireRole(event, ...allowed)` — variadic; permits if role ∈ `allowed`. `platform-admin` short-circuits every check. `403` RFC-9457 on denial.
 - `requireRegionScope(event, regionId)` — binds an `admin` to their home region; `platform-admin` are region-unbounded.
@@ -166,11 +177,41 @@ Per-resource scope helpers — the data-scope boundary:
 | Helper | Effect |
 |---|---|
 | `allocationScopePredicate(tableRef)` | SQL predicate: `global-finops` unbounded; otherwise the project must sit in the caller's region, and an `admin` is bound to that region while a `manager`/`developer` additionally needs the project's cost-owning unit inside their `app.user_org_path` subtree. The region clamp **wraps** the role split rather than sitting beside it. Used by every allocation read and the two allocation writes. |
-| `assertProjectScope(event, project)` | Write-side mirror: `admin` bound to project region; `manager` needs the project in their **own region** *and* its cost-owning unit in their org subtree; `global-finops` unbounded. The region clamp **wraps** the subtree test here too — org-unit paths are unique only per region (`UNIQUE (region_id, code)`), so an ltree prefix match alone would accept a colliding path from another region. Both halves fail as one `403` — the refusal names neither. The sole gate on the four project-assignment routes and the two allocation writes. |
+| `assertProjectScope(event, project)` | Write-side mirror: `admin` bound to project region; `manager` needs the project in their **own region** *and* its cost-owning unit in their org subtree; `global-finops` unbounded. The region clamp **wraps** the subtree test here too — org-unit paths are unique only per region (`UNIQUE (region_id, code)`), so an ltree prefix match alone would accept a colliding path from another region. Both halves fail as one `403` — the refusal names neither. The org-role arm of `assertProjectScopeOrManager` (below), which gates the four project-assignment routes, `POST /allocations` and `/allocations/{id}/split`. |
+| `assertProjectScopeOrManager(event, tx, project)` | `assertProjectScope`, **or** a current PM of this project (`server/auth/project-authority.ts`). Returns which arm admitted the caller (`scope` / `project-manager`) for the audit row. Gates the existing routes a PM may use on their own project. The allocation `GET {id}` / `PATCH` / `topups` routes apply the same two arms in SQL: `allocationScopePredicate` or a current `manager` assignment on the allocation's project. |
+| `assertProjectManagerOrAdmin(event, tx, project)` | A current PM of this project, `platform-admin`, or the region admin of the project's region. An org-role `manager` who is not the project's PM is refused (`403`). Gates the end-date route and budget-request decisions. |
 | `placedBelowRegionRootPredicate()` | The org-placement clamp, ANDed onto every subtree arm above. See below. |
 | `requireReportScope(event, tx, scope)` | The `/reports/*` read gate. Resolves caller + active cost-centre ownership + active **report-access grants**, evaluates `effectiveReportGrants`, and throws the same RFC-9457 `403` as `requireRole`. `requireAuth`-based (identity + an in-query/JS-computed scope) rather than a fixed-role gate — a documented exception to "every gate is `requireRole`". See [Report access grants](#report-access-grants). |
 
-Admin mutations (`server/auth/admin-guards.ts`): `evaluateRoleChange` blocks self-role-change, same-role no-ops, and enforces last-admin-per-region protection; `evaluateRevokeSessions` is always positive (revoking just forces re-sign-in).
+Admin mutations (`server/auth/admin-guards.ts`): `evaluateRoleChange` blocks self-role-change and same-role no-ops (the former last-admin-per-region protection went with Region admin: the role can no longer be granted, so a stray holder must be demotable; the last platform-admin needs no guard because only a platform-admin may modify one and self-change is refused); `evaluateRevokeSessions` is always positive (revoking just forces re-sign-in).
+
+### Project managers
+
+Two relationships, neither of them an org role, give project powers. The org
+role `manager` is a people manager and is neither.
+
+| Relationship | Held as | Grants |
+|---|---|---|
+| **On the Project managers list** | a live `project_manager_grant` row; only `platform-admin` adds or revokes one | Create a project without approval (`POST /api/v1/projects`) and become its PM, or name another teammate as PM. In any region, unless the platform switch `projects.pm_own_region_only` is 1: then only in the region the holder is placed in now. Checked by `canCreateProjects` (`server/auth/org-roles.ts`), which only that route calls. |
+| **PM of a project** | a `project_assignment` row on that project with `role = 'manager'` in force now | On that project only: read its consumption, create and edit its baseline and caps, top it up, change its end date, add members who are already teammates, remove members, make a member PM, and decide its budget requests. |
+
+Everyone else asks: any teammate may request a project
+(`POST /api/v1/me/project-requests`, decided by an admin of the request's
+region), and a current member may request more budget on a project
+(`POST /api/v1/projects/{id}/budget-requests`, decided by its PM or an admin in
+scope).
+
+What a PM does **not** get: the admin project PATCH (names, type, Business
+Unit, WBS code, authorisation) and DELETE, adding a person from the directory
+(`oid`) or adopting a `bill:` / `provisional:` placeholder, and leaving the
+project without a PM. Removing or demoting the last current, open-ended PM is
+409 for anyone but `platform-admin` and the region admin of the project's
+region; every assignment write locks the project row first, so concurrent
+changes are judged one after the other.
+
+Revoking a list grant leaves the projects the holder created, and their PM
+assignments, as they are. A PM assignment ends only when someone ends it or its
+range runs out.
 
 ### The org-placement clamp
 
@@ -219,55 +260,52 @@ reports **by their role**: a region `admin` sees their own region, and
 `platform-admin` sees the whole company (all regions, all
 Business Units, the finance pack). On top of that, an admin can **widen** a named
 teammate whose baseline lacks that scope — a region admin included — to
-company-wide reporting, or **revoke** a person's report
-access entirely — per-teammate, revocable, optionally-expiring rows
-(`report_access_grant`, migs 0129 + 0130), without touching anyone's platform
-role.
+company-wide reporting — per-teammate, revocable, optionally-expiring rows
+(`report_access_grant`, mig 0129), without touching anyone's platform role.
+There is no per-person deny: admins are trusted and spend is not sensitive, so
+the `revoke-all` lever mig 0130 added was removed by mig 0158 (owner ruling
+2026-10-15).
 
-**To grant report access** (requires Platform admin — the
+**To grant report access** (requires Admin — the
 roster is org-wide only): **Admin → Policies → Report access** → search the
-teammate by name or email → pick the action (*Operational reporting*, *Finance
-reporting*, or *Revoke — no report access*, table below) → optionally set an
-expiry → confirm. It is enforced on the teammate's very next report request; the
+teammate by name or email → pick the permission (*Operational reporting* or
+*Finance reporting*, table below) → optionally set an expiry → confirm. It is enforced on the teammate's very next report request; the
 *Reporting* entry appears (or disappears) in their navigation on their next page
 load (the shell caches report metadata for up to an hour). Revoke a specific
 grant row from the same roster — one click; an expired grant stays listed as
 *Expired* until revoked or superseded by a re-grant. Actions are audited
 (`report-access-granted` / `report-access-revoked`). On a fresh install the admin
-roles already see reports by role, so a platform admin needs no self-grant; the
-positive grants and revokes are the per-person overrides on top.
+roles already see reports by role, so an Admin needs no self-grant; the
+grants are the per-person widenings on top.
 
-- **Two positive permissions + one deny** (`shared/auth/report-visibility.ts`,
-  `REPORT_ACCESS_GRANT_VALUES`):
+- **Two positive permissions** (`shared/auth/report-visibility.ts`,
+  `REPORT_ACCESS_PERMISSIONS`):
 
   | Value | Effect |
   |---|---|
   | `operational` | Widen to the whole-company reporting surface: cross-region access, every region, every Business Unit — including their billed-spend figures. |
   | `finance` | Widen to the whole-company finance pack (`/reporting?scope=finance`) alone. Names the PACK, not the retired `finance` role. |
-  | `revoke-all` | **Deny.** Remove ALL report access for the teammate — below their role default and below any positive grant (deny-wins). The "administer, no data access" case. It also withholds the admin-routed inbox notices that carry report data (`REPORT_DATA_INBOX_CATEGORIES`: over-emission escalations and the Copilot bill notices): they are not sent, delivered ones are hidden while the deny is active, and they cannot be forwarded by or to the teammate (they are forwarded only to a platform admin or an admin of the notice's region). A notice skipped during a deny is not re-sent when it is lifted, and project-role notices such as over-budget are not covered. Lifting a revoke needs a *different* admin. |
 
   The two positive grants are independent — a caller can hold either, both, or
-  neither, and a grant never implies its counterpart. None of the three changes
-  the holder's platform role.
-- **Baseline + grant − deny.** `effectiveReportGrants(role, ownsCostCentre,
-  permissions, revoked)` is a role-shaped **baseline**
+  neither, and a grant never implies its counterpart. Neither changes the
+  holder's platform role.
+- **Baseline + grant.** `effectiveReportGrants(role, ownsCostCentre,
+  permissions)` is a role-shaped **baseline**
   (`developer`/`finance` own-region only, Business Unit tab via ownership;
   `manager`/`admin` own-region + subtree Business Units; `platform-admin` the
   WHOLE COMPANY — all regions, all Business Units, finance)
   widened **field-wise** by whichever positive permissions the caller's active
-  grants buy, then **zeroed entirely** if an active `revoke-all` is present
-  (**deny-wins**, checked before anything is unioned). A static **WHO-SEES-WHAT
+  grants buy. A static **WHO-SEES-WHAT
   matrix** export (baseline and fully-elevated, per persona) drives both the
   admin-pane preview and the tests, so the preview can never drift from the gate.
-- **Admins see reports by role; a revoke is the only way off.** `platform-admin`
+- **Admins see reports by role.** `platform-admin`
   sees the whole company by role — no grant needed — and a
   region `admin` sees their own region by role. There is no cross-region widening
   for a region admin (the anti-IDOR clamp stays): "all reports" is delivered to
   the ORG-WIDE roles. The org-wide baseline uses `costCentre: 'all'`, which the
   resolvers treat as the explicit unbounded path — a literal `TRUE` visibility
   predicate — never the `orgSubtreeScopePredicate` GUC arm, so the leak class
-  that arm could open is designed out. A specific admin is taken below their role
-  default only by an active `revoke-all` row. A region admin is widened only by
+  that arm could open is designed out. A region admin is widened only by
   an explicit `operational` (cross-region) or `finance` grant.
 - **Two further grant columns — the DRILL contract.** `ReportScopeGrants` also
   carries `teammate` (`'people-scope' | false`) and `project`
@@ -277,7 +315,7 @@ positive grants and revokes are the per-person overrides on top.
   confer it, because a per-person governance view is not a reporting width, and
   region-leader-sees-whole-region is not expressible until owner decision E1.
   Both are LEVELS, never admissions: the per-teammate endpoint still requires
-  emit-time homing evidence inside the caller's own frame plus
+  in-window usage by a subject who sits inside the caller's own frame now, plus
   `teammate.is_active`, resolved per request.
 - **Enforcement is `requireReportScope`** (the scope-helper row above), applied
   to the whole-company region width and the finance report routes; the
@@ -395,7 +433,7 @@ Authorization is the app gate described above.
 2. The server answers 401 with a `WWW-Authenticate` header that points at the protected-resource metadata.
 3. The client opens the consent page with a PKCE challenge.
 4. The teammate approves. `POST /oauth/authorize` uses the Entra cookie and the same-origin check, and returns the callback URL.
-5. The code reaches the client through its loopback callback, or through the page's Copy URL paste-back.
+5. The code reaches the client through its loopback callback, or through the page's Copy URL paste-back. The page warns that this URL works like a password: paste it only into the session that asked.
 6. The client posts the code and its PKCE verifier to `/oauth/token`.
 7. It receives an access token and a refresh token for the scopes it requested, `tokenscope.read` and `tokenscope.tag`. The MCP tools now work.
 8. The `tokenscope-setup` prompt calls the read-scoped `provision_emit` tool, which locates or creates the device's `instance_attestation`.
@@ -416,7 +454,7 @@ Authorization is the app gate described above.
 ### OAuth 2.1 consent (read + tag)
 
 - The MCP client runs a client-initiated PKCE (S256) authorization-code flow against `/api/v1/oauth/{authorize,token,register,revoke}`. The **GET `/oauth/authorize`** gates the Entra session and validates `client_id`/`redirect_uri`, then 302s to the consent page (`app/pages/oauth/authorize.vue`); **POST `/oauth/authorize`** is the grant — the one cookie-bearing OAuth endpoint, so it **requires `assertSameOrigin`** (the cookieless token/register/revoke endpoints deliberately skip CSRF). It reuses `issueAuthCode` (teammate-bound, PKCE-carried).
-- **Callback delivery.** The POST returns the callback URL as data. On Approve with a loopback `http:` callback (RFC 8252 native apps — e.g. the GitHub Copilot App) the page opens a tab in the click handler and navigates it to the callback (a navigation, which Chrome's Local Network Access does not block); the consent page itself never navigates away. It then polls `POST /api/v1/oauth/code-status` (session + same-origin; reads the caller's own `oauth_auth_code.token_issued_at` — set only when `/oauth/token` issues a token, unlike `consumed_at`, which a failed exchange also sets) — redeemed → "Connected"; not confirmed within 8 s (the loopback is unreachable, e.g. a containerized client, or the tab was blocked or closed) → the page leads with the **Copy URL** paste-back, still flipping to Connected if the pasted code is later exchanged. Polling is ~35 requests over 2 min in the per-IP limiter the whole app shares; a failed poll (429, error, timeout) waits the slow 5 s interval. The grant request itself times out after 15 s and is cancelled if the page is left, and Approve/Deny are offered again. The tab is not auto-closed: under COOP `same-origin` the page loses its handle once the tab goes cross-origin, and relaxing COOP would let the loopback page navigate the consent tab. A loopback Deny / error callback is handed to the client the same way (so it stops waiting), without polling. Nothing can confirm a client received a deny/error (there is no code to poll), so the page always keeps **Copy URL** for it, plus **Open in a new tab** when it could not be sent (popup blocked, tab closed, or an `https:` callback, which is never auto-delivered). Nothing failing the `https:`/loopback scheme guard (`shared/oauth-callback.ts`) is ever opened.
+- **Callback delivery.** The POST returns the callback URL as data. On Approve with a loopback `http:` callback (RFC 8252 native apps — e.g. the GitHub Copilot App) the page opens a small popup window in the click handler and navigates it to the callback (a navigation, which Chrome's Local Network Access does not block); the consent page itself never navigates away and stays in view behind the popup. It then polls `POST /api/v1/oauth/code-status` (session + same-origin; reads the caller's own `oauth_auth_code.token_issued_at` — set only when `/oauth/token` issues a token, unlike `consumed_at`, which a failed exchange also sets) — redeemed → the popup is closed and the page shows "Connected"; not confirmed within 8 s (the loopback is unreachable, e.g. a client in a container or over SSH, or the popup was blocked or closed) → the popup, which would be showing a browser connection error, is closed and the page leads with the paste-back steps: copy the URL and paste it where the client asks for the URL from the browser's address bar (Claude Code's `URL >` prompt). It still flips to Connected if the pasted code is later exchanged. Before Approve, a loopback client's consent page says that a client in a container or over SSH will ask for a URL to be pasted back. Polling is ~35 requests over 2 min in the per-IP limiter the whole app shares; a failed poll (429, error, timeout) waits the slow 5 s interval. The grant request itself times out after 15 s and is cancelled if the page is left, and Approve/Deny are offered again. Closing the popup needs the page's handle to survive the popup's cross-origin navigation, which COOP `same-origin` severs, so `/oauth/authorize` alone is served with COOP `same-origin-allow-popups` (`nuxt.config.ts` routeRules). The page clears the popup's `opener` before navigating it, so the loopback page gets no reference back to the consent page, and `same-origin-allow-popups` still isolates the consent page from any cross-origin page that opens it. A loopback Deny / error callback is handed to the client the same way (so it stops waiting), without polling. Nothing can confirm a client received a deny/error (there is no code to poll), so the page always keeps **Copy URL** for it, plus **Open in a new tab** when it could not be sent (popup blocked, tab closed, or an `https:` callback, which is never auto-delivered). Nothing failing the `https:`/loopback scheme guard (`shared/oauth-callback.ts`) is ever opened.
 - Tokens are stored as HMAC hashes only (`oauth_token`); the raw value is returned once. Refresh is **non-rotating** — revoke (not rotation) is the control ([ADR-0005](Design-Decisions.md#adr-0005--durable-emission-credentials-and-revocation)). `requireOAuthBearer` joins `teammate.revoked_at` (`emit_revoked_at` for a device-bound emit token) for the E2 revocation cascade and `teammate.is_active` for deactivation ([Revocation and deactivation](#revocation-and-deactivation)).
 - The granted scopes are `tokenscope.read` + `tokenscope.tag` (MCP tools). The separate `tokenscope.emit` credential is provisioned via the handoff below, never granted directly to the consent.
 - **Consent is refused on an assumed identity.** `POST /oauth/authorize` returns a JSON `403 access_denied` when the session carries a persona override, before the client/`redirect_uri` lookup, so the refusal cannot become a redirect and no code is issued. An OAuth consent mints a teammate-bound code that becomes a durable access/refresh token; granting one while acting as someone else would leave a credential outliving the impersonation and carrying the impersonated teammate's identity. (Persona override is confined to the demo-capable envs `local` and `sandbox` — see [Persona override](#persona-override-non-production-demo-impersonation--sidecar-path) — so no environment that authenticates against Entra reaches this refusal; it is what holds the property if impersonation is ever enabled on one that does.)
@@ -535,7 +573,7 @@ went-silent) **feeds** the revoke decision — it never performs it.
 2. It posts to `/api/v1/internal/run-worker/{name}` with `X-Internal-Timestamp` (unix seconds) and `X-Internal-Signature` (hex).
 3. With `frontDoorId` set, `require-front-door` refuses a request without the matching `X-Azure-FDID` header (403), which is why the jobs then call the Front Door endpoint.
 4. The request reaches the run-worker handler.
-5. `verifyInternalRequest` accepts a timestamp within 300 seconds of the server clock and compares the signature in constant time.
+5. `verifyInternalRequest` accepts a timestamp within 60 seconds of the server clock and compares the signature in constant time.
 6. Missing, malformed, stale and wrong signatures all get the same 401.
 7. The handler looks the name up in the static worker registry.
 8. An unknown name gets 404 before any worker code loads.
@@ -576,8 +614,11 @@ TokenScope supports three edge shapes, selected by `enablePrivateNetworking`,
 `enableFrontDoor` / `frontDoorSku`, and `frontDoorId` (→ `AZURE_FRONT_DOOR_ID`):
 
 **Front Door Standard (sandbox).** The Container App ingress stays **public**
-(Standard cannot reach an internal environment); protection is the Front Door WAF
-plus the **header check** below.
+(Standard cannot reach an internal environment). The **header check** below is
+the only thing keeping callers on Front Door, and it is not a network boundary:
+the Front Door ID is not a secret, so a direct caller who has it skips the WAF.
+App authentication still applies. Fine for an example deployment; use the VNet
+posture for production.
 
 **Front Door Premium (VNet-integrated, recommended for production).** The ACA
 environment is **internal**; Front Door reaches it over **Private Link**, so the
@@ -605,10 +646,10 @@ your WAF/edge) is the edge control:
 - `AZURE_FRONT_DOOR_REQUIRED=true` overrides the no-op: with the flag set and no
   FDID wired, the middleware **refuses every request** except `EXCLUDED_PATHS`.
   It lets an operator close the window before `frontDoorId` is known without the
-  middleware ever *inferring* "this looks like production". The Bicep templates
-  do not set it; it is an operator-set environment variable.
+  middleware ever *inferring* "this looks like production". No template sets
+  it: it has to be set on the revision by hand, and the next apply drops it.
 - `/api/health` is **exempt** — Container Apps' internal LB probes it directly (blocking it would loop-restart replicas).
-- Plain equality compare (AFD ID is DNS-discoverable, not a secret); logs record only path + a coarse header-present signal, never the expected/received ID.
+- Plain equality compare (the AFD ID is not a secret: it is in deployment outputs, workflow inputs and parameter files); logs record only path + a coarse header-present signal, never the expected/received ID.
 - With `frontDoorId` set, the rate limiter keys on Front Door's `X-Azure-SocketIP`
   (`NUXT_SECURITY_RATE_LIMITER_IP_HEADER`), the TCP peer Front Door saw, instead
   of the spoofable first `X-Forwarded-For` hop. Not `X-Azure-ClientIP`, which
@@ -617,7 +658,7 @@ your WAF/edge) is the edge control:
 ## Audit logging
 
 - All security-relevant actions go through `recordAuditEvent` (`server/db/audit.ts`), the single allocation point for the **append-only** `audit_event` table. A DB trigger blocks `UPDATE`/`DELETE` — written rows are immutable. Handlers must never insert directly.
-- Events: `teammate-jit-created`, `session-attested`, `emit-handoff-minted`, `emit-provisioned`, `persona-impersonation`, `report-access-granted`, `report-access-revoked` (incl. an `expired-superseded` reason on an automatic re-grant supersede), `report-scope-denied` (payload carries `permissions`), admin mutations (incl. grant revocation). Each row carries actor (teammate id or system), subject, payload, optional IP / user-agent.
+- Events: `teammate-jit-created`, `session-attested`, `emit-handoff-minted`, `emit-provisioned`, `persona-impersonation`, `report-access-granted`, `report-access-revoked` (incl. an `expired-superseded` reason on an automatic re-grant supersede), `report-scope-denied` (payload carries `permissions`), `project-manager-granted` / `project-manager-revoked`, admin mutations (incl. grant revocation). Writes a PM makes on their own project record `via: 'project-manager'` in the payload. Each row carries actor (teammate id or system), subject, payload, optional IP / user-agent.
 
 ## Known gaps
 
@@ -625,7 +666,7 @@ Each of these has a disposition in the [Security Overview](Security-Overview.md)
 risk register; this is the mechanism-level view of the same list.
 
 - **CSP `style-src` allows `'unsafe-inline'`** (`nuxt.config.ts`) — baseline gap `@nuxt/ui` v4 requires for injected styles. Rest of CSP is tighter: `frame-ancestors 'none'` (clickjacking — never iframed by design), constrained `img-src`/`font-src`.
-- **Origin enforcement depends on configuration.** The header check runs only once `frontDoorId` is set; until then (and in the own-WAF shape) the network perimeter is the control, and nuxt-security's global rate limiter stays keyed on the first `X-Forwarded-For` hop, which a caller can spoof.
+- **Origin enforcement depends on configuration.** The header check runs only once `frontDoorId` is set; until then (and in the own-WAF shape) the network perimeter is the control, and nuxt-security's global rate limiter stays keyed on the first `X-Forwarded-For` hop, which a caller can spoof. On the public sandbox posture with Front Door Standard there is no network perimeter: between the apply that adds Front Door and the one that sets `frontDoorId` the app is reachable directly, and afterwards a direct caller holding the (non-secret) Front Door ID still skips the WAF and chooses the `X-Azure-SocketIP` the limiter keys on. Accepted for the example deployment.
 - **Postgres connections encrypt but do not authenticate the server.** The `verify-full` change and a single connection factory are in code and the pre-flight **warns**; it takes effect only on an apply of `main.bicep` that rewrites the `DATABASE_URL` secret.
 - **The anonymous OAuth registration ceiling is per-process.** The per-source sliding window is an in-memory counter, so it is one ceiling per replica, not one per deployment. The global client cap and the 1-hour abandonment sweep are what actually bound it.
 - **A live emit handoff code appears in the agent transcript** for its ~5-minute, single-use, instance-bound life. That is the accepted cost of keeping the *durable* credential out of the LLM channel entirely.

@@ -493,6 +493,14 @@ describe.skipIf(ON_SHARED_CLUSTER)('the role it creates actually works', () => {
     }
   })
 
+  it('can append to audit_event but neither update nor delete it', async () => {
+    const [priv] = await t.client<{ ins: boolean; upd: boolean; del: boolean }[]>`
+      SELECT has_table_privilege(${APP_DB_ROLE}, 'audit_event', 'INSERT') AS ins,
+             has_table_privilege(${APP_DB_ROLE}, 'audit_event', 'UPDATE') AS upd,
+             has_table_privilege(${APP_DB_ROLE}, 'audit_event', 'DELETE') AS del`
+    expect(priv).toEqual({ ins: true, upd: false, del: false })
+  })
+
   /*
    * THE API LANE'S WRITER IS THIS ROLE — SO IT MUST BE ABLE TO WRITE.
    *

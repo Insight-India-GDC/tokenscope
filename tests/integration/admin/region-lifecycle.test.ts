@@ -196,6 +196,60 @@ describe('2. region delete', () => {
     expect([...rows].length).toBe(0)
   })
 
+  it('deletes a region made through the create route, with its own default and Unplaced units', async () => {
+    const made = await call<{ id: string }>(
+      regionsCreate,
+      ev({ body: { code: 'rlc-made', display_name: 'Made' }, session: platformAdmin() }),
+    )
+    const [root] = [...await t.db.execute<{ id: string }>(sql`SELECT id FROM org_unit WHERE region_id = ${made.id}::uuid AND code = 'default'`)]
+    await t.db.insert(schema.orgUnit).values({ regionId: made.id, parentId: root!.id, path: 'rlc_made.__unplaced__', code: '__UNPLACED__', displayName: 'Unplaced', unitType: 'holding', isCostOwningUnit: false })
+
+    const out = await call<{ deleted: boolean }>(regionDelete, ev({ params: { id: made.id }, session: platformAdmin() }))
+    expect(out.deleted).toBe(true)
+    const left = await t.db.execute(sql`SELECT 1 FROM org_unit WHERE region_id = ${made.id}::uuid UNION ALL SELECT 1 FROM region WHERE id = ${made.id}::uuid`)
+    expect([...left].length).toBe(0)
+  })
+
+  it('refuses a region with a unit of its own beyond default and Unplaced (409)', async () => {
+    const made = await call<{ id: string }>(
+      regionsCreate,
+      ev({ body: { code: 'rlc-made2', display_name: 'Made Two' }, session: platformAdmin() }),
+    )
+    await t.db.insert(schema.orgUnit).values({ regionId: made.id, path: 'rlc_made2.extra', code: 'extra', displayName: 'Extra', unitType: 'bu', isCostOwningUnit: true })
+    await expect(
+      call(regionDelete, ev({ params: { id: made.id }, session: platformAdmin() })),
+    ).rejects.toMatchObject({ statusCode: 409 })
+  })
+
+  it('refuses when something still points at its default unit, and deletes nothing (409)', async () => {
+    const made = await call<{ id: string }>(
+      regionsCreate,
+      ev({ body: { code: 'rlc-made3', display_name: 'Made Three' }, session: platformAdmin() }),
+    )
+    const [root] = [...await t.db.execute<{ id: string }>(sql`SELECT id FROM org_unit WHERE region_id = ${made.id}::uuid AND code = 'default'`)]
+    await t.db.insert(schema.couOwner).values({ orgUnitId: root!.id, teammateId: '00000000-0000-4000-8000-000000000001' })
+    const err = await call(regionDelete, ev({ params: { id: made.id }, session: platformAdmin() })).catch((e: unknown) => e)
+    expect(err).toMatchObject({ statusCode: 409, data: { detail: expect.stringContaining('A cou_owner row') } })
+    const kept = await t.db.execute(sql`SELECT 1 FROM org_unit WHERE region_id = ${made.id}::uuid`)
+    expect([...kept].length).toBe(1)
+  })
+
+  it('refuses when a budget is scoped to its default unit, which no FK would catch (409)', async () => {
+    const made = await call<{ id: string }>(
+      regionsCreate,
+      ev({ body: { code: 'rlc-made4', display_name: 'Made Four' }, session: platformAdmin() }),
+    )
+    const [root] = [...await t.db.execute<{ id: string }>(sql`SELECT id FROM org_unit WHERE region_id = ${made.id}::uuid AND code = 'default'`)]
+    await t.db.execute(sql`
+      WITH a AS (INSERT INTO audit_event (event_type, actor_system, payload) VALUES ('seed', 'test', '{}'::jsonb) RETURNING id)
+      INSERT INTO allocation (scope_type, scope_id, budget_usd, effective, audit_event_id)
+      SELECT 'cou', ${root!.id}::uuid, 100, tstzrange(now(), NULL), a.id FROM a`)
+    const err = await call(regionDelete, ev({ params: { id: made.id }, session: platformAdmin() })).catch((e: unknown) => e)
+    expect(err).toMatchObject({ statusCode: 409, data: { detail: expect.stringContaining('1 budgets') } })
+    const kept = await t.db.execute(sql`SELECT 1 FROM region WHERE id = ${made.id}::uuid`)
+    expect([...kept].length).toBe(1)
+  })
+
   it('region admin cannot delete (403 — platform-admin only)', async () => {
     const [empty] = await t.db.insert(schema.region).values({ code: 'rlc-empty2', displayName: 'Empty2' }).returning()
     await expect(
@@ -205,13 +259,11 @@ describe('2. region delete', () => {
 })
 
 describe('3. org-unit create', () => {
-  it('admin creates a root cost centre (200, path = derived label)', async () => {
-    const out = await call<{ id: string; path: string }>(
-      orgUnitsCreate,
-      ev({ body: { region_id: regionAId, code: 'CSL-DRP', display_name: 'AFL Delivery', unit_type: 'bu', is_cost_owning_unit: true }, session: adminA() }),
-    )
-    // 'CSL-DRP' → label 'csl_drp', root → path == label.
-    expect(out.path).toBe('csl_drp')
+  it("no parent means the region's default unit; a region without one refuses (422)", async () => {
+    // Region A was inserted bare, with no default unit. A unit is never created beside it.
+    await expect(
+      call(orgUnitsCreate, ev({ body: { region_id: regionAId, code: 'CSL-DRP', display_name: 'AFL Delivery', unit_type: 'bu', is_cost_owning_unit: true }, session: adminA() })),
+    ).rejects.toMatchObject({ statusCode: 422 })
   })
 
   it('creates a child → path = parent.path + "." + label', async () => {
@@ -225,7 +277,7 @@ describe('3. org-unit create', () => {
 
   it('duplicate code in region → 409', async () => {
     await expect(
-      call(orgUnitsCreate, ev({ body: { region_id: regionAId, code: 'a-svc', display_name: 'Dup', unit_type: 'bu' }, session: adminA() })),
+      call(orgUnitsCreate, ev({ body: { region_id: regionAId, parent_id: ouAId, code: 'a-svc', display_name: 'Dup', unit_type: 'bu' }, session: adminA() })),
     ).rejects.toMatchObject({ statusCode: 409 })
   })
 

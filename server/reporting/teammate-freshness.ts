@@ -122,7 +122,7 @@ export async function subjectFreshness(
    */
   const toolRows = await tx.execute<{ tool: string | null; provenance: string | null }>(sql`
     SELECT DISTINCT u.tool AS tool, u.usage_provenance AS provenance
-      FROM v_complete_usage u
+      FROM v_complete_usage_current u
      WHERE u.teammate_id = ${subjectId}::uuid
        AND ${scopeSql(scope)}
        AND ${CONFIRMED_ONLY}

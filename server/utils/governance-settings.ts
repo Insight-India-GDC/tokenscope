@@ -42,6 +42,12 @@ export const GOV_RECONCILIATION_LAG_BUFFER_HOURS = 'reconciliation.lag_buffer_ho
  * same PUT as every other dial.
  */
 export const GOV_DEFAULT_UNIT_WARN_THRESHOLD = 'placement.default_unit_warn_threshold'
+/**
+ * A4 (docs/design/project-requests/00-spec.md): 1 = a PMO-list holder may create
+ * projects only in the region they are currently placed in; 0 = any region.
+ * A switch, and platform-scoped only (the two sets below).
+ */
+export const GOV_PROJECTS_PM_OWN_REGION_ONLY = 'projects.pm_own_region_only'
 
 export type GovernanceSettingKey =
   | typeof GOV_VELOCITY_SPIKE_THRESHOLD
@@ -49,6 +55,7 @@ export type GovernanceSettingKey =
   | typeof GOV_RECONCILIATION_EPSILON_USD
   | typeof GOV_RECONCILIATION_LAG_BUFFER_HOURS
   | typeof GOV_DEFAULT_UNIT_WARN_THRESHOLD
+  | typeof GOV_PROJECTS_PM_OWN_REGION_ONLY
 
 /*
  * Per-key value bounds, enforced by the admin PUT (the DB stores any
@@ -67,7 +74,14 @@ export const GOVERNANCE_SETTING_BOUNDS: Record<
   // the default unit does not report to its owner" — a legitimate posture for a
   // small region, not a misconfiguration, so the bound is inclusive.
   [GOV_DEFAULT_UNIT_WARN_THRESHOLD]: { min: 0, max: 10_000, minExclusive: false },
+  [GOV_PROJECTS_PM_OWN_REGION_ONLY]: { min: 0, max: 1, minExclusive: false },
 }
+
+/** Keys that hold exactly 0 or 1, edited as a yes/no switch. */
+export const GOVERNANCE_SWITCH_KEYS: readonly GovernanceSettingKey[] = [GOV_PROJECTS_PM_OWN_REGION_ONLY]
+
+/** Keys with a platform row only: the PUT refuses a region override. */
+export const GOVERNANCE_PLATFORM_ONLY_KEYS: readonly GovernanceSettingKey[] = [GOV_PROJECTS_PM_OWN_REGION_ONLY]
 
 export const GOVERNANCE_SETTING_KEYS = Object.keys(
   GOVERNANCE_SETTING_BOUNDS,

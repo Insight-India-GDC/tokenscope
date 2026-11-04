@@ -143,7 +143,7 @@ function stackTitle(d: StackedDay): string {
       <div>
         <div class="text-lg font-bold text-carbon">Other Claude surfaces</div>
         <div class="text-xs text-carbon-3 mt-1">
-          Billed to your cost centre · not project-taggable
+          Billed to your Business Unit · not project-taggable
         </div>
       </div>
       <span
@@ -244,7 +244,7 @@ function stackTitle(d: StackedDay): string {
 
     <div class="px-6 py-3 border-t border-calm-2 text-[11px] text-carbon-3 italic">
       Informational — these surfaces don't emit sessions, so there's nothing to tag. Spend is
-      charged back to your cost centre from the provider bill.
+      charged back to your Business Unit from the provider bill.
     </div>
   </UiCard>
 </template>

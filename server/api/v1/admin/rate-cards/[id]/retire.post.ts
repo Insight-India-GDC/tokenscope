@@ -77,7 +77,7 @@ export default defineEventHandler(async (event) => {
             type: 'https://tokenscope.example.com/errors/forbidden',
             title: 'Forbidden',
             status: 403,
-            detail: 'A global rate card can only be retired by platform-admin.',
+            detail: 'A global rate card can only be retired by an Admin.',
           },
         })
       }

@@ -23,7 +23,7 @@
  */
 import { readFileSync } from 'node:fs'
 
-import { accessCachePath, readBoundAccessToken } from './device-store.mjs'
+import { accessCachePath, bearerInstance, readBoundAccessToken } from './device-store.mjs'
 import { isMainModule } from './is-main.mjs'
 import { resolveRepoProjectCode, computeCodeHash } from './tag-repo.mjs'
 import { stateDir as resolveStateDir, trustedGlobalSettingsEnv } from './plugin-runtime.mjs'
@@ -54,7 +54,11 @@ export async function checkRepoProjectBillable({
   // identical note; one deletion (safeProcessEnv / repoTagEnv) then covers this too.
   const dir = stateDir || resolveStateDir(env)
   const attrs = env.OTEL_RESOURCE_ATTRIBUTES || process.env.OTEL_RESOURCE_ATTRIBUTES || ''
-  const instanceId = attrs.match(/tokenscope\.instance_id=([^,]+)/)?.[1]
+  // The attrs' instance, else the one this install's own endpoint addresses: a
+  // command run from a session gets no OTEL_* keys at all (#503), and the
+  // request below goes to the endpoint whatever the attrs say.
+  const instanceId =
+    attrs.match(/tokenscope\.instance_id=([^,]+)/)?.[1] || bearerInstance(env.TOKENSCOPE_BEARER_ENDPOINT) || undefined
   // The hash THIS session is actually emitting (frozen at process start), if tagged.
   const emittingHash = attrs.match(/project\.code_hash=([^,]+)/)?.[1] || null
 
@@ -112,7 +116,7 @@ export async function checkRepoProjectBillable({
   try {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), timeoutMs)
-    res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: ctrl.signal })
+    res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: ctrl.signal, redirect: 'error' })
     clearTimeout(timer)
   } catch {
     return { status: 'unverifiable', reason: 'fetch-failed' }

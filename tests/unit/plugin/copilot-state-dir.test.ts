@@ -25,6 +25,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+// Windows (#430): skipped on win32 because this file temp-dir cleanup fails with EPERM on Windows.
+const POSIX_ONLY = process.platform === 'win32'
+
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — mjs import resolved by Vitest
 const { realHome } = await import('../../../plugin/scripts/real-home.mjs')
@@ -87,7 +90,7 @@ afterEach(() => {
   while (tmpDirs.length) rmSync(tmpDirs.pop() as string, { recursive: true, force: true })
 })
 
-describe('the Copilot credential store resolves identically at every site', () => {
+describe.skipIf(POSIX_ONLY)('the Copilot credential store resolves identically at every site', () => {
   it('with no pin: the forwarder opens exactly the file copilot-redeem writes', async () => {
     // The regression this whole change exists to prevent. Before the fix the
     // forwarder was on os.homedir() and redeem on realHome(), so these two differed
@@ -149,7 +152,7 @@ describe('the Copilot credential store resolves identically at every site', () =
   })
 })
 
-describe('forwarder-lifecycle hook — the daemon log lands in the SAME state dir', () => {
+describe.skipIf(POSIX_ONLY)('forwarder-lifecycle hook — the daemon log lands in the SAME state dir', () => {
   it("opens forwarder.log under the resolved state dir, not a $HOME-derived one", () => {
     // The hook opens ~/.tokenscope/forwarder.log before spawning the daemon. It used
     // to derive that dir from os.homedir() — a sixth, independent resolution — so a
@@ -185,7 +188,7 @@ describe('forwarder-lifecycle hook — the daemon log lands in the SAME state di
   })
 })
 
-describe('enroll.stateDir — the injected home still wins, only the default moved', () => {
+describe.skipIf(POSIX_ONLY)('enroll.stateDir — the injected home still wins, only the default moved', () => {
   it('honours an explicitly passed home (the test-injection seam)', async () => {
     /* eslint-disable @typescript-eslint/ban-ts-comment */
     // @ts-ignore — mjs import resolved by Vitest

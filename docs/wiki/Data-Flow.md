@@ -197,7 +197,7 @@ most consequential provider limitation in the system:
    `usage-reconciliation` run re-checks it. If the conversation later records
    usage outside the cell, the run lifts the quarantine and escalates the flag
    (`sweepStrayQuarantines` in `over-emission-detection.ts`). An escalated flag,
-   whoever escalated it, goes to its region's admins and the platform admins (platform admins only
+   whoever escalated it, goes to the Admins and any remaining Region admin of its region (Admins only
    when it has no region) as an
    `over-emission-escalated` item (`server/notifications/over-emission.ts`).
 5. Arm 2 (`api-reconciled`) shows the residual, per model where the

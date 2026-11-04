@@ -93,6 +93,10 @@ describe('resolveServices', () => {
     expect(byName.keyVault.critical).toBe(false)
     expect(byName.keyVault.endpoint).toEqual({ host: 'kv.vault.azure.net', port: 443 })
   })
+  it('postgres resolves from the app-role URL once the owner DATABASE_URL is unset', () => {
+    const svc = resolveServices({ TOKENSCOPE_APP_DATABASE_URL: 'postgres://app:p@pg-app:5432/db' } as NodeJS.ProcessEnv)
+    expect(svc.find((s) => s.name === 'postgres')!.endpoint).toEqual({ host: 'pg-app', port: 5432 })
+  })
   it('an unset env yields no endpoint (→ skipped at probe time)', () => {
     const svc = resolveServices({ DATABASE_URL: 'postgres://u:p@pg:5432/db' } as NodeJS.ProcessEnv)
     const redis = svc.find((s) => s.name === 'redis')!

@@ -11,8 +11,8 @@
  * This spec drives the redirect + the four tabs:
  *   - admin lands on the Cost centres tab (editable LTREE list)
  *   - Setup checklist renders progress bar + 7 rows (J4 added
- *     'Assign cost-centre owners' + 'Designate project managers')
- *   - Connectors renders all 4 ConnectorCards
+ *     'Assign Business Unit owners' + 'Designate project managers')
+ *   - Connectors states that no finance-system connector exists
  *   - ?tab= deep-link works on the regions/:id route
  *   - all 4 tabs reachable without console errors
  */
@@ -58,20 +58,20 @@ test.describe('Admin region detail (4-tab)', () => {
     const rows = page.locator('[data-testid="checklist-row"]')
     await expect(rows).toHaveCount(7)
     await expect(page.locator('[data-testid="panel-checklist"]')).toContainText(
-      'Assign cost-centre owners',
+      'Assign Business Unit owners',
     )
     await expect(page.locator('[data-testid="panel-checklist"]')).toContainText(
       'Designate project managers',
     )
   })
 
-  test('Connectors tab renders the 4 ConnectorCards', async ({ page }) => {
+  test('Connectors tab states the real connector state, not pilot cards', async ({ page }) => {
     await signInAsAdmin(page)
     await page.click('[data-testid="admin-tab-connectors"]')
     await expect(page).toHaveURL(/\?tab=connectors$/)
     await expect(page.locator('[data-testid="panel-connectors"]')).toBeVisible()
-    const cards = page.locator('[data-testid="connector-card"]')
-    await expect(cards).toHaveCount(4)
+    await expect(page.locator('[data-testid="connectors-none"]')).toContainText('No finance-system connector')
+    await expect(page.locator('[data-testid="connector-card"]')).toHaveCount(0)
   })
 
   test('deep-link via ?tab=teammates lands on the Teammates panel', async ({ page }) => {

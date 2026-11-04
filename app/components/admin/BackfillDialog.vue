@@ -135,7 +135,7 @@ async function save() {
             type="date"
             :min="minDate"
             :max="today"
-            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+            class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
             data-testid="bf-start-date"
           >
           <p class="text-[11px] text-carbon-3 mt-1">

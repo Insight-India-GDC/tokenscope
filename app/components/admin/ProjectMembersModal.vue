@@ -202,7 +202,7 @@ watch(
           v-model="query"
           type="search"
           placeholder="Search anyone in the directory by name or email…"
-          class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+          class="mt-1 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
           data-testid="members-search"
           @input="search"
         >

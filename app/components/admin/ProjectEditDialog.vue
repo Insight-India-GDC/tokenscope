@@ -222,7 +222,7 @@ async function save() {
           ref="firstField"
           v-model="displayName"
           type="text"
-          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
           data-testid="pe-name"
         >
 
@@ -232,7 +232,7 @@ async function save() {
           v-model="clientFacingName"
           type="text"
           placeholder="Optional — shown to the client"
-          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony focus:outline-none"
+          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md focus:border-brand-harmony"
           data-testid="pe-client-name"
         >
 
@@ -243,7 +243,7 @@ async function save() {
           type="text"
           maxlength="64"
           placeholder="Optional — finance-system WBS code"
-          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony focus:outline-none"
+          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md font-mono focus:border-brand-harmony"
           data-testid="pe-wbs"
         >
 
@@ -251,7 +251,7 @@ async function save() {
         <select
           id="pe-type"
           v-model="type"
-          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none"
+          class="mt-1 mb-3 w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony"
           data-testid="pe-type"
         >
           <option value="billable">Billable</option>
@@ -265,7 +265,7 @@ async function save() {
             id="pe-cou"
             v-model="couId"
             :disabled="!!couOptionsError"
-            class="w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony focus:outline-none disabled:bg-calm/40 disabled:cursor-not-allowed"
+            class="w-full px-3 py-2 text-sm border border-calm-2 rounded-md bg-white focus:border-brand-harmony disabled:bg-calm/40 disabled:cursor-not-allowed"
             data-testid="pe-cou"
           >
             <option value="" disabled>Select a unit…</option>

@@ -72,7 +72,12 @@ export const ADMIN_NAV: AdminNavGroup[] = [
     items: [
       { label: 'Regions', to: '/admin/regions', access: 'admin', icon: 'globe', testid: 'regions' },
       { label: 'Projects', to: '/admin/projects', access: 'admin', icon: 'folder', testid: 'projects' },
+      { label: 'Project requests', to: '/admin/project-requests', access: 'admin', icon: 'folder', testid: 'project-requests' },
+      // Platform only: a PMO grant reaches every region (spec A3).
+      { label: 'Project managers', to: '/admin/project-managers', access: 'platform', icon: 'people', testid: 'project-managers' },
       { label: 'Region rules', to: '/admin/department-map', access: 'org-wide', icon: 'tree', testid: 'region-rules' },
+      { label: 'Org setup', to: '/admin/org-setup', access: 'platform', icon: 'tree', testid: 'org-setup' },
+      { label: 'Placement check', to: '/admin/placement-check', access: 'platform', icon: 'scale', testid: 'placement-check' },
       { label: 'Activity tags', to: '/admin/activity-tags', access: 'admin', icon: 'tag', testid: 'activity-tags' },
     ],
   },
@@ -169,6 +174,16 @@ export function matchAdminNavItem(pathOrFullPath: string): AdminNavItem | null {
     }
   }
   return best
+}
+
+/**
+ * The Policies pages `role` can open, in sidebar order. System info lists these
+ * as "editable settings live under Policies"; it used to hand-copy the list and
+ * fell two pages behind the sidebar (Provider governance, Client connection).
+ */
+export function policyNavItemsFor(role: string | null | undefined): AdminNavItem[] {
+  const group = ADMIN_NAV.find((g) => g.label === 'Policies')
+  return (group?.items ?? []).filter((i) => roleMeetsAccess(role, i.access))
 }
 
 /** The group containing an item (by identity), or null. */

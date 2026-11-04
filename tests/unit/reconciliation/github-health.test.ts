@@ -98,23 +98,25 @@ function zodErr(): unknown {
  * is stubbed to return an App credential carrying FAKE_SECRET as the value; probeClient
  * returns the supplied stub (so the real GithubAppAuth ctor never runs).
  */
-function appOpts(client: HealthProbeClient, roster: string[] = []): ComputeGithubHealthOpts {
+function appOpts(client: HealthProbeClient, roster: string[] = [], selfOnly: string[] = []): ComputeGithubHealthOpts {
   return {
     now: NOW,
     resolveCredential: async () => ({ secretName: 'acme', value: FAKE_SECRET, level: 'enterprise', kind: 'github-app', appId: '4242' }),
     probeClient: () => client,
     resolveRoster: async () => new Map(roster.map((l) => [l.toLowerCase(), `tm-${l}`])),
+    resolveSelfOnly: async () => new Map(selfOnly.map((l) => [l.toLowerCase(), `${l}@example.com`])),
     // App mode probes a representative onboarded license org's externalIdentities. A single-org
     // list means chooseRepresentativeLicenseOrg returns it directly (no seat call).
     resolveLicenseOrgs: async () => ['acme-org'],
   }
 }
-function patOpts(client: HealthProbeClient, roster: string[] = []): ComputeGithubHealthOpts {
+function patOpts(client: HealthProbeClient, roster: string[] = [], selfOnly: string[] = []): ComputeGithubHealthOpts {
   return {
     now: NOW,
     resolveCredential: async () => ({ secretName: 'acme', value: FAKE_SECRET, level: 'enterprise', kind: 'github-pat' }),
     probeClient: () => client,
     resolveRoster: async () => new Map(roster.map((l) => [l.toLowerCase(), `tm-${l}`])),
+    resolveSelfOnly: async () => new Map(selfOnly.map((l) => [l.toLowerCase(), `${l}@example.com`])),
   }
 }
 
@@ -521,6 +523,7 @@ describe('computeGithubEnterpriseHealth — App-mode verdict ladder', () => {
       resolveCredential: async () => ({ secretName: 'acme', value: FAKE_SECRET, level: 'enterprise', kind: 'github-app', appId: '4242' }),
       probeClient: () => { throw new Error('github-app-auth: App private key is not valid base64') },
       resolveRoster: async () => new Map(),
+      resolveSelfOnly: async () => new Map(),
     }
     const h = await computeGithubEnterpriseHealth(fakeDb, APP_ENT, opts)
     expect(h).toMatchObject({ verdict: 'key-malformed', color: 'red', keyPresent: true })
@@ -528,7 +531,7 @@ describe('computeGithubEnterpriseHealth — App-mode verdict ladder', () => {
   })
 
   it('no-credential — the resolver returns null (nothing wired)', async () => {
-    const opts: ComputeGithubHealthOpts = { now: NOW, resolveCredential: async () => null, resolveRoster: async () => new Map() }
+    const opts: ComputeGithubHealthOpts = { now: NOW, resolveCredential: async () => null, resolveRoster: async () => new Map(), resolveSelfOnly: async () => new Map() }
     const h = await computeGithubEnterpriseHealth(fakeDb, APP_ENT, opts)
     expect(h).toMatchObject({ verdict: 'no-credential', color: 'red', keyPresent: false })
   })
@@ -538,6 +541,7 @@ describe('computeGithubEnterpriseHealth — App-mode verdict ladder', () => {
       now: NOW,
       resolveCredential: async () => { throw new MissingGithubAppKeyError('acme-ent', 'acme') },
       resolveRoster: async () => new Map(),
+      resolveSelfOnly: async () => new Map(),
     }
     const h = await computeGithubEnterpriseHealth(fakeDb, APP_ENT, opts)
     expect(h).toMatchObject({ verdict: 'no-credential', color: 'red' })
@@ -550,6 +554,7 @@ describe('computeGithubEnterpriseHealth — probe-error (M3: infra must not impe
       now: NOW,
       resolveCredential: async () => { throw new Error('connection terminated unexpectedly') },
       resolveRoster: async () => new Map(),
+      resolveSelfOnly: async () => new Map(),
     }
     const h = await computeGithubEnterpriseHealth(fakeDb, APP_ENT, opts)
     expect(h).toMatchObject({ verdict: 'probe-error', color: 'amber' })
@@ -612,6 +617,39 @@ describe('computeGithubEnterpriseHealth — PAT-mode path', () => {
     expect(usageCalls).toBe(0)
     expect(h.verdict).toBe('no-teammate-match')
     expect(h.color).toBe('amber')
+  })
+
+  it('a login bound only by a self-claim is counted apart from the matched ones (#451)', async () => {
+    const client: HealthProbeClient = {
+      listSeats: async () => [{ assignee: { login: 'alice' } }, { assignee: { login: 'Bob' } }, { assignee: { login: 'carol' } }],
+      getAiCreditUsage: async () => ({ usageItems: [{ grossQuantity: 1 }] }),
+    }
+    const h = await computeGithubEnterpriseHealth(fakeDb, PAT_ENT, patOpts(client, ['alice', 'bob'], ['bob']))
+    expect(h.stages.licenses).toMatchObject({ ok: true, count: 3, rosterMatched: 1, selfClaimed: 1 })
+    expect(h.verdict).toBe('healthy')
+  })
+
+  // "Matched" means verified (#451, #493): with only self-claimed seats the read works but nothing
+  // a verified binding attributes, so the probe asks an admin to bind them rather than say healthy.
+  it('only self-claimed logins: metrics reads one, matches none, and the verdict says so (#451)', async () => {
+    const client: HealthProbeClient = {
+      listSeats: async () => [{ assignee: { login: 'alice' } }],
+      getAiCreditUsage: async () => ({ usageItems: [{ grossQuantity: 1 }] }),
+    }
+    const h = await computeGithubEnterpriseHealth(fakeDb, PAT_ENT, patOpts(client, ['alice'], ['alice']))
+    expect(h.stages.licenses).toMatchObject({ ok: true, count: 1, rosterMatched: 0, selfClaimed: 1 })
+    expect(h.stages.metrics).toMatchObject({ ok: true, recordCount: 1, matchedRecords: 0 })
+    expect(h.verdict).toBe('no-teammate-match')
+  })
+
+  it('a self-claim DB-read failure → probe-error, NOT a fabricated count (#451)', async () => {
+    const client: HealthProbeClient = { listSeats: async () => [{ assignee: { login: 'alice' } }], getAiCreditUsage: async () => ({}) }
+    const h = await computeGithubEnterpriseHealth(fakeDb, PAT_ENT, {
+      ...patOpts(client, ['alice']),
+      resolveSelfOnly: async () => { throw new Error('relation does not exist') },
+    })
+    expect(h.verdict).toBe('probe-error')
+    expect(h.stages.licenses).toMatchObject({ ok: false, reason: 'probe-internal-error' })
   })
 
   it('metrics-empty — no seats at all (nothing to attribute)', async () => {

@@ -8,7 +8,10 @@
  * to anyone (enforced by the unique index on system+identifier). Linked
  * identities are `source='self'`, unverified (`verified_at IS NULL`) — visible
  * as such — and every link is audited. The poller backstop catches mis-claims
- * for reconciled orgs; indicative-org claims rely on uniqueness + audit.
+ * for reconciled orgs; indicative-org claims rely on uniqueness + audit. A
+ * self-linked GitHub login counts as the claimant's usage, but its share of a
+ * billed Copilot overage stays Unallocated until an admin binds it
+ * (admin/reconciliation/github/map.post.ts).
  */
 import { createError, defineEventHandler, readValidatedBody } from 'h3'
 import { z } from 'zod'
@@ -59,10 +62,11 @@ export default defineEventHandler(async (event) => {
   //
   // NOTE the `otherPrimary` probe reads OTHER teammates' rows deliberately: it is
   // an EXISTENCE check the caller is allowed to make (it can only ever say "taken",
-  // never by whom). Under FORCE, `teammate`'s region policy narrows it for a
-  // developer — a cross-region collision then falls through to the unique index and
-  // surfaces as the SAME 409 via translatePgConstraintError, so the outcome is
-  // unchanged; only which layer produces it moves.
+  // never by whom). Nothing else backs it: primary emails are not map rows, so no
+  // unique index catches the collision. It sees every region only because
+  // `teammate` is an RLS bootstrap table (row-level security disabled). If it ever
+  // leaves that set, move the probe into a SECURITY DEFINER function like
+  // owner_active_unit_counts() (mig 0111).
   try {
     const id = await withRequestRls(event, async (tx) => {
       const [me] = await tx.execute<{ email: string }>(

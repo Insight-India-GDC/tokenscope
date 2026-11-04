@@ -5,8 +5,8 @@
  * On a FRESH install of the real (publish-injected) plugin, the SessionStart hook
  * calls enrollIfNeeded() so this very session starts emitting WITHOUT any login:
  * the plugin presents its bundled enrollment secret + the Claude user's email to
- * POST /api/v1/setup/enroll, and writes the returned emit-only credential + OTel
- * plumbing into ~/.claude/settings.json using the SAME writer the redeem flow uses
+ * POST /api/v1/setup/enroll, and writes the returned emit-only credential (to the
+ * device store) + OTel plumbing (to ~/.claude/settings.json) using the SAME writer the redeem flow uses
  * (claude-redeem's assert → buildEnv → writeClaudeSettings). Usage then attributes
  * PROVISIONALLY to the claimed email until the human signs in and confirms.
  *
@@ -45,7 +45,7 @@ import { execFileSync } from 'node:child_process'
 import { trustedGitPath } from './trusted-git.mjs'
 import { configuredServerUrl, resolveApiBase } from './api-base.mjs'
 import { discoverMcpOrigin } from './mcp-origin.mjs'
-import { httpsPostJson, resolveScriptsDir } from './plugin-runtime.mjs'
+import { claudeInstallStateDir, httpsPostJson, resolveScriptsDir, storeHoldsEnrolment, trustedStateDir } from './plugin-runtime.mjs'
 import { claudeSettingsPath } from './claude-config-dir.mjs'
 // Reuse the redeem flow's validation + env-builder + atomic 0600 writer VERBATIM
 // (the enroll response shape mirrors /setup/redeem), so the OTel/emit env +
@@ -86,14 +86,17 @@ function defaultDiscoverOrigin() {
 }
 
 /**
- * True if `env` already carries a complete emit enrolment — a durable OAuth
- * refresh token AND a bearer endpoint AND a non-empty instance id in the resource
+ * True if the device already carries a complete emit enrolment — a durable OAuth
+ * refresh token (in the device store for this bearer, or in `env` from an older
+ * redeem) AND a bearer endpoint AND a non-empty instance id in the resource
  * attrs. When enrolled we must NEVER re-enrol (it would mint a second provisional
  * instance) or clobber the existing (possibly redeemed/confirmed) credential.
  */
-export function isEnrolled(env = {}) {
-  const hasRefresh = Boolean((env.TOKENSCOPE_OAUTH_REFRESH_TOKEN ?? '').trim())
+export function isEnrolled(env = {}, storeDir = claudeInstallStateDir()) {
   const hasBearer = Boolean((env.TOKENSCOPE_BEARER_ENDPOINT ?? '').trim())
+  const hasRefresh =
+    Boolean((env.TOKENSCOPE_OAUTH_REFRESH_TOKEN ?? '').trim()) ||
+    (hasBearer && storeHoldsEnrolment('claude-code', env.TOKENSCOPE_BEARER_ENDPOINT, storeDir))
   const attrs = env.OTEL_RESOURCE_ATTRIBUTES
   // A `tokenscope.instance_id=` with an empty value is as unenrolled as absent.
   const hasInstance = typeof attrs === 'string' && /tokenscope\.instance_id=[^,\s]/.test(attrs)
@@ -172,6 +175,7 @@ export function computeDeviceBinding({ home = homedir() } = {}) {
  *   platform?: string,
  *   discoverOrigin?: () => string|null,
  *   configuredOrigin?: () => string|null,
+ *   storeDir?: string,
  * }} [opts]
  */
 export async function enrollIfNeeded({
@@ -194,9 +198,11 @@ export async function enrollIfNeeded({
   // The plugin's `server_url` option from the user's settings file (#415);
   // seamed for the same reason as discoverOrigin.
   configuredOrigin = configuredServerUrl,
+  // Where the durable credential lives (and where writeSettings puts it).
+  storeDir = claudeInstallStateDir(),
 } = {}) {
   // 1. Already enrolled — never re-enrol / never clobber an existing credential.
-  if (isEnrolled(env)) return { enrolled: false, reason: 'already-enrolled' }
+  if (isEnrolled(env, storeDir)) return { enrolled: false, reason: 'already-enrolled' }
 
   // 2. No bundled secret (un-injected dev build) — only the real distributed
   //    plugin enrols. Trim-guarded inside resolveEnrollmentSecret.
@@ -257,10 +263,13 @@ export async function enrollIfNeeded({
   try {
     const { claude, oauth } = assertClaudeRedeemResponse(resp)
     const envBlock = buildClaudeDeviceEnv(claude, oauth)
-    // Default state dir, so no --state-dir in the record: the same command a
-    // redeem without one writes (buildHelperCommand).
-    const helper = { record: { tool: 'claude-code', platform }, scriptsDir: scriptsDir ?? resolveScriptsDir() }
-    writeSettings(settingsPath, helper, envBlock)
+    // --state-dir only off the default dir: the same command a redeem writes,
+    // so the helper mints from the store written here.
+    const helper = {
+      record: { tool: 'claude-code', platform, ...(storeDir !== trustedStateDir() ? { stateDir: storeDir } : {}) },
+      scriptsDir: scriptsDir ?? resolveScriptsDir(),
+    }
+    writeSettings(settingsPath, helper, envBlock, storeDir)
   } catch {
     return { enrolled: false, reason: 'write-failed' }
   }

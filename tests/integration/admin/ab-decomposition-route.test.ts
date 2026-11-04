@@ -334,11 +334,11 @@ describe('GET /admin/diagnostics/ab-decomposition', () => {
     // their `own-region` floor was degenerate and stranded admins on an empty
     // report shell).
     expect(res.visibility.personas.find((p) => p.key === 'cost-centre-owner')!.scopes).not.toContain(
-      'Cost centres (all)',
+      'Business Units (all)',
     )
     const gfoScopes = res.visibility.personas.find((p) => p.key === 'platform-admin')!.scopes
     expect(gfoScopes).toContain('Region (all regions + every region)')
-    expect(gfoScopes).toContain('Cost centres (all)')
+    expect(gfoScopes).toContain('Business Units (all)')
     expect(gfoScopes).toContain('Finance (whole company)')
     // …and this is BASELINE, with NO active grant seeded on the fixture: the
     // access above is by ROLE, which is exactly what `elevated: 0/0/0` proves.
